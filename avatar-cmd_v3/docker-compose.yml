@@ -1,0 +1,130 @@
+# ============================================
+# Avatar CMD v3 — Docker Compose (Production)
+# ============================================
+# VPS: Ubuntu 22.04, Traefik + Portainer 稼働中
+# ============================================
+
+services:
+  # ─── Web Dashboard ───
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: avatar-cmd-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+    ports:
+      - "3333:3000"
+    networks:
+      - internal
+      - traefik-net
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      # ── Traefik Labels ──
+      - "traefik.enable=true"
+      - "traefik.http.routers.avatar-cmd.rule=Host(`avatar-cmd.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.avatar-cmd.entrypoints=websecure"
+      - "traefik.http.routers.avatar-cmd.tls.certresolver=letsencrypt"
+      - "traefik.http.services.avatar-cmd.loadbalancer.server.port=3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  # ─── PostgreSQL ───
+  db:
+    image: postgres:16-alpine
+    container_name: avatar-cmd-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: avatar_cmd
+      POSTGRES_USER: avatar
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avatar -d avatar_cmd"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # ─── Redis (Queue + Cache) ───
+  redis:
+    image: redis:7-alpine
+    container_name: avatar-cmd-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: '0.2'
+
+  # ─── Chrome Empire (Playwright) ───
+  chrome-empire:
+    image: mcr.microsoft.com/playwright:v1.49.1-jammy
+    container_name: avatar-cmd-chrome
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "packages/chrome-empire/dist/worker.js"]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL}
+      - CHROME_POOL_SIZE=${CHROME_POOL_SIZE:-3}
+      - CHROME_HEADLESS=true
+    volumes:
+      - chrome-sessions:/app/data/sessions
+      - chrome-profiles:/app/data/profiles
+    networks:
+      - internal
+      - chrome-net
+    shm_size: '2gb'
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: '3.0'
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  internal:
+    driver: bridge
+  chrome-net:
+    driver: bridge
+    internal: true  # 外部アクセス遮断
+  traefik-net:
+    external: true  # 既存Traefikネットワーク
+
+volumes:
+  db-data:
+  redis-data:
+  chrome-sessions:
+  chrome-profiles:

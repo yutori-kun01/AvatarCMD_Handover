@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build
+.next/
+dist/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.db-journal
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-data/
+
+# Lock files (large)
+package-lock.json
+pnpm-lock.yaml

@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build
+.next/
+dist/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.db-journal
+prisma/migrations/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-data/
+
+# Chrome Empire
+chrome-profiles/
+chrome-sessions/

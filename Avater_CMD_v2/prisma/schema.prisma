@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─── Avatar ────────────────────────────────────────
+
+model Avatar {
+  id               String   @id @default(uuid())
+  name             String   @unique
+  role             String   // e.g. "ADHD / 内向型", "バイブスコーダー"
+  specialization   String   // 専門領域
+  targetAudience   String   @map("target_audience")
+  tone             String?  // トーン＆マナー
+  status           String   @default("ACTIVE") // ACTIVE | PAUSED | MAINTENANCE
+  avatarImageUrl   String?  @map("avatar_image_url")
+  description      String?
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  platforms     AvatarPlatform[]
+  posts         Post[]
+  revenue       Revenue[]
+  knowledge     KnowledgeItem[]
+  collabs       Collaboration[]  @relation("CollabInitiator")
+  collabPartner Collaboration[]  @relation("CollabPartner")
+  automations   Automation[]
+  activities    Activity[]
+
+  @@map("avatars")
+}
+
+// ─── Platform Mapping ──────────────────────────────
+
+model AvatarPlatform {
+  id            String  @id @default(uuid())
+  avatarId      String  @map("avatar_id")
+  platform      String  // X | NOTE | ZENN | INSTAGRAM | YOUTUBE | TIKTOK | LINKEDIN | MEDIUM | REDDIT
+  handle        String? // @username
+  followerCount Int     @default(0) @map("follower_count")
+  isActive      Boolean @default(true) @map("is_active")
+
+  avatar Avatar @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  @@unique([avatarId, platform])
+  @@map("avatar_platforms")
+}
+
+// ─── Posts / Content ───────────────────────────────
+
+model Post {
+  id             String    @id @default(uuid())
+  avatarId       String    @map("avatar_id")
+  platform       String    // X | NOTE | ZENN etc.
+  content        String
+  mediaUrls      String    @default("[]") @map("media_urls") // JSON array
+  status         String    @default("DRAFT") // DRAFT | SCHEDULED | PUBLISHED | FAILED
+  scheduledAt    DateTime? @map("scheduled_at")
+  publishedAt    DateTime? @map("published_at")
+  engagementData String?   @map("engagement_data") // JSON object
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  avatar Avatar @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  @@map("posts")
+}
+
+// ─── Revenue ───────────────────────────────────────
+
+model Revenue {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  type        String   // AFFILIATE | MEMBERSHIP | AD_REVENUE | SPONSORSHIP | PRODUCT_SALE | CONSULTATION
+  amount      Float
+  currency    String   @default("JPY")
+  description String?
+  platform    String?  // X | NOTE etc.
+  earnedAt    DateTime @default(now()) @map("earned_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  avatar Avatar @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  @@map("revenue")
+}
+
+// ─── Knowledge Base ────────────────────────────────
+
+model KnowledgeItem {
+  id        String   @id @default(uuid())
+  avatarId  String   @map("avatar_id")
+  title     String
+  content   String
+  category  String?
+  tags      String   @default("[]") // JSON array
+  sourceUrl String?  @map("source_url")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  avatar Avatar @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  @@map("knowledge_items")
+}
+
+// ─── Collaboration ─────────────────────────────────
+
+model Collaboration {
+  id          String    @id @default(uuid())
+  initiatorId String    @map("initiator_id")
+  partnerId   String    @map("partner_id")
+  title       String
+  description String?
+  status      String    @default("PROPOSED") // PROPOSED | IN_PROGRESS | COMPLETED | CANCELLED
+  platform    String?
+  startDate   DateTime? @map("start_date")
+  endDate     DateTime? @map("end_date")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  initiator Avatar @relation("CollabInitiator", fields: [initiatorId], references: [id])
+  partner   Avatar @relation("CollabPartner", fields: [partnerId], references: [id])
+
+  @@map("collaborations")
+}
+
+// ─── Automation Rules ──────────────────────────────
+
+model Automation {
+  id          String    @id @default(uuid())
+  avatarId    String    @map("avatar_id")
+  name        String
+  description String?
+  trigger     String    // e.g. "schedule:daily_09:00", "event:new_follower"
+  action      String    // e.g. "post:generate", "reply:auto"
+  config      String?   // JSON object
+  status      String    @default("ACTIVE") // ACTIVE | PAUSED | ERROR
+  lastRunAt   DateTime? @map("last_run_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  avatar Avatar @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  @@map("automations")
+}
+
+// ─── Activity Log ──────────────────────────────────
+
+model Activity {
+  id          String   @id @default(uuid())
+  avatarId    String?  @map("avatar_id")
+  type        String   // e.g. "post_published", "revenue_earned", "collab_started"
+  title       String
+  description String?
+  metadata    String?  // JSON object
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  avatar Avatar? @relation(fields: [avatarId], references: [id], onDelete: SetNull)
+
+  @@map("activities")
+}

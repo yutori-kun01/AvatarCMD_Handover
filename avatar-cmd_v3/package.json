@@ -1,0 +1,22 @@
+{
+  "name": "avatar-cmd",
+  "version": "3.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:web": "turbo run dev --filter=@avatar-cmd/web",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "db:generate": "turbo run db:generate --filter=@avatar-cmd/db",
+    "db:push": "turbo run db:push --filter=@avatar-cmd/db",
+    "db:migrate": "turbo run db:migrate --filter=@avatar-cmd/db",
+    "db:studio": "turbo run db:studio --filter=@avatar-cmd/db",
+    "clean": "turbo run clean && rimraf node_modules"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}

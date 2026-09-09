@@ -1,0 +1,560 @@
+// ==============================================
+// Avatar CMD v3 — Complete Prisma Schema
+// ==============================================
+// Provider: PostgreSQL (production) 
+// All JSON fields are native PostgreSQL Json type
+// ==============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================================
+// 1. User & Authentication
+// ==============================================
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String?   @map("password_hash")
+  role          UserRole  @default(OWNER)
+  image         String?
+
+  // NextAuth
+  emailVerified DateTime? @map("email_verified")
+  accounts      Account[]
+  sessions      Session[]
+
+  // Relations
+  avatars       Avatar[]
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+// ==============================================
+// 2. Avatar (Core Entity)
+// ==============================================
+
+model Avatar {
+  id              String       @id @default(uuid())
+  userId          String       @map("user_id")
+  name            String
+  role            String       @default("sns_marketer")
+  specialization  String?
+  targetAudience  String?      @map("target_audience")
+  status          AvatarStatus @default(ACTIVE)
+  description     String?
+  avatarImageUrl  String?      @map("avatar_image_url")
+  lastSyncAt      DateTime?    @map("last_sync_at")
+
+  // --- Persona Engine (Monster v4) ---
+  personality     Json         @default("{}")
+  communication   Json         @default("{}")
+  intuition       Json         @default("{}")
+  moodScore       Float        @default(0.5) @map("mood_score")
+  moodUpdatedAt   DateTime     @default(now()) @map("mood_updated_at")
+  writingRules    Json         @default("{}") @map("writing_rules")
+
+  // --- Chrome Empire ---
+  chromeProfileId String?      @map("chrome_profile_id")
+  browserConfig   Json         @default("{}") @map("browser_config")
+
+  // --- Relations ---
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  identity        AvatarIdentity?
+  snsAccounts     SnsAccount[]
+  contents        Content[]
+  campaigns       Campaign[]
+  revenues        Revenue[]
+  analytics       AvatarAnalytics[]
+  automationRules AutomationRule[]
+  activityLogs    ActivityLog[]
+  knowledgeItems  KnowledgeItem[]
+  improvementCycles ImprovementCycle[]
+  collabs           Collaboration[] @relation("CollabInitiator")
+  collabPartners    Collaboration[] @relation("CollabPartner")
+
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@map("avatars")
+}
+
+enum AvatarStatus {
+  ACTIVE
+  PAUSED
+  LEARNING
+  ERROR
+}
+
+// ==============================================
+// 3. Avatar Identity (Email / Google Account)
+// ==============================================
+
+model AvatarIdentity {
+  id              String   @id @default(uuid())
+  avatarId        String   @unique @map("avatar_id")
+
+  // Email
+  email           String   @unique
+  emailProvider   String   @map("email_provider") // custom_domain, gmail, outlook
+  emailPassword   String   @map("email_password") // Encrypted via CredentialVault
+
+  // Google Account (Optional)
+  googleAccountId String?  @map("google_account_id")
+  googlePassword  String?  @map("google_password") // Encrypted
+  recoveryEmail   String?  @map("recovery_email")
+  recoveryPhone   String?  @map("recovery_phone")
+
+  // Profile
+  displayName     String   @map("display_name")
+  bio             String?
+  avatarImageUrl  String?  @map("avatar_image_url")
+  createdVia      String   @default("manual") @map("created_via")
+
+  avatar          Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("avatar_identities")
+}
+
+// ==============================================
+// 4. SNS Account (OAuth / Session Auth)
+// ==============================================
+
+model SnsAccount {
+  id            String    @id @default(uuid())
+  avatarId      String    @map("avatar_id")
+  platform      String    // x, instagram, youtube, tiktok, note, threads, bluesky, zenn
+  authType      String    @map("auth_type") // oauth, session, app_password
+  accountName   String    @map("account_name")
+  accountId     String?   @map("account_id")
+  profileUrl    String?   @map("profile_url")
+
+  // OAuth (Encrypted)
+  accessToken   String?   @map("access_token")
+  refreshToken  String?   @map("refresh_token")
+  tokenExpiry   DateTime? @map("token_expiry")
+  oauthScopes   String?   @map("oauth_scopes")
+
+  // Session / Chrome (Encrypted)
+  sessionData   Json?     @map("session_data")
+
+  // Status
+  isActive      Boolean   @default(true) @map("is_active")
+  lastSyncAt    DateTime? @map("last_sync_at")
+  followerCount Int?      @map("follower_count")
+  followingCount Int?     @map("following_count")
+  healthScore   Int       @default(100) @map("health_score")
+  lastError     String?   @map("last_error")
+
+  avatar        Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([avatarId, platform, accountName])
+  @@map("sns_accounts")
+}
+
+// ==============================================
+// 5. Campaign (AI-Generated Plans)
+// ==============================================
+
+model Campaign {
+  id          String         @id @default(uuid())
+  avatarId    String         @map("avatar_id")
+  title       String
+  description String?
+  type        CampaignType   @default(ORGANIC)
+  status      CampaignStatus @default(DRAFT)
+  startDate   DateTime?      @map("start_date")
+  endDate     DateTime?      @map("end_date")
+
+  // AI metadata
+  aiGenerated Boolean        @default(false) @map("ai_generated")
+  trendData   Json?          @map("trend_data")
+  strategy    Json?          // Campaign strategy data
+
+  contents    Content[]
+  avatar      Avatar         @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  @@map("campaigns")
+}
+
+enum CampaignType {
+  ORGANIC
+  COLLAB
+  MONETIZE
+  TREND_HIJACK
+  SERIES
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+// ==============================================
+// 6. Content (Posts, Articles, etc.)
+// ==============================================
+
+model Content {
+  id                 String        @id @default(uuid())
+  avatarId           String        @map("avatar_id")
+  campaignId         String?       @map("campaign_id")
+  content            String        @db.Text
+  category           String        @default("viral")
+  platform           String        @default("x")
+  status             ContentStatus @default(DRAFT)
+  metadata           Json          @default("{}")
+
+  // Persona Engine
+  moodAtCreation     Float?        @map("mood_at_creation")
+  intuitionTriggered Boolean       @default(false) @map("intuition_triggered")
+  sparkType          String?       @map("spark_type")
+
+  // A/B Testing
+  variantGroup       String?       @map("variant_group")
+  variantLabel       String?       @map("variant_label")
+
+  // Publication
+  publishedAt        DateTime?     @map("published_at")
+  externalPostId     String?       @map("external_post_id")
+  postUrl            String?       @map("post_url")
+
+  // Engagement
+  engagement         Json          @default("{}") // { likes, retweets, comments, views, clicks }
+
+  scheduledPost      ScheduledPost?
+  avatar             Avatar        @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  campaign           Campaign?     @relation(fields: [campaignId], references: [id])
+
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  @@map("contents")
+}
+
+enum ContentStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  ARCHIVED
+}
+
+// ==============================================
+// 7. Scheduled Post
+// ==============================================
+
+model ScheduledPost {
+  id          String   @id @default(uuid())
+  contentId   String   @unique @map("content_id")
+  scheduledAt DateTime @map("scheduled_at")
+  status      String   @default("pending") // pending, processing, published, failed
+  attempts    Int      @default(0)
+  lastError   String?  @map("last_error")
+  publishedAt DateTime? @map("published_at")
+
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("scheduled_posts")
+}
+
+// ==============================================
+// 8. Revenue
+// ==============================================
+
+model Revenue {
+  id            String   @id @default(uuid())
+  avatarId      String   @map("avatar_id")
+  source        String   // stripe, paypal, note_tips, note_paid, amazon_affiliate, etc.
+  platform      String   // stripe, paypal, note, zenn, youtube, amazon, rakuten
+  amount        Float
+  currency      String   @default("JPY")
+  netAmount     Float?   @map("net_amount")
+  feeAmount     Float?   @map("fee_amount")
+  contentId     String?  @map("content_id")
+  campaignId    String?  @map("campaign_id")
+  externalRefId String?  @map("external_ref_id")
+  description   String?
+  status        String   @default("confirmed") // pending, confirmed, refunded
+  earnedAt      DateTime @map("earned_at")
+
+  avatar        Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("revenues")
+}
+
+// ==============================================
+// 9. Analytics
+// ==============================================
+
+model AvatarAnalytics {
+  id             String   @id @default(uuid())
+  avatarId       String   @map("avatar_id")
+  date           DateTime
+  platform       String
+
+  // Metrics
+  followers      Int      @default(0)
+  following      Int      @default(0)
+  posts          Int      @default(0)
+  impressions    Int      @default(0)
+  engagements    Int      @default(0)
+  engagementRate Float    @default(0) @map("engagement_rate")
+  clicks         Int      @default(0)
+  profileViews   Int      @default(0) @map("profile_views")
+
+  // AI Insights
+  aiInsights     Json?    @map("ai_insights")
+  suggestions    Json?
+
+  avatar         Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([avatarId, date, platform])
+  @@map("avatar_analytics")
+}
+
+// ==============================================
+// 10. Improvement Cycle
+// ==============================================
+
+model ImprovementCycle {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  triggerType String   @map("trigger_type") // scheduled, threshold, manual
+  analysis    Json
+  suggestions Json
+  applied     Json?
+  status      String   @default("pending") // pending, reviewed, applied, dismissed
+  impact      Json?
+
+  avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("improvement_cycles")
+}
+
+// ==============================================
+// 11. Automation Rules
+// ==============================================
+
+model AutomationRule {
+  id           String   @id @default(uuid())
+  avatarId     String   @map("avatar_id")
+  name         String
+  description  String?
+  category     String   @default("posting") // posting, knowledge, monetize, safety, analytics
+  isActive     Boolean  @default(true) @map("is_active")
+
+  // Trigger → Action
+  triggerType  String   @map("trigger_type")  // schedule, threshold, event, manual
+  triggerConfig Json    @map("trigger_config") // { cron, threshold, eventType, ... }
+  actionType   String   @map("action_type")   // post, generate, scrape, notify, ...
+  actionConfig Json     @map("action_config")
+
+  // Stats
+  executionCount Int    @default(0) @map("execution_count")
+  lastExecutedAt DateTime? @map("last_executed_at")
+  lastError      String?  @map("last_error")
+
+  avatar       Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("automation_rules")
+}
+
+// ==============================================
+// 12. Activity Log
+// ==============================================
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  avatarId    String?  @map("avatar_id")
+  action      String   // content_generated, post_published, trend_detected, error, ...
+  category    String   @default("system") // system, content, sns, revenue, security
+  description String
+  metadata    Json     @default("{}")
+  level       String   @default("info") // info, warning, error, success
+
+  avatar      Avatar?  @relation(fields: [avatarId], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([avatarId, createdAt])
+  @@index([category, createdAt])
+  @@map("activity_logs")
+}
+
+// ==============================================
+// 13. Knowledge Base
+// ==============================================
+
+model KnowledgeItem {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  title       String
+  source      String   // url, arxiv, book, manual
+  sourceUrl   String?  @map("source_url")
+  content     String?  @db.Text
+  summary     String?
+  tags        Json     @default("[]")
+  category    String   @default("general")
+  freshness   DateTime @default(now()) // Last verified/updated
+  isActive    Boolean  @default(true) @map("is_active")
+
+  avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("knowledge_items")
+}
+
+// ==============================================
+// 14. Chrome Empire
+// ==============================================
+
+model ChromeProfile {
+  id            String   @id @default(uuid())
+  avatarId      String?  @map("avatar_id")
+  name          String
+  userAgent     String   @map("user_agent")
+  viewport      Json     @default("{\"width\": 1920, \"height\": 1080}")
+  proxy         Json?    // { server, username, password }
+  fingerprint   Json     @default("{}") // timezone, locale, platform
+  storageDir    String   @map("storage_dir")
+  isActive      Boolean  @default(true) @map("is_active")
+
+  // Runtime status (not persisted between restarts)
+  lastUsedAt    DateTime? @map("last_used_at")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("chrome_profiles")
+}
+
+// ==============================================
+// 15. Audit Log (Security)
+// ==============================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  action      String   // credential_accessed, credential_changed, avatar_created, login, ...
+  resource    String   // avatar, sns_account, credential, system
+  resourceId  String?  @map("resource_id")
+  details     Json     @default("{}")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent_string")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+// ==============================================
+// 16. Collaboration (v2 integration)
+// ==============================================
+
+model Collaboration {
+  id          String    @id @default(uuid())
+  initiatorId String    @map("initiator_id")
+  partnerId   String    @map("partner_id")
+  title       String
+  description String?
+  status      String    @default("PROPOSED") // PROPOSED | IN_PROGRESS | COMPLETED | CANCELLED
+  platform    String?
+  startDate   DateTime? @map("start_date")
+  endDate     DateTime? @map("end_date")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  initiator Avatar @relation("CollabInitiator", fields: [initiatorId], references: [id])
+  partner   Avatar @relation("CollabPartner", fields: [partnerId], references: [id])
+
+  @@map("collaborations")
+}
