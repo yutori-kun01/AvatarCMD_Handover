@@ -14,7 +14,6 @@ dist/
 # Database
 *.db
 *.db-journal
-prisma/migrations/
 
 # IDE
 .vscode/

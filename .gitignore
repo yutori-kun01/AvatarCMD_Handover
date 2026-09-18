@@ -26,6 +26,6 @@ Thumbs.db
 # Docker
 docker-data/
 
-# Lock files (large)
+# Lock files
+# pnpm-lock.yaml は再現可能なインストールのため意図的にコミットする
 package-lock.json
-pnpm-lock.yaml

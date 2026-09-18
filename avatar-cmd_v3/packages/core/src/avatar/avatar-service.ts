@@ -88,9 +88,9 @@ export class AvatarService {
         name: input.name,
         role: input.role ?? "sns_marketer",
         description: input.description,
-        personality: input.personality ?? {},
-        communication: input.communication ?? {},
-        writingRules: input.writingRules ?? {},
+        personality: (input.personality ?? {}) as Prisma.InputJsonValue,
+        communication: (input.communication ?? {}) as Prisma.InputJsonValue,
+        writingRules: (input.writingRules ?? {}) as Prisma.InputJsonValue,
       },
     });
 
@@ -118,9 +118,12 @@ export class AvatarService {
     if (input.role !== undefined) data.role = input.role;
     if (input.description !== undefined) data.description = input.description;
     if (input.status !== undefined) data.status = input.status;
-    if (input.personality !== undefined) data.personality = input.personality;
-    if (input.communication !== undefined) data.communication = input.communication;
-    if (input.writingRules !== undefined) data.writingRules = input.writingRules;
+    if (input.personality !== undefined)
+      data.personality = input.personality as Prisma.InputJsonValue;
+    if (input.communication !== undefined)
+      data.communication = input.communication as Prisma.InputJsonValue;
+    if (input.writingRules !== undefined)
+      data.writingRules = input.writingRules as Prisma.InputJsonValue;
 
     return prisma.avatar.update({
       where: { id },

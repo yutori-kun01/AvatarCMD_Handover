@@ -1,6 +1,5 @@
-import { PrismaClient } from "@prisma/client";
-// 実際の利用時には依存注入等でPrismaインスタンスを渡すか、グローバルから取得
-const prisma = new PrismaClient();
+// モノレポ共通の Prisma シングルトンを利用する（接続プールの重複を避ける）
+import { prisma } from "@avatar-cmd/db";
 
 // シンプルなインメモリキューのダミー実装
 // ※ 本番環境では BullMQ + Redis, Temporal あるいは Prisma ベースのキューを推奨

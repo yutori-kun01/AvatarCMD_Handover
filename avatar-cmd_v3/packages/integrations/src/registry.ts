@@ -4,7 +4,13 @@
 // Central registry for all SNS providers.
 // Postiz-inspired plugin architecture.
 
-import type { Platform, SnsProvider, RateLimitConfig, RateLimitState } from "./provider";
+import type {
+  AuthType,
+  Platform,
+  SnsProvider,
+  RateLimitConfig,
+  RateLimitState,
+} from "./provider";
 
 const DEFAULT_RATE_LIMITS: Record<Platform, RateLimitConfig> = {
   x: { maxRequests: 50, windowMs: 15 * 60 * 1000, retryAfterMs: 60_000 },
@@ -19,6 +25,11 @@ const DEFAULT_RATE_LIMITS: Record<Platform, RateLimitConfig> = {
   reddit: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 60_000 },
   medium: { maxRequests: 10, windowMs: 60 * 60 * 1000, retryAfterMs: 300_000 },
   substack: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
+  facebook: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 300_000 },
+  wordpress: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 120_000 },
+  // ameba / stand.fm はブラウザ操作のみ。BAN回避のため意図的に低め。
+  ameba: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
+  standfm: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
 };
 
 export class ProviderRegistry {
@@ -55,7 +66,7 @@ export class ProviderRegistry {
     platform: Platform;
     displayName: string;
     icon: string;
-    authType: string;
+    authType: AuthType;
     maxPostLength: number;
     supportsMedia: boolean;
   }[] {
@@ -63,7 +74,7 @@ export class ProviderRegistry {
       platform: p.platform,
       displayName: p.displayName,
       icon: p.icon,
-      authType: p.authType,
+      authType: p.authConfig.primary,
       maxPostLength: p.maxPostLength,
       supportsMedia: p.supportsMedia,
     }));

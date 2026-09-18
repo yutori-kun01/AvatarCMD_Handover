@@ -6,7 +6,7 @@
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { ProfileManager } from "./profile";
 import {
   type ChromeEmpireConfig,
@@ -120,7 +120,7 @@ export class ChromeEmpire {
         locale: profile.fingerprint.locale,
         timezoneId: profile.fingerprint.timezone,
         ...(profile.proxy && { proxy: profile.proxy }),
-        storageState: this.getStorageStatePath(profile),
+        storageState: this.getExistingStorageStatePath(profile),
       });
 
       // Apply stealth patches if enabled
@@ -374,16 +374,21 @@ export class ChromeEmpire {
     try {
       const statePath = this.getStorageStatePath(instance.profile);
       const state = await instance.context.storageState();
-      const { writeFileSync } = require("fs") as typeof import("fs");
+      mkdirSync(instance.profile.storageDir, { recursive: true });
       writeFileSync(statePath, JSON.stringify(state), "utf-8");
     } catch {
       // Best-effort save
     }
   }
 
-  private getStorageStatePath(profile: ChromeProfile): string | undefined {
-    const path = `${profile.storageDir}/session-state.json`;
-    const { existsSync } = require("fs") as typeof import("fs");
+  private getStorageStatePath(profile: ChromeProfile): string {
+    return `${profile.storageDir}/session-state.json`;
+  }
+
+  /** Returns the saved session-state path only when it already exists, so a
+   *  fresh profile starts with a clean context instead of failing to load. */
+  private getExistingStorageStatePath(profile: ChromeProfile): string | undefined {
+    const path = this.getStorageStatePath(profile);
     return existsSync(path) ? path : undefined;
   }
 

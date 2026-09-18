@@ -1,10 +1,8 @@
 import { Job } from "./orchestrator";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@avatar-cmd/db";
 import { readAvatarFile } from "../persona/soul-engine";
 import { generatePostContent } from "../ai/router";
 // import cheerio for future HTML parsing, but for now fallback to fetch text
-
-const prisma = new PrismaClient();
 
 export async function processJob(job: Job): Promise<void> {
   const { type, payload } = job;
