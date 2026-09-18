@@ -6,13 +6,15 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rimraf dist node_modules"
+    "clean": "rimraf dist node_modules",
+    "check:security": "tsx scripts/security-check.mts"
   },
   "dependencies": {
     "@avatar-cmd/db": "workspace:*",
     "@google/genai": "^2.21.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.0"
   }
 }

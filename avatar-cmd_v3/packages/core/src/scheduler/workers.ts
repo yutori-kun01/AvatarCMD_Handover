@@ -2,6 +2,7 @@ import { Job } from "./orchestrator";
 import { prisma } from "@avatar-cmd/db";
 import { readAvatarFile } from "../persona/soul-engine";
 import { generatePostContent } from "../ai/router";
+import { safeFetch, SsrfBlockedError } from "../security/url-guard";
 // import cheerio for future HTML parsing, but for now fallback to fetch text
 
 export async function processJob(job: Job): Promise<void> {
@@ -83,7 +84,7 @@ async function handleGeneratePost(payload: any) {
       action: "automation_completed",
       category: "content",
       description: `新しい下書きを作成しました: ${generatedText.slice(0, 40)}...`,
-      metadata: JSON.stringify({
+      metadata: {
         model: "gemini-2.5-flash",
         promptChars: fullPromptLength,
         outputChars: generatedText.length,
@@ -91,7 +92,7 @@ async function handleGeneratePost(payload: any) {
         knowledgeItems: recentKnowledge.length,
         postId: post.id,
         automationId: payload.automationId || null,
-      }),
+      },
     },
   });
   
@@ -123,10 +124,10 @@ async function handleFetchKnowledge(payload: any) {
   });
 
   try {
-    const res = await fetch(url);
+    // 内部ネットワーク・クラウドメタデータへの到達を遮断する
+    const res = await safeFetch(url);
     if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-    
-    // SSRF対策などが必要だが簡易版として実装
+
     const html = await res.text();
     const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
     const bodyContent = bodyMatch ? bodyMatch[1] : html;
@@ -157,13 +158,17 @@ async function handleFetchKnowledge(payload: any) {
     });
 
   } catch (error: any) {
+    const blocked = error instanceof SsrfBlockedError;
     console.error(`[Worker] Failed to fetch knowledge: ${error.message}`);
     await prisma.activityLog.create({
       data: {
         avatarId,
-        action: "error",
-        category: "system",
-        description: `${url} の取得に失敗しました: ${error.message}`,
+        action: blocked ? "security_blocked" : "error",
+        category: "security",
+        description: blocked
+          ? `${url} はSSRF防御により拒否されました: ${error.message}`
+          : `${url} の取得に失敗しました: ${error.message}`,
+        level: blocked ? "warning" : "error",
       },
     });
   }

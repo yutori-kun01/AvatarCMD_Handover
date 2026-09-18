@@ -6,6 +6,17 @@ const AVATARS_DIR = process.env.AVATAR_DATA_DIR
   || path.join(process.cwd(), "..", "..", "data", "avatars");
 const TEMPLATE_DIR = path.join(AVATARS_DIR, "_template");
 
+/** 編集を許可するファイル名のホワイトリスト */
+export const EDITABLE_AVATAR_FILES = ["soul.md", "identity.md", "rules.md"] as const;
+export type EditableAvatarFile = (typeof EDITABLE_AVATAR_FILES)[number];
+
+export class InvalidAvatarPathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAvatarPathError";
+  }
+}
+
 export interface AvatarFile {
   filename: string;
   content: string;
@@ -17,6 +28,32 @@ export interface AvatarFile {
  */
 export function getAvatarDirPath(avatarId: string): string {
   return path.join(AVATARS_DIR, avatarId);
+}
+
+/**
+ * avatarId / filename を検証し、アバターディレクトリ内の絶対パスを返す。
+ * `..` や絶対パス、シンボリックリンクを狙った脱出を遮断する。
+ * 計画書「6. セキュリティ対策 / 3. ファイルパストラバーサル防御」に対応。
+ */
+export function resolveAvatarFilePath(avatarId: string, filename: string): string {
+  // avatarId は DB の uuid のみを想定。区切り文字は一切許可しない。
+  if (!/^[A-Za-z0-9_-]+$/.test(avatarId)) {
+    throw new InvalidAvatarPathError(`不正なavatarIdです: ${avatarId}`);
+  }
+
+  if (!EDITABLE_AVATAR_FILES.includes(filename as EditableAvatarFile)) {
+    throw new InvalidAvatarPathError(`許可されていないファイル名です: ${filename}`);
+  }
+
+  const dirPath = path.resolve(getAvatarDirPath(avatarId));
+  const filePath = path.resolve(dirPath, filename);
+
+  // ホワイトリスト通過後の最終確認（多層防御）
+  if (filePath !== path.join(dirPath, filename)) {
+    throw new InvalidAvatarPathError(`ディレクトリ外へのアクセスです: ${filename}`);
+  }
+
+  return filePath;
 }
 
 /**
@@ -61,9 +98,9 @@ export async function ensureAvatarDirectory(avatarId: string): Promise<void> {
  * 指定したアバターのファイルを読み込む
  */
 export async function readAvatarFile(avatarId: string, filename: string): Promise<string | null> {
+  const filePath = resolveAvatarFilePath(avatarId, filename);
   await ensureAvatarDirectory(avatarId);
-  const filePath = path.join(getAvatarDirPath(avatarId), filename);
-  
+
   try {
     return await fs.readFile(filePath, "utf-8");
   } catch {
@@ -75,14 +112,8 @@ export async function readAvatarFile(avatarId: string, filename: string): Promis
  * 指定したアバターのファイルを保存する
  */
 export async function writeAvatarFile(avatarId: string, filename: string, content: string): Promise<void> {
+  const filePath = resolveAvatarFilePath(avatarId, filename);
   await ensureAvatarDirectory(avatarId);
-  const filePath = path.join(getAvatarDirPath(avatarId), filename);
-  
-  // ディレクトリトラバーサル防止の簡易チェック
-  if (filename.includes("..") || filename.includes("/")) {
-    throw new Error("Invalid filename");
-  }
-  
   await fs.writeFile(filePath, content, "utf-8");
 }
 
@@ -93,7 +124,7 @@ export async function listAvatarFiles(avatarId: string): Promise<AvatarFile[]> {
   await ensureAvatarDirectory(avatarId);
   const dirPath = getAvatarDirPath(avatarId);
   
-  const filesToRead = ["soul.md", "identity.md", "rules.md"];
+  const filesToRead = EDITABLE_AVATAR_FILES;
   const result: AvatarFile[] = [];
   
   for (const filename of filesToRead) {

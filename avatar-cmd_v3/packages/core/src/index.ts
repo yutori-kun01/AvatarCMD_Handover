@@ -20,3 +20,20 @@ export { SchedulerService, type ScheduledJob, type SchedulerStats, type Schedule
 // Phase 7: AI & Soul Engine (from V2 integration)
 export * from "./ai/router";
 export * from "./persona/soul-engine";
+
+// Phase 7: Orchestrator & Workers (from V2 integration)
+export {
+  orchestrator,
+  type Job,
+  type JobType,
+  type JobPayload,
+} from "./scheduler/orchestrator";
+export { processJob } from "./scheduler/workers";
+
+// Security: SSRF guard
+export {
+  assertPublicUrl,
+  safeFetch,
+  isBlockedAddress,
+  SsrfBlockedError,
+} from "./security/url-guard";
