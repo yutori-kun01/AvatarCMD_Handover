@@ -1,0 +1,31 @@
+# ビルドコンテキストから除外するもの
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+.turbo
+**/.turbo
+
+# 生成物（イメージ内で prisma generate を実行する）
+packages/db/generated
+
+# ランタイムデータ（named volume でマウントする）
+data
+chrome-profiles
+chrome-sessions
+docker-data
+
+# 環境変数（compose の env_file で渡す）
+.env
+.env.local
+.env.*.local
+
+*.tsbuildinfo
+**/*.tsbuildinfo
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store

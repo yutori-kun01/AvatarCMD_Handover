@@ -51,7 +51,8 @@
 - **データベース**: PostgreSQL 16, Prisma ORM
 - **キャッシュ/キュー**: Redis 7
 - **AI/LLM**: `@google/genai` (Gemini 2.5 Flash)
-- **自動化/インフラ**: Playwright (Chromium), Docker, Traefik
+- **自動化/インフラ**: Playwright (Chromium), Docker, Cloudflare Tunnel
+  （当初は Traefik + Let's Encrypt を想定していたが、公開経路を Cloudflare Tunnel に変更。詳細は `avatar-cmd_v3/docs/DEPLOY.md`）
 
 ```mermaid
 graph TB
@@ -207,7 +208,7 @@ v3は `/` がダッシュボードでしたが、v2は `/` がマーケティン
 ### Phase 4: デプロイ準備とインフラ構築 (1週間)
 - Docker Compose の設定更新（Soul Engine用ボリュームマウントの追加等）。
 - VPS環境（Xserver VPS等）へのステージング・デプロイ。
-- Traefik を用いた HTTPS 自動化。
+- ~~Traefik を用いた HTTPS 自動化~~ → Cloudflare Tunnel で公開（TLS 終端と証明書は Cloudflare 側が担当）。VPS の 80/443 は開けない。
 - 最終動作確認と `walkthrough.md` の作成。
 
 ---

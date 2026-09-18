@@ -6,10 +6,11 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "start": "node dist/worker.js"
   },
   "dependencies": {
-    "playwright": "^1.52.0"
+    "playwright": "1.63.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

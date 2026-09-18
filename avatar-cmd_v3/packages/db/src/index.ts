@@ -1,7 +1,7 @@
 // @avatar-cmd/db — Prisma Client re-export
 // Single source of truth for database access across the monorepo
 
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../generated/client";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -21,5 +21,5 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 // Re-export all types
-export * from "@prisma/client";
+export * from "../generated/client";
 export { PrismaClient };

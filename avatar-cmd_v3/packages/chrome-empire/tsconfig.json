@@ -2,7 +2,13 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // dist/worker.js を node で直接起動するため CommonJS で出力する。
+    // ルート設定は module: ESNext だが、package.json に type: module がなく
+    // moduleResolution: bundler は相対 import に拡張子を付けないため
+    // そのままでは ESM として実行できない。
+    "module": "commonjs",
+    "moduleResolution": "node"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

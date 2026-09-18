@@ -7,6 +7,13 @@
 
 generator client {
   provider = "prisma-client-js"
+  // 既定の出力先は node_modules/.pnpm 配下のハッシュ付きパスになり、
+  // Docker イメージへコピーできない。ワークスペース内の固定パスに出す。
+  // Next.js の standalone 出力は @prisma/client を外部依存として扱うため、
+  // クエリエンジンをトレースに含めてくれない。
+  output   = "../generated/client"
+  // native = ローカル開発 / linux-musl-openssl-3.0.x = node:20-alpine
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {

@@ -156,34 +156,42 @@ avatar-cmd/
 
 ---
 
-## VPSデプロイ手順
+## デプロイ
 
-> 対象VPS: Xserver VPS (AMD EPYC 6-core, 12GB RAM, Ubuntu 22.04, Traefik + Portainer稼働中)
+公開経路は **Cloudflare Tunnel**。VPS 側で 80/443 は開けず、`cloudflared`
+コンテナが Cloudflare エッジへ外向き接続を張り、内部ネットワーク越しに
+`web:3000` へ転送します。TLS 終端と証明書は Cloudflare 側が担うため
+Traefik と Let's Encrypt は使いません。
 
-### Step 1: プロジェクト転送
-
-```bash
-# ローカルからVPSへプロジェクトを転送 (rsyncまたはscp)
-rsync -avz --exclude node_modules --exclude .next \
-  /c/Users/retim/Desktop/OpenClaw/01_開発/avatar-cmd/ \
-  user@vps:/opt/avatar-cmd/
-```
-
-### Step 2: Docker Compose で起動
-
-`docker-compose.yml` をプロジェクトルートに作成（後述の docker-compose.yml 参照）。
+手順の詳細は **[docs/DEPLOY.md](docs/DEPLOY.md)** を参照してください。
+Cloudflare 側の設定、必須の環境変数、初期管理者の作成、バックアップ、
+トラブルシューティング、未実装の制約までそちらにまとめてあります。
 
 ```bash
-ssh user@vps
-cd /opt/avatar-cmd
-cp .env.example .env
-# .env を編集（DB接続先、APIキー等）
-docker compose up -d
+# 概要のみ
+cp .env.example .env     # TUNNEL_TOKEN / AUTH_SECRET / AUTH_URL / DB_PASSWORD を設定
+docker compose build
+docker compose up -d     # db → migrate → web → cloudflared の順に起動
 ```
 
-### Step 3: Traefik連携
+### Compose のサービス構成
 
-既存のTraefikネットワークに接続する場合は、docker-compose.yml内の `traefik-net` を既存のネットワーク名に変更。
+| サービス | 役割 | 外部公開 |
+|---------|------|---------|
+| `cloudflared` | Cloudflare Tunnel のコネクタ | 外向き接続のみ |
+| `web` | Next.js ダッシュボード / API | なし（tunnel 経由） |
+| `migrate` | `prisma migrate deploy`（ワンショット） | なし |
+| `db` | PostgreSQL 16 | なし |
+| `redis` | キャッシュ（※現状未使用） | なし |
+| `chrome-empire` | Playwright ワーカー | なし |
+
+### Docker イメージのターゲット
+
+`Dockerfile` はマルチステージで 3 つのターゲットを持ちます。
+
+- `web` … Next.js standalone + Prisma のクエリエンジン
+- `migrator` … マイグレーションとシード実行用
+- `chrome-empire` … Playwright ブラウザ同梱イメージ上のワーカー
 
 ---
 
@@ -196,8 +204,11 @@ REDIS_URL=redis://redis:6379
 
 # --- Security ---
 MASTER_KEY=<your-master-key-here>
-NEXTAUTH_SECRET=<nextauth-secret>
-NEXTAUTH_URL=https://avatar-cmd.your-domain.com
+AUTH_SECRET=<openssl rand -base64 32>
+AUTH_URL=https://avatar-cmd.your-domain.com
+
+# --- Cloudflare Tunnel ---
+TUNNEL_TOKEN=<Zero Trust で発行したコネクタトークン>
 
 # --- SNS API Keys (暗号化して保存するため、初期設定のみ) ---
 X_CLIENT_ID=

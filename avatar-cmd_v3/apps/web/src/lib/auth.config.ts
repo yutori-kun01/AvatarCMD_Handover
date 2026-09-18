@@ -9,7 +9,14 @@ import type { NextAuthConfig } from "next-auth";
 import type { UserRole } from "@avatar-cmd/db";
 
 /** 未認証でもアクセスできるパス（マーケティングLP・ブログ・認証API） */
-const PUBLIC_PATHS = ["/", "/login", "/blog", "/api/auth"];
+const PUBLIC_PATHS = [
+  "/",
+  "/login",
+  "/blog",
+  "/api/auth",
+  // コンテナのヘルスチェックから認証なしで叩く
+  "/api/health",
+];
 
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(

@@ -35,3 +35,6 @@ data/avatars/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Prisma 生成物（ビルド時に prisma generate で作る）
+packages/db/generated/

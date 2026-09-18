@@ -1,40 +1,84 @@
 # ============================================
 # Avatar CMD v3 — Docker Compose (Production)
 # ============================================
-# VPS: Ubuntu 22.04, Traefik + Portainer 稼働中
+# 公開は Cloudflare Tunnel 経由。
+# ホストの 80/443 は開けず、web はホストにポートを公開しない
+# （cloudflared が内部ネットワーク越しに web:3000 へ転送する）。
+# TLS 終端と証明書は Cloudflare 側が担うため Traefik は使わない。
 # ============================================
 
 services:
+  # ─── Cloudflare Tunnel ───
+  # Zero Trust ダッシュボードで作成したトンネルのトークンを渡す。
+  # Public hostname を avatar-cmd.<DOMAIN> → http://web:3000 に向ける。
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: avatar-cmd-tunnel
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN:?TUNNEL_TOKEN is required}"]
+    networks:
+      - internal
+    depends_on:
+      web:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'
+
+  # ─── DB マイグレーション (ワンショット) ───
+  # web より先に実行し、完了を待ってから web を起動する。
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    container_name: avatar-cmd-migrate
+    restart: "no"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+
   # ─── Web Dashboard ───
   web:
     build:
       context: .
       dockerfile: Dockerfile
+      target: web
     container_name: avatar-cmd-web
     restart: unless-stopped
     env_file: .env
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-      - NEXTAUTH_URL=${NEXTAUTH_URL}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-    ports:
-      - "3333:3000"
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+      - AUTH_SECRET=${AUTH_SECRET:?AUTH_SECRET is required}
+      - AUTH_URL=${AUTH_URL:?AUTH_URL is required}
+      # Cloudflare Tunnel 越しなので Host ヘッダを信頼する必要がある
+      - AUTH_TRUST_HOST=true
+      - AVATAR_DATA_DIR=/app/data/avatars
+    volumes:
+      # Soul Engine のアバターファイル。コンテナ再起動で失わないよう永続化する
+      - avatar-data:/app/data/avatars
     networks:
       - internal
-      - traefik-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    labels:
-      # ── Traefik Labels ──
-      - "traefik.enable=true"
-      - "traefik.http.routers.avatar-cmd.rule=Host(`avatar-cmd.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.avatar-cmd.entrypoints=websecure"
-      - "traefik.http.routers.avatar-cmd.tls.certresolver=letsencrypt"
-      - "traefik.http.services.avatar-cmd.loadbalancer.server.port=3000"
+      migrate:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
@@ -47,15 +91,15 @@ services:
     container_name: avatar-cmd-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: avatar_cmd
-      POSTGRES_USER: avatar
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-avatar_cmd}
+      POSTGRES_USER: ${DB_USER:-avatar}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - db-data:/var/lib/postgresql/data
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U avatar -d avatar_cmd"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-avatar} -d ${DB_NAME:-avatar_cmd}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,7 +109,9 @@ services:
           memory: 512M
           cpus: '0.5'
 
-  # ─── Redis (Queue + Cache) ───
+  # ─── Redis (Cache) ───
+  # 注意: 現状のジョブキューは web プロセス内のインメモリ実装
+  # (packages/core/scheduler/orchestrator.ts)。Redis はまだ使われていない。
   redis:
     image: redis:7-alpine
     container_name: avatar-cmd-redis
@@ -88,43 +134,45 @@ services:
 
   # ─── Chrome Empire (Playwright) ───
   chrome-empire:
-    image: mcr.microsoft.com/playwright:v1.49.1-jammy
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: chrome-empire
     container_name: avatar-cmd-chrome
     restart: unless-stopped
-    working_dir: /app
-    command: ["node", "packages/chrome-empire/dist/worker.js"]
     environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL}
       - CHROME_POOL_SIZE=${CHROME_POOL_SIZE:-3}
-      - CHROME_HEADLESS=true
+      - CHROME_HEADLESS=${CHROME_HEADLESS:-true}
+      - CHROME_STEALTH=${CHROME_STEALTH:-true}
+      - CHROME_STORAGE_DIR=/app/data/profiles
     volumes:
       - chrome-sessions:/app/data/sessions
       - chrome-profiles:/app/data/profiles
     networks:
       - internal
-      - chrome-net
+    # Chromium は /dev/shm を使うため共有メモリを増やす
     shm_size: '2gb'
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 3G
           cpus: '3.0'
-    depends_on:
-      redis:
-        condition: service_healthy
 
 networks:
+  # 全サービスはこの内部ネットワークのみで通信する。
+  # 外部公開は cloudflared だけが担う。
   internal:
     driver: bridge
-  chrome-net:
-    driver: bridge
-    internal: true  # 外部アクセス遮断
-  traefik-net:
-    external: true  # 既存Traefikネットワーク
 
 volumes:
   db-data:
   redis-data:
+  avatar-data:
   chrome-sessions:
   chrome-profiles:

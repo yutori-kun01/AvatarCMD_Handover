@@ -18,7 +18,10 @@ import { authConfig } from "@/lib/auth.config";
 // pnpm 環境では NextAuth() の戻り値を推論できない (TS2742) ため明示的に注釈する
 const nextAuth: NextAuthResult = NextAuth({
   ...authConfig,
-  adapter: PrismaAdapter(prisma),
+  // 生成先を packages/db/generated/client に固定しているため、アダプタが
+  // 期待する @prisma/client の PrismaClient とは名目上別の型になる。
+  // 実体は同じクライアントなので、ここだけ型を合わせる。
+  adapter: PrismaAdapter(prisma as unknown as Parameters<typeof PrismaAdapter>[0]),
   providers: [
     Credentials({
       credentials: {
