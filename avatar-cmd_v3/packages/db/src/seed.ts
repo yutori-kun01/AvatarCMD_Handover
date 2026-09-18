@@ -2,6 +2,8 @@
 // Seeds the database with default avatars for development
 
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import { randomBytes } from "crypto";
 
 const prisma = new PrismaClient();
 
@@ -9,17 +11,31 @@ async function main() {
   console.log("🌱 Seeding Avatar CMD database...");
 
   // Create default user
+  // 開発用の初期パスワードは SEED_ADMIN_PASSWORD で指定する。
+  // 未指定の場合はランダム生成し、コンソールに1度だけ表示する
+  // （固定の既定パスワードを埋め込むと本番に持ち込まれる恐れがあるため）。
+  const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@avatar-cmd.local";
+  const providedPassword = process.env.SEED_ADMIN_PASSWORD;
+  const adminPassword = providedPassword ?? randomBytes(18).toString("base64url");
+  const passwordHash = await bcrypt.hash(adminPassword, 12);
+
   const user = await prisma.user.upsert({
-    where: { email: "admin@avatar-cmd.local" },
-    update: {},
+    where: { email: adminEmail },
+    update: { passwordHash },
     create: {
-      email: "admin@avatar-cmd.local",
+      email: adminEmail,
       name: "Admin",
       role: "OWNER",
+      passwordHash,
     },
   });
 
   console.log(`  ✅ User: ${user.email}`);
+  if (providedPassword) {
+    console.log("     パスワードは SEED_ADMIN_PASSWORD の値で設定しました");
+  } else {
+    console.log(`     初期パスワード (この表示のみ): ${adminPassword}`);
+  }
 
   // Default Avatars (from Avatar CMD v2 spec)
   const avatars = [

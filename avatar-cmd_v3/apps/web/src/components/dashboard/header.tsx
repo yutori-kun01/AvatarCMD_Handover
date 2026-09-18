@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bell, Search, Plus, ArrowLeft } from "lucide-react"
+import { Bell, Search, Plus, ArrowLeft, LogOut } from "lucide-react"
 
 const pageTitles: Record<string, { title: string; description: string }> = {
   "/dashboard": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
@@ -16,16 +16,29 @@ const pageTitles: Record<string, { title: string; description: string }> = {
   "/dashboard/settings": { title: "設定", description: "システム全体の設定" },
 }
 
+export interface HeaderUser {
+  name: string
+  email: string
+  role: string
+}
+
 interface HeaderProps {
   title?: string
   description?: string
+  /** ログイン中のユーザー。レイアウト側がセッションから渡す */
+  user?: HeaderUser
+  /** ログアウト用のサーバーアクション */
+  onSignOut?: () => Promise<void>
 }
 
-export function Header({ title, description }: HeaderProps) {
+export function Header({ title, description, user, onSignOut }: HeaderProps) {
   const pathname = usePathname()
   const pageInfo = pageTitles[pathname] || { title: title || "Avatar CMD", description: description || "" }
   const displayTitle = title || pageInfo.title
   const displayDesc = description || pageInfo.description
+
+  const displayName = user?.name || user?.email || "ゲスト"
+  const initials = displayName.slice(0, 2).toUpperCase()
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-white/[0.08] bg-[#0a0a12]/80 backdrop-blur-xl px-6">
@@ -77,15 +90,27 @@ export function Header({ title, description }: HeaderProps) {
 
         <div className="flex items-center gap-2 rounded-lg p-1.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500/20 text-xs font-semibold text-cyan-400">
-            TK
+            {initials}
           </div>
           <div className="hidden flex-col sm:flex">
-            <span className="text-xs font-medium">管理者</span>
+            <span className="text-xs font-medium">{displayName}</span>
             <span className="inline-flex items-center px-1.5 py-0 rounded border border-cyan-500/30 text-[9px] text-cyan-400 bg-cyan-500/10">
-              Pro
+              {user?.role ?? "GUEST"}
             </span>
           </div>
         </div>
+
+        {onSignOut && (
+          <form action={onSignOut}>
+            <button
+              type="submit"
+              title="ログアウト"
+              className="rounded-lg p-2 text-white/30 transition-colors hover:bg-white/[0.05] hover:text-white/70"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </form>
+        )}
       </div>
     </header>
   )

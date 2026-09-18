@@ -30,5 +30,8 @@ docker-data/
 chrome-profiles/
 chrome-sessions/
 
+# Soul Engine のアバターファイル（本番では名前付きボリュームにマウントする）
+data/avatars/
+
 # TypeScript incremental build info
 *.tsbuildinfo
