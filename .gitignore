@@ -29,3 +29,6 @@ docker-data/
 # Lock files
 # pnpm-lock.yaml は再現可能なインストールのため意図的にコミットする
 package-lock.json
+
+# TypeScript incremental build info
+*.tsbuildinfo

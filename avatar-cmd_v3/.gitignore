@@ -29,3 +29,6 @@ docker-data/
 # Chrome Empire
 chrome-profiles/
 chrome-sessions/
+
+# TypeScript incremental build info
+*.tsbuildinfo

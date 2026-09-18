@@ -24,14 +24,14 @@ const navItems: {
   href: string
   badge?: string
 }[] = [
-  { icon: LayoutDashboard, label: "ダッシュボード", href: "/" },
-  { icon: Users, label: "アバター管理", href: "/avatars", badge: "5" },
-  { icon: Activity, label: "アクティビティ", href: "/activity" },
-  { icon: MessageSquare, label: "SNS運用", href: "/sns" },
-  { icon: TrendingUp, label: "収益分析", href: "/revenue" },
-  { icon: Share2, label: "コラボ連携", href: "/collab" },
-  { icon: Brain, label: "知識ベース", href: "/knowledge" },
-  { icon: Zap, label: "自動化ルール", href: "/automation" },
+  { icon: LayoutDashboard, label: "ダッシュボード", href: "/dashboard" },
+  { icon: Users, label: "アバター管理", href: "/dashboard/avatars", badge: "5" },
+  { icon: Activity, label: "アクティビティ", href: "/dashboard/activity" },
+  { icon: MessageSquare, label: "SNS運用", href: "/dashboard/sns" },
+  { icon: TrendingUp, label: "収益分析", href: "/dashboard/revenue" },
+  { icon: Share2, label: "コラボ連携", href: "/dashboard/collab" },
+  { icon: Brain, label: "知識ベース", href: "/dashboard/knowledge" },
+  { icon: Zap, label: "自動化ルール", href: "/dashboard/automation" },
 ]
 
 interface SidebarProps {
@@ -68,7 +68,9 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-3">
         {navItems.map((item) => {
-          const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(item.href))
           return (
             <Link
               key={item.href}
@@ -116,10 +118,10 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
       {/* Bottom */}
       <div className="border-t border-white/[0.08] p-3">
         <Link
-          href="/settings"
+          href="/dashboard/settings"
           className={cn(
             "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors no-underline",
-            pathname === "/settings"
+            pathname === "/dashboard/settings"
               ? "bg-cyan-500/10 text-cyan-400"
               : "text-white/40 hover:bg-white/[0.05] hover:text-white/80"
           )}

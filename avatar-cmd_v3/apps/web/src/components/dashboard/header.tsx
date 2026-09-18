@@ -5,15 +5,15 @@ import { usePathname } from "next/navigation"
 import { Bell, Search, Plus, ArrowLeft } from "lucide-react"
 
 const pageTitles: Record<string, { title: string; description: string }> = {
-  "/": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
-  "/avatars": { title: "アバター管理", description: "全アバターの詳細設定と状態管理" },
-  "/activity": { title: "アクティビティ", description: "パフォーマンス分析 & 改善サイクル" },
-  "/sns": { title: "SNS運用", description: "プラットフォーム & コンテンツ管理" },
-  "/revenue": { title: "収益分析", description: "全アバター収益レポート" },
-  "/collab": { title: "コラボ連携", description: "アバター間の連携管理" },
-  "/knowledge": { title: "知識ベース", description: "学習データとナレッジソース管理" },
-  "/automation": { title: "自動化ルール", description: "タスク自動化の設定と管理" },
-  "/settings": { title: "設定", description: "システム全体の設定" },
+  "/dashboard": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
+  "/dashboard/avatars": { title: "アバター管理", description: "全アバターの詳細設定と状態管理" },
+  "/dashboard/activity": { title: "アクティビティ", description: "パフォーマンス分析 & 改善サイクル" },
+  "/dashboard/sns": { title: "SNS運用", description: "プラットフォーム & コンテンツ管理" },
+  "/dashboard/revenue": { title: "収益分析", description: "全アバター収益レポート" },
+  "/dashboard/collab": { title: "コラボ連携", description: "アバター間の連携管理" },
+  "/dashboard/knowledge": { title: "知識ベース", description: "学習データとナレッジソース管理" },
+  "/dashboard/automation": { title: "自動化ルール", description: "タスク自動化の設定と管理" },
+  "/dashboard/settings": { title: "設定", description: "システム全体の設定" },
 }
 
 interface HeaderProps {
@@ -30,9 +30,9 @@ export function Header({ title, description }: HeaderProps) {
   return (
     <header className="flex h-16 items-center justify-between border-b border-white/[0.08] bg-[#0a0a12]/80 backdrop-blur-xl px-6">
       <div className="flex items-center gap-3">
-        {pathname !== "/" && (
+        {pathname !== "/dashboard" && (
           <Link
-            href="/"
+            href="/dashboard"
             className="rounded-lg p-1.5 text-white/30 transition-colors hover:bg-white/[0.05] hover:text-white/70 no-underline"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -58,7 +58,7 @@ export function Header({ title, description }: HeaderProps) {
 
       <div className="flex items-center gap-3">
         <Link
-          href="/avatars"
+          href="/dashboard/avatars"
           className="gap-1.5 inline-flex items-center px-3 py-2 rounded-lg bg-gradient-to-r from-[#4f7cff] to-[#8b5cf6] text-sm font-medium text-white shadow-lg shadow-blue-500/20 hover:shadow-blue-500/40 hover:-translate-y-0.5 transition-all no-underline"
         >
           <Plus className="h-3.5 w-3.5" />
