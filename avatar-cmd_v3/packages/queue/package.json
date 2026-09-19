@@ -1,0 +1,18 @@
+{
+  "name": "@avatar-cmd/queue",
+  "version": "3.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rimraf dist node_modules"
+  },
+  "dependencies": {
+    "bullmq": "^5.34.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.13.11"
+  }
+}

@@ -7,14 +7,16 @@
   "scripts": {
     "build": "tsc",
     "clean": "rimraf dist node_modules",
-    "check:security": "tsx scripts/security-check.mts"
+    "check:security": "tsx scripts/security-check.mts",
+    "start:worker": "tsx src/scheduler/worker-main.ts"
   },
   "dependencies": {
     "@avatar-cmd/db": "workspace:*",
-    "@google/genai": "^2.21.0"
+    "@google/genai": "^2.21.0",
+    "@avatar-cmd/queue": "workspace:*",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "tsx": "^4.19.0"
+    "typescript": "^5.7.3"
   }
 }

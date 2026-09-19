@@ -201,6 +201,7 @@ v3は `/` がダッシュボードでしたが、v2は `/` がマーケティン
 
 ### Phase 3: 自律運用パイプラインの結合 (1.5週間)
 - v2の Orchestrator (Job Queue) と v3の SchedulerService の統合。Redisを活用した堅牢なジョブ管理。
+  → Orchestrator は BullMQ + Redis へ移行済み（`packages/queue`）。投入は web、処理は worker / chrome-empire に分離。定期実行（SchedulerService の cron 接続）は未対応。
 - Chrome Empire ワーカープロセスとの結合（Playwright コンテナへの通信）。
 - SSRF防御、認証(NextAuth)の組み込み。
 - **テスト・検証**: ジョブ投入からAI生成、SNS（モック）投稿までのE2E通しテスト。

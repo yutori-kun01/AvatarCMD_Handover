@@ -179,19 +179,32 @@ docker compose up -d     # db → migrate → web → cloudflared の順に起�
 | サービス | 役割 | 外部公開 |
 |---------|------|---------|
 | `cloudflared` | Cloudflare Tunnel のコネクタ | 外向き接続のみ |
-| `web` | Next.js ダッシュボード / API | なし（tunnel 経由） |
+| `web` | Next.js ダッシュボード / API（ジョブは投入のみ） | なし（tunnel 経由） |
+| `worker` | アプリジョブの処理（AI生成 / ナレッジ収集） | なし |
 | `migrate` | `prisma migrate deploy`（ワンショット） | なし |
 | `db` | PostgreSQL 16 | なし |
-| `redis` | キャッシュ（※現状未使用） | なし |
-| `chrome-empire` | Playwright ワーカー | なし |
+| `redis` | BullMQ ジョブキュー + キャッシュ | なし |
+| `chrome-empire` | Playwright ワーカー（ブラウザ操作） | なし |
 
 ### Docker イメージのターゲット
 
 `Dockerfile` はマルチステージで 3 つのターゲットを持ちます。
 
 - `web` … Next.js standalone + Prisma のクエリエンジン
+- `worker` … アプリジョブキューの消費（tsx で TS を直接実行）
 - `migrator` … マイグレーションとシード実行用
-- `chrome-empire` … Playwright ブラウザ同梱イメージ上のワーカー
+- `chrome-empire` … Playwright ブラウザ同梱イメージ上のワーカー（単一CJSにバンドル）
+
+### ジョブキュー
+
+`web` はジョブを Redis (BullMQ) に投入するだけで処理しません。
+処理は `worker`（AI生成・ナレッジ収集）と `chrome-empire`（ブラウザ操作）が行います。
+このため web を再起動しても未処理ジョブは失われず、web を複数レプリカにできます。
+
+| キュー | 投入 | 消費 |
+|-------|------|------|
+| `avatar-cmd-jobs` | web (`/api/queue/trigger`, `/api/knowledge`) | `worker` |
+| `avatar-cmd-browser` | （投入側は未実装） | `chrome-empire` |
 
 ---
 

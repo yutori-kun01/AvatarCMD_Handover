@@ -12,7 +12,7 @@ services:
   # Zero Trust ダッシュボードで作成したトンネルのトークンを渡す。
   # Public hostname を avatar-cmd.<DOMAIN> → http://web:3000 に向ける。
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.9.1
     container_name: avatar-cmd-tunnel
     restart: unless-stopped
     command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN:?TUNNEL_TOKEN is required}"]
@@ -61,6 +61,7 @@ services:
       # Cloudflare Tunnel 越しなので Host ヘッダを信頼する必要がある
       - AUTH_TRUST_HOST=true
       - AVATAR_DATA_DIR=/app/data/avatars
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
     volumes:
       # Soul Engine のアバターファイル。コンテナ再起動で失わないよう永続化する
       - avatar-data:/app/data/avatars
@@ -72,6 +73,48 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  # ─── Job Worker ───
+  # アプリジョブキュー (AI生成 / ナレッジ収集) を消費する常駐プロセス。
+  # web はジョブを投入するだけなので、web の再起動や
+  # レプリカ数に影響されずにジョブが処理される。
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: avatar-cmd-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+      - AVATAR_DATA_DIR=/app/data/avatars
+    volumes:
+      # Soul Engine のファイルを読むため web と同じボリュームを共有する
+      - avatar-data:/app/data/avatars
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       db:
         condition: service_healthy
@@ -109,14 +152,15 @@ services:
           memory: 512M
           cpus: '0.5'
 
-  # ─── Redis (Cache) ───
-  # 注意: 現状のジョブキューは web プロセス内のインメモリ実装
-  # (packages/core/scheduler/orchestrator.ts)。Redis はまだ使われていない。
+  # ─── Redis (ジョブキュー + キャッシュ) ───
+  # BullMQ のバックエンド。web が投入し、worker と chrome-empire が消費する。
+  # キューの内容を失わないため appendonly を有効にしている。
   redis:
     image: redis:7-alpine
     container_name: avatar-cmd-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    # キューのデータを退避させてはいけないので noeviction を使う
+    command: redis-server --appendonly yes --maxmemory 192mb --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
     networks:
@@ -129,7 +173,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 192M
+          memory: 256M
           cpus: '0.2'
 
   # ─── Chrome Empire (Playwright) ───
@@ -145,11 +189,16 @@ services:
       - CHROME_HEADLESS=${CHROME_HEADLESS:-true}
       - CHROME_STEALTH=${CHROME_STEALTH:-true}
       - CHROME_STORAGE_DIR=/app/data/profiles
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - BROWSER_CONCURRENCY=${BROWSER_CONCURRENCY:-1}
     volumes:
       - chrome-sessions:/app/data/sessions
       - chrome-profiles:/app/data/profiles
     networks:
       - internal
+    depends_on:
+      redis:
+        condition: service_healthy
     # Chromium は /dev/shm を使うため共有メモリを増やす
     shm_size: '2gb'
     healthcheck:

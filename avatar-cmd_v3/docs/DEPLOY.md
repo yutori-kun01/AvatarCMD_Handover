@@ -15,11 +15,16 @@
 Cloudflare エッジ（TLS 終端・WAF・DDoS 防御）
   │  トンネル（VPS からの外向き接続のみ）
   ▼
-cloudflared ──► web:3000 ─┬─► db:5432   (PostgreSQL 16)
-                           ├─► redis:6379
+cloudflared ──► web:3000 ─┬─► db:5432    (PostgreSQL 16)
+                           ├─► redis:6379 (BullMQ ジョブキュー)
                            └─  avatar-data ボリューム (Soul Engine)
-                   chrome-empire:4000 (Playwright, 外部非公開)
+
+redis:6379 ◄─┬─ worker:4100        (AI生成 / ナレッジ収集)
+             └─ chrome-empire:4000 (Playwright, ブラウザ操作)
 ```
+
+ジョブは web が Redis に投入し、worker と chrome-empire が消費します。
+web はジョブを処理しないため、web の再起動でジョブは失われません。
 
 - TLS 証明書の取得・更新は Cloudflare 側が行うため **Traefik と Let's Encrypt は使いません**。
 - オリジンの IP アドレスは公開されません。
@@ -30,11 +35,17 @@ cloudflared ──► web:3000 ─┬─► db:5432   (PostgreSQL 16)
 | コンテナ | CPU | RAM | ディスク |
 |---------|-----|-----|---------|
 | web (Next.js) | 1.0 core | 512MB | 500MB |
+| worker | 1.0 core | 512MB | 100MB |
 | db (PostgreSQL 16) | 0.5 core | 512MB | 1-5GB |
-| redis | 0.2 core | 192MB | 100MB |
+| redis | 0.2 core | 256MB | 200MB |
 | chrome-empire | 3.0 core | 3GB | 2GB |
 | cloudflared | 0.2 core | 128MB | 50MB |
-| **合計** | **約4.9 core** | **約4.3GB** | **約8GB** |
+| **合計** | **約5.9 core** | **約4.9GB** | **約8GB** |
+
+> CPU の割当合計がコア数を超える場合、`deploy.resources.limits` は
+> 上限であって予約ではないため起動はしますが、同時に負荷がかかると
+> 取り合いになります。ブラウザ操作を使わない間は
+> `CHROME_POOL_SIZE` を下げるか chrome-empire を停止してください。
 
 ---
 
@@ -102,7 +113,7 @@ docker compose up -d
 
 1. `db` / `redis` が healthy になる
 2. `migrate` が `prisma migrate deploy` を実行して正常終了する
-3. `web` が起動し `/api/health` が healthy になる
+3. `web` と `worker` が起動し、それぞれ healthy になる
 4. `cloudflared` が接続する
 
 ```bash
@@ -139,9 +150,21 @@ docker compose exec web node -e \
   "fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()).then(console.log)"
 # → { status: 'ok', database: 'ok', uptime: ... }
 
-# Chrome Empire のプール状態
+# worker の状態
+docker compose exec worker node -e \
+  "fetch('http://127.0.0.1:4100/health').then(r=>r.json()).then(console.log)"
+
+# Chrome Empire のプールとブラウザキューの状態
 docker compose exec chrome-empire node -e \
   "fetch('http://127.0.0.1:4000/status').then(r=>r.json()).then(console.log)"
+```
+
+キューの状態はダッシュボードの API からも確認できます。
+
+```bash
+# 要ログイン（Cookie 付きで叩く）
+curl https://avatar-cmd.<your-domain>/api/queue/trigger
+# → { app: { waiting, active, completed, failed, delayed }, browser: {...} }
 ```
 
 ブラウザで `https://avatar-cmd.<your-domain>/` を開き、`/login` からログインできることを確認します。
@@ -155,8 +178,8 @@ docker compose exec chrome-empire node -e \
 ```bash
 cd /opt/avatar-cmd
 git pull                      # または rsync で再転送
-docker compose build web
-docker compose up -d web      # migrate も自動で再実行される
+docker compose build web worker
+docker compose up -d web worker   # migrate も自動で再実行される
 ```
 
 ### バックアップ
@@ -219,21 +242,36 @@ Playwright のイメージタグと npm パッケージのバージョンは一�
 `Dockerfile` の `mcr.microsoft.com/playwright:v1.63.0-noble` と
 `packages/chrome-empire/package.json` の `playwright` を揃えてください。
 
+### ジョブが処理されない
+`worker` が落ちていないか、Redis に到達できているかを確認します。
+キューに溜まったジョブは worker が復帰すれば処理されます。
+
+```bash
+docker compose ps worker
+docker compose logs --tail=50 worker
+docker compose exec redis redis-cli keys 'bull:avatar-cmd-*'
+```
+
 ### メモリ不足
 ```bash
 echo "CHROME_POOL_SIZE=2" >> .env
-docker compose up -d chrome-empire
+echo "WORKER_CONCURRENCY=1" >> .env
+docker compose up -d chrome-empire worker
 ```
 
 ---
 
 ## 未実装 / 既知の制約
 
-- **ジョブキューは web プロセス内のインメモリ実装**
-  （`packages/core/src/scheduler/orchestrator.ts`）。`redis` コンテナは
-  起動していますがまだ参照されていません。web を再起動すると未処理ジョブは失われます。
-- **chrome-empire はプールの保持と状態公開のみ**。ジョブの受け取り口
-  （Redis 経由のキュー）が未実装で、web からブラウザ操作を発注する経路はまだありません。
+- **ブラウザジョブの投入側が未実装**。chrome-empire は
+  `avatar-cmd-browser` キューを消費できる状態ですが、そこへジョブを
+  投入する経路がまだありません。投稿の API/ブラウザ切り替えと
+  認証情報の復号（CredentialVault）を伴うため、integrations の
+  Provider 連携とあわせて対応が必要です。
+- **`publish_post` ジョブは未実装**（`packages/core/src/scheduler/workers.ts`
+  でダミーの待機のみ）。実際の SNS 投稿はまだ行われません。
+- **スケジューラ（定期実行）は未接続**。`SchedulerService` と
+  `AutomationRule` はありますが、cron でジョブを投入する処理がありません。
 - `GET /api/content` はモックデータを返します（v3 の SNS 運用画面が参照）。
   実データは `/api/posts` 側です。
 - `pnpm lint` は ESLint 未設定のため実行できません。
@@ -245,12 +283,14 @@ docker compose up -d chrome-empire
 | ファイル | 説明 |
 |---------|------|
 | `README.md` | プロジェクト全体の構成と機能一覧 |
-| `docker-compose.yml` | 本番用 Compose（web / db / redis / chrome-empire / migrate / cloudflared） |
-| `Dockerfile` | マルチステージビルド（ターゲット: `web` / `migrator` / `chrome-empire`） |
+| `docker-compose.yml` | 本番用 Compose（web / worker / db / redis / chrome-empire / migrate / cloudflared） |
+| `Dockerfile` | マルチステージビルド（ターゲット: `web` / `worker` / `migrator` / `chrome-empire`） |
 | `.env.example` | 環境変数テンプレート |
 | `apps/web/src/lib/auth.ts` | NextAuth 設定（Credentials + ロール） |
 | `apps/web/src/middleware.ts` | ダッシュボードと API の保護 |
 | `apps/web/src/app/api/health/route.ts` | ヘルスチェック |
 | `packages/core/src/security/url-guard.ts` | SSRF 防御 |
 | `packages/core/src/persona/soul-engine.ts` | Soul Engine（パス検証込み） |
+| `packages/queue/src/index.ts` | BullMQ のキュー定義（web / worker / chrome-empire が共有） |
+| `packages/core/src/scheduler/worker-main.ts` | worker のエントリポイント |
 | `packages/chrome-empire/src/worker.ts` | Chrome Empire のエントリポイント |

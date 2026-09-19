@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
       success: true,
       jobId,
       message: "ジョブをキューに追加しました",
-      queueStatus: orchestrator.getQueueStatus(),
+      queueStatus: await orchestrator.getQueueStatus(),
     });
   } catch (error) {
     return handleApiError("ジョブの投入", error);
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   try {
     await requireUser();
-    return NextResponse.json(orchestrator.getQueueStatus());
+    return NextResponse.json(await orchestrator.getQueueStatus());
   } catch (error) {
     return handleApiError("キュー状態の取得", error);
   }

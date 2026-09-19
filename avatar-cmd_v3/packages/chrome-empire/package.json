@@ -7,13 +7,17 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/worker.js"
+    "start": "node dist/worker.bundle.cjs",
+    "build:worker": "esbuild src/worker.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/worker.bundle.cjs --external:playwright --external:bullmq --external:ioredis"
   },
   "dependencies": {
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "@avatar-cmd/queue": "workspace:*",
+    "bullmq": "^5.34.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
-    "@types/node": "^22.13.11"
+    "@types/node": "^22.13.11",
+    "esbuild": "^0.25.0"
   }
 }
