@@ -203,8 +203,28 @@ docker compose up -d     # db → migrate → web → cloudflared の順に起�
 
 | キュー | 投入 | 消費 |
 |-------|------|------|
-| `avatar-cmd-jobs` | web (`/api/queue/trigger`, `/api/knowledge`) | `worker` |
-| `avatar-cmd-browser` | （投入側は未実装） | `chrome-empire` |
+| `avatar-cmd-jobs` | web (`/api/queue/trigger`, `/api/knowledge`)、worker の tick | `worker` |
+| `avatar-cmd-browser` | worker (`publish_post` がブラウザ投稿に回した場合) | `chrome-empire` |
+
+### 自律運用の流れ
+
+`worker` が既定30秒ごとに tick を回し、`AutomationRule` の cron と
+期限が来た `ScheduledPost` を評価してジョブを投入します。
+
+```
+tick ─┬─ AutomationRule (cron)  ──► generate_post
+      └─ 期限切れ ScheduledPost ──► publish_post
+
+generate_post → Soul Engine の人格 + 最近のナレッジを Gemini に注入
+                 → Content を DRAFT で保存
+publish_post  → Provider の API 投稿を試す
+                 ├─ 成功        → Content を PUBLISHED に
+                 └─ ブラウザ必要 → ブラウザキューへ操作列を投入
+                                    → chrome-empire が Playwright で実行
+```
+
+`actionType` の対応は `post` / `generate` → `generate_post`、
+`publish` → `publish_post`、`scrape` / `knowledge` → `fetch_knowledge`。
 
 ---
 

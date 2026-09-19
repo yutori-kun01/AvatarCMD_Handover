@@ -29,6 +29,7 @@ export {
   type JobPayload,
 } from "./scheduler/orchestrator";
 export { processJob } from "./scheduler/workers";
+export { runSchedulerTick, type TickResult } from "./scheduler/tick";
 
 // Security: SSRF guard
 export {

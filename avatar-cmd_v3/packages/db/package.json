@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "db:seed": "tsx src/seed.ts",
-    "clean": "rimraf node_modules .prisma"
+    "clean": "rimraf node_modules .prisma",
+    "build": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",
@@ -20,6 +21,7 @@
     "prisma": "^6.4.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.3",
-    "@types/bcryptjs": "^3.0.0"
+    "@types/bcryptjs": "^3.0.0",
+    "@types/node": "^22.13.11"
   }
 }

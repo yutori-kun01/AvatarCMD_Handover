@@ -203,8 +203,13 @@ v3は `/` がダッシュボードでしたが、v2は `/` がマーケティン
 - v2の Orchestrator (Job Queue) と v3の SchedulerService の統合。Redisを活用した堅牢なジョブ管理。
   → Orchestrator は BullMQ + Redis へ移行済み（`packages/queue`）。投入は web、処理は worker / chrome-empire に分離。定期実行（SchedulerService の cron 接続）は未対応。
 - Chrome Empire ワーカープロセスとの結合（Playwright コンテナへの通信）。
+  → Redis のブラウザキュー経由で接続済み。Provider の `getPostSteps()` が返す
+  操作列を chrome-empire が実行する（`packages/chrome-empire/src/operations.ts`）。
 - SSRF防御、認証(NextAuth)の組み込み。
 - **テスト・検証**: ジョブ投入からAI生成、SNS（モック）投稿までのE2E通しテスト。
+  → cron発火・投稿処理・ブラウザ操作の各経路にチェックスクリプトを用意
+  （`check:scheduler` / `check:publish` / `check:operations`）。
+  実SNSへの投稿と Provider のセレクタ検証は未実施。
 
 ### Phase 4: デプロイ準備とインフラ構築 (1週間)
 - Docker Compose の設定更新（Soul Engine用ボリュームマウントの追加等）。

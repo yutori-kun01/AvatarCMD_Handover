@@ -9,6 +9,11 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { ProfileManager } from "./profile";
 import {
+  executeOperations,
+  type OperationStep,
+  type OperationsResult,
+} from "./operations";
+import {
   type ChromeEmpireConfig,
   type ChromeInstance,
   type ChromeProfile,
@@ -105,6 +110,9 @@ export class ChromeEmpire {
       // Launch browser with persistent context (session persistence)
       const browser = await chromium.launch({
         headless: this.config.headless,
+        // 既定は Playwright 同梱のブラウザ。イメージのブラウザを
+        // 使いたい場合は CHROMIUM_EXECUTABLE で上書きできる。
+        executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -286,6 +294,63 @@ export class ChromeEmpire {
       });
 
       return { success: false, taskType: task.type, avatarId: task.avatarId, error: msg, duration };
+    }
+  }
+
+  /**
+   * Provider が組み立てた操作列を実行する。
+   * executeTask の post / login / engage は汎用実装が無くスタブだったため、
+   * セレクタ駆動の操作列はこちらで処理する。
+   */
+  async executeOperationsForAvatar(
+    avatarId: string,
+    operations: OperationStep[],
+    timeout?: number
+  ): Promise<OperationsResult> {
+    const instance = this.instances.get(avatarId);
+    if (!instance || instance.status === "stopped") {
+      throw new Error(`No active instance for avatar: ${avatarId}`);
+    }
+
+    const startTime = Date.now();
+    instance.status = "running";
+    instance.lastActivity = new Date();
+    this.emit({ type: "task:started", avatarId, taskType: "custom" });
+
+    const page = await instance.context.newPage();
+    try {
+      const result = await executeOperations(
+        page,
+        operations,
+        timeout ?? this.config.defaultTimeout
+      );
+
+      const duration = Date.now() - startTime;
+      if (result.success) {
+        instance.status = "idle";
+        instance.metrics.tasksCompleted++;
+        this.emit({ type: "task:completed", avatarId, taskType: "custom", duration });
+      } else {
+        instance.status = "idle";
+        instance.metrics.tasksErrored++;
+        this.emit({
+          type: "task:failed",
+          avatarId,
+          taskType: "custom",
+          error: result.error ?? "unknown",
+        });
+      }
+      return result;
+    } catch (error) {
+      instance.status = "error";
+      instance.metrics.tasksErrored++;
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit({ type: "task:failed", avatarId, taskType: "custom", error: message });
+      return { success: false, steps: [], error: message };
+    } finally {
+      await page.close().catch(() => undefined);
+      // セッション（ログイン状態）を保存しておく
+      await this.saveSessionState(instance).catch(() => undefined);
     }
   }
 

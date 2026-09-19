@@ -9,6 +9,7 @@
 //   - web を複数レプリカにするとジョブが片方にしか見えない
 // という制約があった。Redis に移すことで両方を解消する。
 
+import IORedis from "ioredis";
 import { Queue, Worker, type ConnectionOptions, type Processor } from "bullmq";
 
 // ─── キュー名 ───
@@ -32,12 +33,12 @@ export interface AppJobPayload {
 }
 
 /**
- * ブラウザ操作ジョブ。
- * chrome-empire の BrowserTask と同じ形。型を共有するために
- * chrome-empire へ依存させたくない（Playwright を引き込むため）ので
- * 構造だけをこちらに置く。
+ * 単発のブラウザ操作。chrome-empire の BrowserTask と同じ形。
+ * 型を共有するために chrome-empire / integrations へ依存させたくない
+ * （Playwright を引き込むため）ので構造だけをこちらに置く。
  */
-export interface BrowserJobPayload {
+export interface BrowserTaskJob {
+  kind: "task";
   type:
     | "navigate"
     | "post"
@@ -51,6 +52,38 @@ export interface BrowserJobPayload {
   payload?: Record<string, unknown>;
   timeout?: number;
 }
+
+/**
+ * Provider が組み立てた操作列。integrations の BrowserOperation と同じ形。
+ * getPostSteps() / getLoginSteps() の戻り値をそのまま渡す。
+ */
+export interface BrowserOperationStep {
+  action:
+    | "login"
+    | "post"
+    | "read"
+    | "engage"
+    | "collect_metrics"
+    | "search"
+    | "navigate";
+  url: string;
+  selectors?: Record<string, string>;
+  inputData?: Record<string, string>;
+  waitFor?: string;
+  timeout?: number;
+}
+
+export interface BrowserOperationsJob {
+  kind: "operations";
+  avatarId: string;
+  /** どのプラットフォーム向けか（ログ用） */
+  platform?: string;
+  /** 紐づく Content のID。完了時に状態を戻すために使う */
+  contentId?: string;
+  operations: BrowserOperationStep[];
+}
+
+export type BrowserJobPayload = BrowserTaskJob | BrowserOperationsJob;
 
 // ─── 接続 ───
 function redisUrl(): string {
@@ -119,7 +152,8 @@ export async function enqueueAppJob(
 export async function enqueueBrowserJob(
   payload: BrowserJobPayload
 ): Promise<string> {
-  const job = await getBrowserQueue().add(payload.type, payload);
+  const name = payload.kind === "task" ? payload.type : "operations";
+  const job = await getBrowserQueue().add(name, payload);
   return job.id ?? "";
 }
 
@@ -177,11 +211,59 @@ export function createBrowserWorker(
   });
 }
 
-/** 投入側の接続を閉じる（プロセス終了時） */
+// ─── 分散ロック ───
+// 複数の worker レプリカが同時にスケジューラの tick を回すと
+// 同じジョブを二重投入してしまうため、Redis の SET NX で排他する。
+let lockRedis: IORedis | null = null;
+
+function getLockRedis(): IORedis {
+  if (!lockRedis) lockRedis = new IORedis(redisUrl());
+  return lockRedis;
+}
+
+/**
+ * ロックを取れたら fn を実行する。取れなければ何もせず null を返す。
+ * ttlMs はロックの有効期限。プロセスが落ちても自動的に解放される。
+ */
+export async function withLock<T>(
+  key: string,
+  ttlMs: number,
+  fn: () => Promise<T>
+): Promise<T | null> {
+  const redis = getLockRedis();
+  const token = `${process.pid}-${Date.now()}-${Math.random()}`;
+  const lockKey = `avatar-cmd-lock:${key}`;
+
+  const acquired = await redis.set(lockKey, token, "PX", ttlMs, "NX");
+  if (acquired !== "OK") return null;
+
+  try {
+    return await fn();
+  } finally {
+    // 自分が取ったロックだけを解放する（TTL 切れ後の他者のロックを消さない）
+    await redis
+      .eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1,
+        lockKey,
+        token
+      )
+      .catch(() => undefined);
+  }
+}
+
+/**
+ * 投入側の接続を閉じる（プロセス終了時）。
+ * quit() は応答待ちでソケットが残ることがあるため、最後に
+ * disconnect() で確実に解放する。
+ */
 export async function closeQueues(): Promise<void> {
-  await Promise.allSettled([appQueue?.close(), browserQueue?.close()]);
+  const lock = lockRedis;
+  await Promise.allSettled([appQueue?.close(), browserQueue?.close(), lock?.quit()]);
+  lock?.disconnect();
   appQueue = null;
   browserQueue = null;
+  lockRedis = null;
 }
 
 export { Queue, Worker };

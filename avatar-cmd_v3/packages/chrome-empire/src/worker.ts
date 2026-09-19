@@ -7,12 +7,10 @@
 // docker-compose の chrome-empire は dist/worker.js を参照していたが
 // 実体が存在せず、コンテナが起動できない状態だった。
 //
-// ブラウザ操作ジョブは Redis (BullMQ) のブラウザキューから受け取り、
-// プールの executeTask に渡す。
-//
-// 注意: 現時点でこのキューへジョブを投入する側は未実装。
-// 投稿の API/ブラウザ切り替えと認証情報の復号を伴うため、
-// integrations の Provider 連携とあわせて別途対応する。
+// ブラウザ操作ジョブは Redis (BullMQ) のブラウザキューから受け取る。
+// ペイロードは2種類:
+//   kind: "task"       … 単発操作（navigate / scrape / screenshot 等）
+//   kind: "operations" … Provider が組み立てたセレクタ駆動の操作列
 
 import { createServer } from "http";
 import {
@@ -23,6 +21,7 @@ import {
 } from "@avatar-cmd/queue";
 import { ChromeEmpire } from "./pool";
 import type { BrowserTask } from "./types";
+import type { OperationStep } from "./operations";
 
 function intFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -40,22 +39,42 @@ const empire = new ChromeEmpire({
   stealthMode: process.env.CHROME_STEALTH !== "false",
 });
 
-// ブラウザキューの消費。ペイロードはそのまま BrowserTask として扱う
+// ブラウザキューの消費
 const queueWorker = createBrowserWorker(async (job) => {
-  const task = job.data as BrowserTask;
-  console.log(`[ChromeWorker] Executing ${job.id} (${task.type}) for ${task.avatarId}`);
+  const data = job.data;
+  const label = data.kind === "task" ? data.type : `operations(${data.operations.length})`;
+  console.log(`[ChromeWorker] Executing ${job.id} (${label}) for ${data.avatarId}`);
 
-  // executeTask は既存インスタンスを前提にするため、無ければ先に起動する。
-  // プール上限のチェックは spawnForAvatar 側で行われ、上限超過時は
-  // 例外になって BullMQ のリトライに乗る（空きが出てから再試行される）。
-  if (!empire.getInstance(task.avatarId)) {
-    console.log(`[ChromeWorker] Spawning instance for ${task.avatarId}`);
-    await empire.spawnForAvatar(task.avatarId);
+  // executeTask / executeOperationsForAvatar は既存インスタンスを前提に
+  // するため、無ければ先に起動する。プール上限のチェックは
+  // spawnForAvatar 側で行われ、上限超過時は例外になって
+  // BullMQ のリトライに乗る（空きが出てから再試行される）。
+  if (!empire.getInstance(data.avatarId)) {
+    console.log(`[ChromeWorker] Spawning instance for ${data.avatarId}`);
+    await empire.spawnForAvatar(data.avatarId);
   }
 
+  if (data.kind === "operations") {
+    const result = await empire.executeOperationsForAvatar(
+      data.avatarId,
+      data.operations as OperationStep[]
+    );
+    if (!result.success) {
+      // 失敗を投げて BullMQ のリトライに乗せる
+      throw new Error(result.error ?? "Browser operations failed");
+    }
+    return result;
+  }
+
+  const task: BrowserTask = {
+    type: data.type,
+    avatarId: data.avatarId,
+    url: data.url,
+    payload: data.payload,
+    timeout: data.timeout,
+  };
   const result = await empire.executeTask(task);
   if (!result.success) {
-    // 失敗を投げて BullMQ のリトライに乗せる
     throw new Error(result.error ?? `Browser task ${task.type} failed`);
   }
   return result;

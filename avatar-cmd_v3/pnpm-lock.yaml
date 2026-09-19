@@ -157,6 +157,9 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.13
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -166,12 +169,18 @@ importers:
       '@avatar-cmd/db':
         specifier: workspace:*
         version: link:../db
+      '@avatar-cmd/integrations':
+        specifier: workspace:*
+        version: link:../integrations
       '@avatar-cmd/queue':
         specifier: workspace:*
         version: link:../queue
       '@google/genai':
         specifier: ^2.21.0
         version: 2.23.0
+      cron-parser:
+        specifier: ^5.10.1
+        version: 5.10.1
       tsx:
         specifier: ^4.19.0
         version: 4.23.13
@@ -192,6 +201,9 @@ importers:
       '@types/bcryptjs':
         specifier: ^3.0.0
         version: 3.0.0
+      '@types/node':
+        specifier: ^22.13.11
+        version: 22.20.3
       prisma:
         specifier: ^6.4.1
         version: 6.19.3(typescript@5.9.3)
@@ -203,13 +215,6 @@ importers:
         version: 5.9.3
 
   packages/integrations:
-    dependencies:
-      '@avatar-cmd/core':
-        specifier: workspace:*
-        version: link:../core
-      '@avatar-cmd/db':
-        specifier: workspace:*
-        version: link:../db
     devDependencies:
       '@types/node':
         specifier: ^22.13.11
@@ -223,6 +228,9 @@ importers:
       bullmq:
         specifier: ^5.34.0
         version: 5.81.5
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
     devDependencies:
       '@types/node':
         specifier: ^22.13.11
@@ -1617,6 +1625,10 @@ packages:
     resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
     engines: {node: '>=12.0.0'}
     deprecated: v4 is no longer maintained, upgrade to v5
+
+  cron-parser@5.10.1:
+    resolution: {integrity: sha512-pKRrRagItwk9rGIStcUyMxFX34x56zoX3KDf9HJ4ttwkXIK1qxK63EvXvEDmlxI9AdPJ+Y7TEKRftRlW5eSS7A==}
+    engines: {node: '>=18'}
 
   cssesc@3.0.0:
     resolution: {integrity: sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg==}
@@ -3649,6 +3661,10 @@ snapshots:
   consola@3.4.2: {}
 
   cron-parser@4.9.0:
+    dependencies:
+      luxon: 3.7.2
+
+  cron-parser@5.10.1:
     dependencies:
       luxon: 3.7.2
 

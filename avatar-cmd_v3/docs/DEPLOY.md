@@ -26,6 +26,20 @@ redis:6379 ◄─┬─ worker:4100        (AI生成 / ナレッジ収集)
 ジョブは web が Redis に投入し、worker と chrome-empire が消費します。
 web はジョブを処理しないため、web の再起動でジョブは失われません。
 
+自律運用の流れ:
+
+```
+worker の tick (既定30秒)
+  ├─ AutomationRule (cron) を評価 ──► generate_post ジョブ
+  └─ 期限が来た ScheduledPost ─────► publish_post ジョブ
+
+generate_post → Gemini で本文生成 → Content を DRAFT で保存
+publish_post  → Provider の API 投稿を試す
+                 ├─ 成功        → Content を PUBLISHED に
+                 └─ ブラウザ必要 → ブラウザキューへ操作列を投入
+                                    → chrome-empire が Playwright で実行
+```
+
 - TLS 証明書の取得・更新は Cloudflare 側が行うため **Traefik と Let's Encrypt は使いません**。
 - オリジンの IP アドレスは公開されません。
 - ホストにポートを公開しているコンテナはありません（`docker compose config` で確認可能）。
@@ -242,6 +256,36 @@ Playwright のイメージタグと npm パッケージのバージョンは一�
 `Dockerfile` の `mcr.microsoft.com/playwright:v1.63.0-noble` と
 `packages/chrome-empire/package.json` の `playwright` を揃えてください。
 
+### 自動化ルールが発火しない
+`triggerType` が `schedule`、`isActive` が true、`triggerConfig.cron` が
+5フィールドの cron 式になっているかを確認します。
+初回の tick では発火せず基準時刻（`lastExecutedAt`）を入れるだけなので、
+1周期分待つ必要があります。解析に失敗した cron は `lastError` に残ります。
+
+`actionType` は以下のみ対応しています。それ以外は `lastError` に記録されます。
+
+| actionType | 投入されるジョブ |
+|-----------|----------------|
+| `post` / `generate` | `generate_post` |
+| `publish` | `publish_post` |
+| `scrape` / `knowledge` | `fetch_knowledge` |
+
+スケジューラを止めたい場合は `SCHEDULER_ENABLED=false` を設定します。
+
+```bash
+docker compose logs --tail=50 worker | grep -E "Tick|Scheduler"
+```
+
+### 投稿が PUBLISHING のまま止まる
+ブラウザ操作へ回された投稿です。chrome-empire 側でセレクタが変わっている
+可能性があります。Provider の `getPostSteps()` のセレクタを確認してください。
+
+```bash
+docker compose logs --tail=50 chrome-empire
+docker compose exec chrome-empire node -e \
+  "fetch('http://127.0.0.1:4000/status').then(r=>r.json()).then(console.log)"
+```
+
 ### ジョブが処理されない
 `worker` が落ちていないか、Redis に到達できているかを確認します。
 キューに溜まったジョブは worker が復帰すれば処理されます。
@@ -261,17 +305,39 @@ docker compose up -d chrome-empire worker
 
 ---
 
+## 回帰チェック
+
+テストランナーは未導入で、主要な経路は tsx で直接実行するチェックスクリプト
+にしてあります。DB と Redis を起動した状態で実行してください。
+
+```bash
+# SSRF防御 / パストラバーサル防御（外部依存なし）
+pnpm --filter @avatar-cmd/core check:security
+
+# スケジューラ（cron 評価・二重発火防止・予約投稿の発火）
+pnpm --filter @avatar-cmd/core check:scheduler
+
+# 投稿処理（API 失敗時の扱い・ブラウザキューへの委譲）
+pnpm --filter @avatar-cmd/core check:publish
+
+# ブラウザ操作の実行（実ブラウザが必要）
+#   pnpm exec playwright install chromium
+#   もしくは CHROMIUM_EXECUTABLE で既存バイナリを指定
+pnpm --filter @avatar-cmd/chrome-empire check:operations
+```
+
 ## 未実装 / 既知の制約
 
-- **ブラウザジョブの投入側が未実装**。chrome-empire は
-  `avatar-cmd-browser` キューを消費できる状態ですが、そこへジョブを
-  投入する経路がまだありません。投稿の API/ブラウザ切り替えと
-  認証情報の復号（CredentialVault）を伴うため、integrations の
-  Provider 連携とあわせて対応が必要です。
-- **`publish_post` ジョブは未実装**（`packages/core/src/scheduler/workers.ts`
-  でダミーの待機のみ）。実際の SNS 投稿はまだ行われません。
-- **スケジューラ（定期実行）は未接続**。`SchedulerService` と
-  `AutomationRule` はありますが、cron でジョブを投入する処理がありません。
+- **ブラウザ投稿の完了が Content に反映されない**。ブラウザ操作へ回された
+  投稿は Content が `PUBLISHING` のまま残ります。chrome-empire 側の
+  完了イベントを受けて `PUBLISHED` にする経路が未実装です。
+- **ブラウザのログイン手順が未接続**。`getLoginSteps()` は Provider が
+  持っていますが、セッション切れを検知してログインを挟む処理がありません。
+  実運用前にプラットフォームごとのセレクタの検証が必要です。
+- **API 投稿のトークン更新が未実装**。`refreshToken()` は Provider に
+  ありますが、期限切れ時に呼ぶ処理がありません。
+- **Provider のセレクタは未検証**。`getPostSteps()` のセレクタは実際の
+  画面と突き合わせていないため、そのままでは失敗する可能性があります。
 - `GET /api/content` はモックデータを返します（v3 の SNS 運用画面が参照）。
   実データは `/api/posts` 側です。
 - `pnpm lint` は ESLint 未設定のため実行できません。
@@ -293,4 +359,7 @@ docker compose up -d chrome-empire worker
 | `packages/core/src/persona/soul-engine.ts` | Soul Engine（パス検証込み） |
 | `packages/queue/src/index.ts` | BullMQ のキュー定義（web / worker / chrome-empire が共有） |
 | `packages/core/src/scheduler/worker-main.ts` | worker のエントリポイント |
+| `packages/core/src/scheduler/tick.ts` | cron 評価と予約投稿の発火 |
+| `packages/core/src/scheduler/workers.ts` | ジョブ本体（生成 / 投稿 / ナレッジ収集） |
+| `packages/chrome-empire/src/operations.ts` | BrowserOperation の実行 |
 | `packages/chrome-empire/src/worker.ts` | Chrome Empire のエントリポイント |
