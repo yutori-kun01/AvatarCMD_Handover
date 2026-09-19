@@ -16,6 +16,7 @@ import { createServer } from "http";
 import {
   closeQueues,
   createBrowserWorker,
+  enqueueAppJob,
   getQueueStats,
   getBrowserQueue,
 } from "@avatar-cmd/queue";
@@ -60,8 +61,21 @@ const queueWorker = createBrowserWorker(async (job) => {
       data.operations as OperationStep[]
     );
     if (!result.success) {
-      // 失敗を投げて BullMQ のリトライに乗せる
+      // 失敗を投げて BullMQ のリトライに乗せる。
+      // 試行を使い切った時点で failed イベント側から結果を報告する。
       throw new Error(result.error ?? "Browser operations failed");
+    }
+
+    // 成功を worker に返す。chrome-empire は DB を持たないため、
+    // Content の状態更新は worker 側で行う。
+    if (data.contentId) {
+      await reportBrowserResult({
+        contentId: data.contentId,
+        avatarId: data.avatarId,
+        success: true,
+        // 最後に開いていた URL を投稿先として記録する
+        url: result.steps[result.steps.length - 1]?.url,
+      });
     }
     return result;
   }
@@ -80,12 +94,51 @@ const queueWorker = createBrowserWorker(async (job) => {
   return result;
 });
 
+/** ブラウザ投稿の結果を app キューへ戻す */
+async function reportBrowserResult(result: {
+  contentId: string;
+  avatarId: string;
+  success: boolean;
+  url?: string;
+  error?: string;
+}): Promise<void> {
+  try {
+    await enqueueAppJob("browser_result", {
+      avatarId: result.avatarId,
+      data: {
+        contentId: result.contentId,
+        success: result.success,
+        url: result.url,
+        error: result.error,
+      },
+    });
+  } catch (error) {
+    // ここで失敗すると Content が PUBLISHING のまま残るが、
+    // worker 側の tick が一定時間後に FAILED へ倒す
+    console.error("[ChromeWorker] Failed to report result:", error);
+  }
+}
+
 queueWorker.on("failed", (job, error) => {
+  const attempts = job?.opts?.attempts ?? 1;
+  const made = job?.attemptsMade ?? 0;
   console.error(
-    `[ChromeWorker] Job ${job?.id} (${job?.name}) failed on attempt ` +
-      `${job?.attemptsMade}/${job?.opts?.attempts ?? 1}:`,
+    `[ChromeWorker] Job ${job?.id} (${job?.name}) failed on attempt ${made}/${attempts}:`,
     error?.message ?? error
   );
+
+  // リトライが残っている間は確定させない。使い切った時点で失敗を報告する
+  if (made < attempts) return;
+
+  const data = job?.data;
+  if (data && data.kind === "operations" && data.contentId) {
+    void reportBrowserResult({
+      contentId: data.contentId,
+      avatarId: data.avatarId,
+      success: false,
+      error: error?.message ?? "Browser operations failed",
+    });
+  }
 });
 
 queueWorker.on("error", (error) => {

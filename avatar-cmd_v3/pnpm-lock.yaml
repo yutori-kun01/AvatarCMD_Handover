@@ -147,6 +147,9 @@ importers:
       bullmq:
         specifier: ^5.34.0
         version: 5.81.5
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
       playwright:
         specifier: 1.63.0
         version: 1.63.0

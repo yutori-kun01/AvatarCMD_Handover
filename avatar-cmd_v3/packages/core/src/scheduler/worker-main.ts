@@ -47,10 +47,14 @@ async function tick(): Promise<void> {
   tickRunning = true;
   try {
     const result = await runSchedulerTick();
-    if (!result.skipped && (result.rulesFired > 0 || result.scheduledPostsFired > 0)) {
+    if (
+      !result.skipped &&
+      (result.rulesFired > 0 || result.scheduledPostsFired > 0 || result.stalePublishing > 0)
+    ) {
       console.log(
-        `[Scheduler] Fired ${result.rulesFired} rule(s) and ` +
-          `${result.scheduledPostsFired} scheduled post(s)`
+        `[Scheduler] Fired ${result.rulesFired} rule(s), ` +
+          `${result.scheduledPostsFired} scheduled post(s), ` +
+          `cleaned ${result.stalePublishing} stale publishing`
       );
     }
   } catch (error) {

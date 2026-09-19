@@ -130,7 +130,7 @@ COPY --from=builder /app/packages/chrome-empire/dist/worker.bundle.cjs ./dist/wo
 # alpine(musl) の成果物も Debian では使えないため、外部依存だけ入れ直す。
 # ブラウザ本体はベースイメージに同梱されているのでダウンロードしない。
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-RUN npm install --no-save --omit=dev playwright@1.63.0 bullmq@5.81.5
+RUN npm install --no-save --omit=dev playwright@1.63.0 bullmq@5.81.5 ioredis@5.11.1
 
 RUN mkdir -p /app/data/profiles /app/data/sessions && \
     chown -R pwuser:pwuser /app/data

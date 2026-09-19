@@ -38,7 +38,13 @@ publish_post  → Provider の API 投稿を試す
                  ├─ 成功        → Content を PUBLISHED に
                  └─ ブラウザ必要 → ブラウザキューへ操作列を投入
                                     → chrome-empire が Playwright で実行
+                                    → 結果を browser_result として app キューへ戻す
+                                    → worker が Content を PUBLISHED / FAILED に確定
 ```
+
+chrome-empire は DB を持たないため、Content の更新は必ず worker が行います。
+結果が返らないまま `PUBLISHING` で残った Content は、tick が
+`PUBLISHING_TIMEOUT_MS`（既定15分）経過後に FAILED へ倒します。
 
 - TLS 証明書の取得・更新は Cloudflare 側が行うため **Traefik と Let's Encrypt は使いません**。
 - オリジンの IP アドレスは公開されません。
@@ -277,8 +283,11 @@ docker compose logs --tail=50 worker | grep -E "Tick|Scheduler"
 ```
 
 ### 投稿が PUBLISHING のまま止まる
-ブラウザ操作へ回された投稿です。chrome-empire 側でセレクタが変わっている
-可能性があります。Provider の `getPostSteps()` のセレクタを確認してください。
+ブラウザ操作へ回された投稿です。chrome-empire が動いていれば結果が
+`browser_result` として返り、worker が PUBLISHED / FAILED に確定させます。
+15分（`PUBLISHING_TIMEOUT_MS`）を過ぎても残る場合は chrome-empire が
+落ちているか、Provider の `getPostSteps()` のセレクタが実画面と
+合っていない可能性があります。
 
 ```bash
 docker compose logs --tail=50 chrome-empire
@@ -328,9 +337,6 @@ pnpm --filter @avatar-cmd/chrome-empire check:operations
 
 ## 未実装 / 既知の制約
 
-- **ブラウザ投稿の完了が Content に反映されない**。ブラウザ操作へ回された
-  投稿は Content が `PUBLISHING` のまま残ります。chrome-empire 側の
-  完了イベントを受けて `PUBLISHED` にする経路が未実装です。
 - **ブラウザのログイン手順が未接続**。`getLoginSteps()` は Provider が
   持っていますが、セッション切れを検知してログインを挟む処理がありません。
   実運用前にプラットフォームごとのセレクタの検証が必要です。

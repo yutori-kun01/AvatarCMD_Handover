@@ -203,7 +203,7 @@ docker compose up -d     # db → migrate → web → cloudflared の順に起�
 
 | キュー | 投入 | 消費 |
 |-------|------|------|
-| `avatar-cmd-jobs` | web (`/api/queue/trigger`, `/api/knowledge`)、worker の tick | `worker` |
+| `avatar-cmd-jobs` | web (`/api/queue/trigger`, `/api/knowledge`)、worker の tick、chrome-empire (`browser_result`) | `worker` |
 | `avatar-cmd-browser` | worker (`publish_post` がブラウザ投稿に回した場合) | `chrome-empire` |
 
 ### 自律運用の流れ
@@ -221,7 +221,12 @@ publish_post  → Provider の API 投稿を試す
                  ├─ 成功        → Content を PUBLISHED に
                  └─ ブラウザ必要 → ブラウザキューへ操作列を投入
                                     → chrome-empire が Playwright で実行
+                                    → browser_result で結果を戻す
+                                    → worker が PUBLISHED / FAILED に確定
 ```
+
+chrome-empire は DB を持たない（Playwright イメージに Prisma を入れない）ため、
+Content の更新は必ず worker 側で行います。
 
 `actionType` の対応は `post` / `generate` → `generate_post`、
 `publish` → `publish_post`、`scrape` / `knowledge` → `fetch_knowledge`。

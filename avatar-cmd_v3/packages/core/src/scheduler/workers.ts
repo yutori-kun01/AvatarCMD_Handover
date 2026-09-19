@@ -27,6 +27,9 @@ export async function processJob(job: Job): Promise<void> {
       case "fetch_knowledge":
         await handleFetchKnowledge(payload);
         break;
+      case "browser_result":
+        await handleBrowserResult(payload);
+        break;
       case "system_maintenance":
       default:
         console.log(`[Worker] Job type ${type} is not yet implemented.`);
@@ -247,6 +250,85 @@ async function handlePublishPost(payload: any) {
   }
 
   await failContent(content.id, content.avatarId, result.error ?? "投稿に失敗しました");
+}
+
+/**
+ * chrome-empire から返ってきたブラウザ投稿の結果を反映する。
+ * chrome-empire は DB を持たないため、Content の確定はここで行う。
+ */
+async function handleBrowserResult(payload: any) {
+  const data = payload?.data ?? {};
+  const contentId: string | undefined = data.contentId;
+  if (!contentId) throw new Error("Missing contentId");
+
+  const content = await prisma.content.findUnique({
+    where: { id: contentId },
+    select: { id: true, avatarId: true, platform: true, status: true },
+  });
+  if (!content) {
+    console.warn(`[Worker] browser_result: content not found: ${contentId}`);
+    return;
+  }
+
+  // 既に確定済みなら触らない（タイムアウト掃除と競合した場合など）
+  if (content.status === "PUBLISHED" || content.status === "FAILED") {
+    console.log(
+      `[Worker] browser_result: content ${contentId} is already ${content.status}; skipping`
+    );
+    return;
+  }
+
+  if (data.success) {
+    await prisma.content.update({
+      where: { id: content.id },
+      data: {
+        status: "PUBLISHED",
+        publishedAt: new Date(),
+        postUrl: typeof data.url === "string" ? data.url : null,
+      },
+    });
+    await prisma.scheduledPost.updateMany({
+      where: { contentId: content.id },
+      data: { status: "published", publishedAt: new Date() },
+    });
+    await prisma.activityLog.create({
+      data: {
+        avatarId: content.avatarId,
+        action: "post_published",
+        category: "sns",
+        description: `${content.platform} にブラウザ操作で投稿しました${
+          typeof data.url === "string" ? `: ${data.url}` : ""
+        }`,
+        metadata: { contentId: content.id, mode: "browser" },
+        level: "success",
+      },
+    });
+    console.log(`[Worker] browser_result: ${content.id} published via browser`);
+    return;
+  }
+
+  const message =
+    typeof data.error === "string" && data.error
+      ? data.error
+      : "ブラウザ操作での投稿に失敗しました";
+
+  await prisma.content.update({ where: { id: content.id }, data: { status: "FAILED" } });
+  await prisma.scheduledPost.updateMany({
+    where: { contentId: content.id },
+    data: { status: "failed", lastError: message },
+  });
+  await prisma.activityLog.create({
+    data: {
+      avatarId: content.avatarId,
+      action: "post_failed",
+      category: "sns",
+      description: `${content.platform} のブラウザ投稿に失敗しました: ${message}`,
+      metadata: { contentId: content.id, mode: "browser" },
+      level: "error",
+    },
+  });
+  console.log(`[Worker] browser_result: ${content.id} failed via browser`);
+  // ここでは例外にしない。ブラウザ側で既にリトライを使い切っている
 }
 
 /** 投稿失敗を Content と ActivityLog に記録する */

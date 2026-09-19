@@ -107,6 +107,46 @@ async function main() {
   check("例外になる", err !== null, err);
   check("status=FAILED", after.status === "FAILED", after.status);
 
+  console.log("── ブラウザ投稿の成功が Content に反映される");
+  const browserOk = await prisma.content.create({
+    data: { avatarId: avatar.id, platform: "note", content: "[TEST] ブラウザ成功", status: "PUBLISHING" },
+  });
+  await processJob({
+    id: "test",
+    type: "browser_result",
+    payload: { avatarId: avatar.id, data: { contentId: browserOk.id, success: true, url: "https://note.com/x/n/abc" } },
+  } as never);
+  after = await prisma.content.findUniqueOrThrow({ where: { id: browserOk.id } });
+  check("status=PUBLISHED", after.status === "PUBLISHED", after.status);
+  check("postUrl が入る", after.postUrl === "https://note.com/x/n/abc", after.postUrl);
+  check("publishedAt が入る", after.publishedAt !== null);
+
+  console.log("── ブラウザ投稿の失敗が Content に反映される");
+  const browserNg = await prisma.content.create({
+    data: { avatarId: avatar.id, platform: "note", content: "[TEST] ブラウザ失敗", status: "PUBLISHING" },
+  });
+  await processJob({
+    id: "test",
+    type: "browser_result",
+    payload: { avatarId: avatar.id, data: { contentId: browserNg.id, success: false, error: "セレクタが見つかりません" } },
+  } as never);
+  after = await prisma.content.findUniqueOrThrow({ where: { id: browserNg.id } });
+  check("status=FAILED", after.status === "FAILED", after.status);
+  const failLog = await prisma.activityLog.findFirst({
+    where: { avatarId: avatar.id, action: "post_failed" },
+    orderBy: { createdAt: "desc" },
+  });
+  check("失敗理由がログに残る", (failLog?.description ?? "").includes("セレクタ"), failLog?.description);
+
+  console.log("── 確定済みの Content は browser_result で上書きされない");
+  await processJob({
+    id: "test",
+    type: "browser_result",
+    payload: { avatarId: avatar.id, data: { contentId: browserOk.id, success: false, error: "遅れて来た失敗" } },
+  } as never);
+  after = await prisma.content.findUniqueOrThrow({ where: { id: browserOk.id } });
+  check("PUBLISHED のまま", after.status === "PUBLISHED", after.status);
+
   console.log("── 既に PUBLISHED なものは二重投稿しない");
   content = await prisma.content.create({
     data: {

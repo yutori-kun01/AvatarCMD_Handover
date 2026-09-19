@@ -19,6 +19,7 @@ function check(label: string, ok: boolean, detail: unknown = "") {
 
 async function cleanup() {
   await prisma.automationRule.deleteMany({ where: { name: { startsWith: "[TEST]" } } });
+  await prisma.content.deleteMany({ where: { content: { startsWith: "[TEST]" } } });
 }
 
 async function main() {
@@ -128,7 +129,28 @@ async function main() {
   t = await runSchedulerTick();
   check("投入されない", t.scheduledPostsFired === 0, t);
 
-  await prisma.content.delete({ where: { id: content.id } });
+  console.log("── PUBLISHING のまま放置された Content は FAILED に倒される");
+  const stuck = await prisma.content.create({
+    data: { avatarId: avatar.id, platform: "note", content: "[TEST] 放置された投稿", status: "PUBLISHING" },
+  });
+  // updatedAt は @updatedAt なので SQL で直接過去にする
+  await prisma.$executeRaw`UPDATE contents SET updated_at = NOW() - INTERVAL '1 hour' WHERE id = ${stuck.id}`;
+  t = await runSchedulerTick();
+  let stuckAfter = await prisma.content.findUniqueOrThrow({ where: { id: stuck.id } });
+  check("掃除対象になる", t.stalePublishing === 1, t.stalePublishing);
+  check("status=FAILED", stuckAfter.status === "FAILED", stuckAfter.status);
+
+  console.log("── 直近に更新された PUBLISHING は掃除しない");
+  const fresh = await prisma.content.create({
+    data: { avatarId: avatar.id, platform: "note", content: "[TEST] 進行中の投稿", status: "PUBLISHING" },
+  });
+  t = await runSchedulerTick();
+  const freshAfter = await prisma.content.findUniqueOrThrow({ where: { id: fresh.id } });
+  check("掃除されない", t.stalePublishing === 0, t.stalePublishing);
+  check("PUBLISHING のまま", freshAfter.status === "PUBLISHING", freshAfter.status);
+
+  await prisma.content.deleteMany({ where: { content: { startsWith: "[TEST]" } } });
+  await prisma.content.delete({ where: { id: content.id } }).catch(() => undefined);
   await cleanup();
   await getAppQueue().obliterate({ force: true }).catch(() => undefined);
 

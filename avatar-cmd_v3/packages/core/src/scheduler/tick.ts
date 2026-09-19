@@ -4,6 +4,7 @@
 // worker プロセスが一定間隔で呼ぶ。2つの仕事をする。
 //   1. AutomationRule (triggerType=schedule) の cron を評価してジョブ投入
 //   2. 期限が来た ScheduledPost を publish_post として投入
+//   3. PUBLISHING のまま放置された Content を FAILED に倒す
 //
 // BullMQ の繰り返しジョブではなく DB を正とする tick 方式にしている。
 // ルールは実行中に追加・変更・無効化されるため、BullMQ 側の
@@ -28,7 +29,14 @@ export interface TickResult {
   rulesEvaluated: number;
   rulesFired: number;
   scheduledPostsFired: number;
+  stalePublishing: number;
   skipped: boolean;
+}
+
+/** PUBLISHING のまま放置とみなすまでの時間（既定15分） */
+function stalePublishingMs(): number {
+  const raw = Number(process.env.PUBLISHING_TIMEOUT_MS ?? 15 * 60_000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15 * 60_000;
 }
 
 /**
@@ -170,6 +178,49 @@ async function firePendingScheduledPosts(now: Date): Promise<number> {
 }
 
 /**
+ * ブラウザ投稿へ回したまま結果が返ってこない Content を FAILED にする。
+ * chrome-empire が落ちた場合などに PUBLISHING のまま残るのを防ぐ。
+ */
+async function failStalePublishing(now: Date): Promise<number> {
+  const threshold = new Date(now.getTime() - stalePublishingMs());
+
+  const stale = await prisma.content.findMany({
+    where: { status: "PUBLISHING", updatedAt: { lt: threshold } },
+    select: { id: true, avatarId: true, platform: true },
+    take: 50,
+  });
+
+  for (const content of stale) {
+    const message = "ブラウザ投稿の結果が返らなかったため失敗として扱います";
+
+    // 同時に browser_result が来た場合に上書きしないよう条件付きで更新する
+    const updated = await prisma.content.updateMany({
+      where: { id: content.id, status: "PUBLISHING" },
+      data: { status: "FAILED" },
+    });
+    if (updated.count === 0) continue;
+
+    await prisma.scheduledPost.updateMany({
+      where: { contentId: content.id },
+      data: { status: "failed", lastError: message },
+    });
+    await prisma.activityLog.create({
+      data: {
+        avatarId: content.avatarId,
+        action: "post_failed",
+        category: "sns",
+        description: `${content.platform}: ${message}`,
+        metadata: { contentId: content.id, reason: "publishing_timeout" },
+        level: "error",
+      },
+    });
+    console.warn(`[Tick] Content ${content.id} stuck in PUBLISHING -> FAILED`);
+  }
+
+  return stale.length;
+}
+
+/**
  * tick を1回実行する。Redis ロックが取れなかった場合は skipped=true。
  */
 export async function runSchedulerTick(now = new Date()): Promise<TickResult> {
@@ -178,10 +229,12 @@ export async function runSchedulerTick(now = new Date()): Promise<TickResult> {
   const result = await withLock("scheduler-tick", Math.max(lockTtl, 10_000), async () => {
     const rules = await fireScheduledRules(now);
     const scheduledPostsFired = await firePendingScheduledPosts(now);
+    const stalePublishing = await failStalePublishing(now);
     return {
       rulesEvaluated: rules.evaluated,
       rulesFired: rules.fired,
       scheduledPostsFired,
+      stalePublishing,
       skipped: false,
     };
   });
@@ -191,6 +244,7 @@ export async function runSchedulerTick(now = new Date()): Promise<TickResult> {
       rulesEvaluated: 0,
       rulesFired: 0,
       scheduledPostsFired: 0,
+      stalePublishing: 0,
       skipped: true,
     }
   );

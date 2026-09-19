@@ -24,6 +24,9 @@ export type AppJobType =
   | "generate_post"
   | "publish_post"
   | "fetch_knowledge"
+  // chrome-empire からブラウザ投稿の結果を受け取る。
+  // chrome-empire は DB を持たないため、Content の更新は worker が行う。
+  | "browser_result"
   | "system_maintenance";
 
 export interface AppJobPayload {
