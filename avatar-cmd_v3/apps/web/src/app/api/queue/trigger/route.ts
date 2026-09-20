@@ -4,7 +4,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@avatar-cmd/db";
-import { orchestrator, type JobType } from "@avatar-cmd/core";
+import {
+  orchestrator,
+  authorizeJob,
+  JobAccessError,
+  type JobType,
+} from "@avatar-cmd/core";
 import { handleApiError, requireUser, requireWriteUser } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
@@ -26,36 +31,30 @@ export async function POST(request: NextRequest) {
     if (!type || !payload || typeof payload !== "object") {
       return NextResponse.json(
         { error: "type と payload は必須です" },
-        { status: 400 }
+        { status: 400 },
       );
     }
     if (!JOB_TYPES.includes(type)) {
       return NextResponse.json(
         { error: `type は ${JOB_TYPES.join(" / ")} のいずれかです` },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    // 他ユーザーのアバターに対してジョブを投げられないようにする
-    if (payload.avatarId) {
-      const owned = await prisma.avatar.findFirst({
-        where: { id: String(payload.avatarId), userId: user.id },
-        select: { id: true },
-      });
-      if (!owned) {
-        return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
-      }
-    }
-
-    const jobId = await orchestrator.addJob(type, payload);
+    const authorized = await authorizeJob(user.id, type, payload);
+    const jobId = await orchestrator.addJob(type, authorized);
 
     return NextResponse.json({
       success: true,
       jobId,
       message: "ジョブをキューに追加しました",
-      queueStatus: await orchestrator.getQueueStatus(),
     });
   } catch (error) {
+    if (error instanceof JobAccessError)
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
     return handleApiError("ジョブの投入", error);
   }
 }

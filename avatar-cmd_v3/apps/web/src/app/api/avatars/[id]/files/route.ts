@@ -30,7 +30,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const { id } = await context.params;
 
     if (!(await assertOwnedAvatar(id, user.id))) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
     const filename = new URL(request.url).searchParams.get("filename");
@@ -38,7 +41,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     if (filename) {
       const content = await readAvatarFile(id, filename);
       if (content === null) {
-        return NextResponse.json({ error: "ファイルが見つかりません" }, { status: 404 });
+        return NextResponse.json(
+          { error: "ファイルが見つかりません" },
+          { status: 404 },
+        );
       }
       return NextResponse.json({ filename, content });
     }
@@ -59,7 +65,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     const { id } = await context.params;
 
     if (!(await assertOwnedAvatar(id, user.id))) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
     const { filename, content } = await request.json();
@@ -70,10 +79,15 @@ export async function PUT(request: NextRequest, context: RouteContext) {
           error: "filename と content は必須です",
           editableFiles: EDITABLE_AVATAR_FILES,
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
+    if (content.length > 50000)
+      return NextResponse.json(
+        { error: "人格設定は50000文字以内で入力してください" },
+        { status: 400 },
+      );
     await writeAvatarFile(id, filename, content);
 
     // ファイルとDBの最終同期日時を記録する

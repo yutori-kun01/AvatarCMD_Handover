@@ -7,10 +7,10 @@
   "scripts": {
     "build": "tsc",
     "clean": "rimraf dist node_modules",
-    "check:security": "tsx scripts/security-check.mts",
-    "start:worker": "tsx src/scheduler/worker-main.ts",
-    "check:scheduler": "tsx scripts/scheduler-check.mts",
-    "check:publish": "tsx scripts/publish-check.mts"
+    "check:security": "node --import tsx scripts/security-check.mts",
+    "start:worker": "node --import tsx src/scheduler/worker-main.ts",
+    "check:scheduler": "node --import tsx scripts/scheduler-check.mts",
+    "check:publish": "node --import tsx scripts/publish-check.mts"
   },
   "dependencies": {
     "@avatar-cmd/db": "workspace:*",

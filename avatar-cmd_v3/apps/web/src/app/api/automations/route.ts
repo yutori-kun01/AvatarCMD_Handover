@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma, type Prisma } from "@avatar-cmd/db";
 import { handleApiError, requireUser, requireWriteUser } from "@/lib/api-auth";
 
+import { automationInput } from "@/lib/automation-input";
+
 export const dynamic = "force-dynamic";
 
 // GET /api/automations — 自動化ルール一覧（avatarId で絞り込み可）
@@ -10,7 +12,9 @@ export async function GET(request: NextRequest) {
     const user = await requireUser();
     const avatarId = new URL(request.url).searchParams.get("avatarId");
 
-    const where: Prisma.AutomationRuleWhereInput = { avatar: { userId: user.id } };
+    const where: Prisma.AutomationRuleWhereInput = {
+      avatar: { userId: user.id },
+    };
     if (avatarId) where.avatarId = avatarId;
 
     const rules = await prisma.automationRule.findMany({
@@ -46,7 +50,7 @@ export async function POST(request: NextRequest) {
     if (!name || !avatarId || !triggerType || !actionType) {
       return NextResponse.json(
         { error: "name, avatarId, triggerType, actionType は必須です" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -55,19 +59,26 @@ export async function POST(request: NextRequest) {
       select: { id: true },
     });
     if (!owned) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
+    let validated;
+    try {
+      validated = await automationInput(user.id, owned.id, body);
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : "設定が不正です" },
+        { status: 400 },
+      );
+    }
     const rule = await prisma.automationRule.create({
       data: {
         avatarId: owned.id,
-        name: String(name),
-        description: description ? String(description) : null,
-        category: category ? String(category) : "posting",
-        triggerType: String(triggerType),
-        triggerConfig: (triggerConfig ?? {}) as Prisma.InputJsonValue,
-        actionType: String(actionType),
-        actionConfig: (actionConfig ?? {}) as Prisma.InputJsonValue,
+        ...validated,
+        actionConfig: validated.actionConfig as Prisma.InputJsonValue,
       },
     });
 

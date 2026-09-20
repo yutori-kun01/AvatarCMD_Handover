@@ -1,3 +1,4 @@
+import { prisma } from "@avatar-cmd/db";
 // ================================================
 // worker サービスのエントリポイント
 // ================================================
@@ -6,7 +7,12 @@
 // レプリカ数に影響されずにジョブが処理される。
 
 import { createServer } from "http";
-import { closeQueues, createAppWorker, type AppJobPayload, type AppJobType } from "@avatar-cmd/queue";
+import {
+  closeQueues,
+  createAppWorker,
+  type AppJobPayload,
+  type AppJobType,
+} from "@avatar-cmd/queue";
 import { processJob } from "./workers";
 import { runSchedulerTick } from "./tick";
 
@@ -23,11 +29,54 @@ const worker = createAppWorker(async (job) => {
 });
 
 worker.on("failed", (job, error) => {
+  if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+    const payload = job.data;
+    void (async () => {
+      if (payload.automationId)
+        await prisma.automationRule.updateMany({
+          where: { id: payload.automationId, avatarId: payload.avatarId },
+          data: {
+            isActive: false,
+            lastError:
+              "連続失敗のため停止しました。実行履歴を確認してください。",
+          },
+        });
+      const contentId = payload.data?.contentId;
+      if (
+        job.name === "publish_post" &&
+        typeof contentId === "string" &&
+        payload.avatarId
+      ) {
+        await prisma.$transaction(async (tx) => {
+          const changed = await tx.content.updateMany({
+            where: {
+              id: contentId,
+              avatarId: payload.avatarId,
+              status: { in: ["APPROVED", "SCHEDULED"] },
+            },
+            data: { status: "FAILED" },
+          });
+          if (changed.count)
+            await tx.scheduledPost.updateMany({
+              where: { contentId },
+              data: {
+                status: "failed",
+                lastError:
+                  "投稿前の確認に失敗しました。実行履歴を確認してください。",
+              },
+            });
+        });
+      }
+    })().catch(() =>
+      console.error("[Worker] Could not persist terminal job failure"),
+    );
+  }
+
   // attempts を使い切ったかどうかで扱いを分けたいので試行回数も出す
   console.error(
     `[Worker] Job ${job?.id} (${job?.name}) failed on attempt ` +
       `${job?.attemptsMade}/${job?.opts?.attempts ?? 1}:`,
-    error?.message ?? error
+    error?.message ?? error,
   );
 });
 
@@ -49,16 +98,21 @@ async function tick(): Promise<void> {
     const result = await runSchedulerTick();
     if (
       !result.skipped &&
-      (result.rulesFired > 0 || result.scheduledPostsFired > 0 || result.stalePublishing > 0)
+      (result.rulesFired > 0 ||
+        result.scheduledPostsFired > 0 ||
+        result.stalePublishing > 0)
     ) {
       console.log(
         `[Scheduler] Fired ${result.rulesFired} rule(s), ` +
           `${result.scheduledPostsFired} scheduled post(s), ` +
-          `cleaned ${result.stalePublishing} stale publishing`
+          `cleaned ${result.stalePublishing} stale publishing`,
       );
     }
   } catch (error) {
-    console.error("[Scheduler] Tick failed:", error instanceof Error ? error.message : error);
+    console.error(
+      "[Scheduler] Tick failed:",
+      error instanceof Error ? error.message : error,
+    );
   } finally {
     tickRunning = false;
   }
@@ -80,7 +134,7 @@ const server = createServer((req, res) => {
       JSON.stringify({
         status: ok ? "ok" : "stopped",
         uptime: Math.floor(process.uptime()),
-      })
+      }),
     );
     return;
   }

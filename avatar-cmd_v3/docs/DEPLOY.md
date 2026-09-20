@@ -39,12 +39,12 @@ publish_post  → Provider の API 投稿を試す
                  └─ ブラウザ必要 → ブラウザキューへ操作列を投入
                                     → chrome-empire が Playwright で実行
                                     → 結果を browser_result として app キューへ戻す
-                                    → worker が Content を PUBLISHED / FAILED に確定
+                                    → worker が Content を PUBLISHED / REVIEW に確定
 ```
 
 chrome-empire は DB を持たないため、Content の更新は必ず worker が行います。
 結果が返らないまま `PUBLISHING` で残った Content は、tick が
-`PUBLISHING_TIMEOUT_MS`（既定15分）経過後に FAILED へ倒します。
+`PUBLISHING_TIMEOUT_MS`（既定15分）経過後に REVIEW（要確認）へ移します。公開済みか不明な投稿は自動再送しません。
 
 - TLS 証明書の取得・更新は Cloudflare 側が行うため **Traefik と Let's Encrypt は使いません**。
 - オリジンの IP アドレスは公開されません。
@@ -142,10 +142,7 @@ docker compose logs -f web
 docker compose logs -f cloudflared
 ```
 
-> **ビルド時に外向き通信が必要です。** `next/font` が Google Fonts
-> （`fonts.googleapis.com` / `fonts.gstatic.com`）からフォントを取得します。
-> 取得したフォントはビルド成果物に含まれ実行時の外部通信は発生しませんが、
-> 閉じたネットワークでビルドする場合は `next/font/local` への切り替えが必要です。
+> フォントは端末にインストールされた日本語フォントを使用します。Google Fontsへのビルド時アクセスは不要です。依存パッケージ・Dockerイメージの取得には外向き通信が必要です。
 
 ## 5. 初期管理者の作成
 
@@ -160,7 +157,7 @@ docker compose run --rm \
 
 `SEED_ADMIN_PASSWORD` を省略するとランダムなパスワードを生成し、実行ログに
 1 度だけ表示します（固定の既定パスワードは埋め込んでいません）。
-シードはアバター 5 体とダッシュボード用の初期データも投入します。
+通常のシードは管理者のみ作成します。開発用アバター5体が必要な場合だけ `SEED_DEMO_DATA=true` を指定してください。
 
 ## 6. 動作確認
 
@@ -314,10 +311,10 @@ docker compose up -d chrome-empire worker
 
 ---
 
-## 回帰チェック
+## DB・ブラウザ統合チェック
 
-テストランナーは未導入で、主要な経路は tsx で直接実行するチェックスクリプト
-にしてあります。DB と Redis を起動した状態で実行してください。
+以下は専用のテストDB・Redisまたは実ブラウザが必要です。
+DB統合チェックでは `ALLOW_DISPOSABLE_TEST_DATABASE=yes` を指定してください。
 
 ```bash
 # SSRF防御 / パストラバーサル防御（外部依存なし）
@@ -335,18 +332,39 @@ pnpm --filter @avatar-cmd/core check:publish
 pnpm --filter @avatar-cmd/chrome-empire check:operations
 ```
 
-## 未実装 / 既知の制約
+## 実装済みの操作と制約
 
-- **ブラウザのログイン手順が未接続**。`getLoginSteps()` は Provider が
-  持っていますが、セッション切れを検知してログインを挟む処理がありません。
-  実運用前にプラットフォームごとのセレクタの検証が必要です。
-- **API 投稿のトークン更新が未実装**。`refreshToken()` は Provider に
-  ありますが、期限切れ時に呼ぶ処理がありません。
-- **Provider のセレクタは未検証**。`getPostSteps()` のセレクタは実際の
-  画面と突き合わせていないため、そのままでは失敗する可能性があります。
-- `GET /api/content` はモックデータを返します（v3 の SNS 運用画面が参照）。
-  実データは `/api/posts` 側です。
-- `pnpm lint` は ESLint 未設定のため実行できません。
+- `/dashboard/avatars`: 登録、編集、一時停止・再開、名前入力による削除確認、人格・経歴・ルールのファイル編集。
+- `/dashboard/settings`: X・ThreadsのAPIトークンを暗号化して保存／解除。設定済みと接続成功は区別します。
+- `/dashboard/sns`: 下書き生成、編集、承認して公開、承認して日時予約。15秒ごとに投稿状態を更新します。
+- `/dashboard/automation`: 毎日の下書き生成ルールを保存・停止・削除。cronは日本時間で評価します。
+- `/dashboard/activity`: 実際の生成・公開・失敗履歴。
+- ダッシュボード／収益画面はDBから集計。SNSからの売上・閲覧数の自動取得は未接続です。
+- `GEMINI_API_KEY` が無い場合や生成が失敗した場合はエラーになります。モック本文を実データとして保存しません。
+- 投稿は承認済み・予約済みのものだけを処理します。停止中のアバターは処理しません。
+- 外部送信前にDBで投稿を占有します。APIの応答が不明なときは REVIEW にして自動再送を停止します。公開先に同じ投稿がないことを確認してから再承認してください。
+- ブラウザ投稿は、Providerに公開先URLを確認する `confirmationUrlPattern` が必須です。既存SNSのセレクタ・ログイン・公開確認は実サイト未検証のため、現状は公開実行を拒否します。noteは下書き作成までです。
+- APIトークンの期限が登録されていて期限切れの場合、Providerが対応していれば更新します。未対応・更新失敗時は再設定が必要です。
+- 予約キュー投入は一意なジョブIDを使い、投入成功後に「処理中」にします。投入前の障害では予約を残し、古い未送信の処理中予約は回収します。
+- 自動化ジョブがリトライ上限に達したらルールを停止します。Discord通知・n8n操作・note有料公開の価格設定と承認画面は未実装です。
+- 実SNS投稿、VPS上のDocker全体起動、ログイン済み画面のE2Eは別途確認が必要です。
+- `pnpm lint` はESLint未設定です。
+
+### 回帰検証
+
+DBやSNSへ接続しない回帰検証と全体ビルド:
+
+```bash
+pnpm check:regression
+pnpm build
+```
+
+GitHub Actionsでも同じ検証を行います。認可、同時投稿、未承認投稿、応答不明時の再送停止、古いブラウザ結果、予約投入障害を検証します。
+
+既存の `check:scheduler` / `check:publish` はDB統合テストです。
+**空の専用DB・専用Redisにのみ接続し、`ALLOW_DISPOSABLE_TEST_DATABASE=yes` を指定してください。**
+`check:scheduler` はテスト用キューを初期化するため、本番の接続先を使わないでください。
+開発用アバターが必要なときはテストDBで `SEED_DEMO_DATA=true` とともにシードを実行します。
 
 ---
 

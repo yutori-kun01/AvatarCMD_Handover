@@ -19,6 +19,8 @@ export async function GET() {
             accountName: true,
             profileUrl: true,
             authType: true,
+            isActive: true,
+            accountId: true,
           },
         },
         _count: {
@@ -44,12 +46,19 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireWriteUser();
     const body = await request.json();
-    const { name, role, specialization, targetAudience, description, avatarImageUrl } = body;
+    const {
+      name,
+      role,
+      specialization,
+      targetAudience,
+      description,
+      avatarImageUrl,
+    } = body;
 
     if (!name || !role) {
       return NextResponse.json(
         { error: "name, role は必須です" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 

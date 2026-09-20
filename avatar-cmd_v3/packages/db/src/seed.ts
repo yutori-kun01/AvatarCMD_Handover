@@ -1,7 +1,7 @@
 // @avatar-cmd/db — Seed Data
 // Seeds the database with default avatars for development
 
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../generated/client";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 
@@ -16,7 +16,8 @@ async function main() {
   // （固定の既定パスワードを埋め込むと本番に持ち込まれる恐れがあるため）。
   const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@avatar-cmd.local";
   const providedPassword = process.env.SEED_ADMIN_PASSWORD;
-  const adminPassword = providedPassword ?? randomBytes(18).toString("base64url");
+  const adminPassword =
+    providedPassword ?? randomBytes(18).toString("base64url");
   const passwordHash = await bcrypt.hash(adminPassword, 12);
 
   const user = await prisma.user.upsert({
@@ -37,12 +38,15 @@ async function main() {
     console.log(`     初期パスワード (この表示のみ): ${adminPassword}`);
   }
 
+  if (process.env.SEED_DEMO_DATA !== "true") return;
+
   // Default Avatars (from Avatar CMD v2 spec)
   const avatars = [
     {
       name: "Haru",
       role: "ADHD / 内向型",
-      description: "メンタルヘルス、脳科学、集中テクニックの専門家。優しく寄り添い、構造的に説明するスタイル。",
+      description:
+        "メンタルヘルス、脳科学、集中テクニックの専門家。優しく寄り添い、構造的に説明するスタイル。",
       personality: {
         openness: 0.7,
         conscientiousness: 0.8,
@@ -67,7 +71,8 @@ async function main() {
     {
       name: "Kai",
       role: "バイブスコーダー",
-      description: "ノーコード開発（v0, Cursor, Supabase）のエキスパート。カジュアルでテンション高め。",
+      description:
+        "ノーコード開発（v0, Cursor, Supabase）のエキスパート。カジュアルでテンション高め。",
       personality: {
         openness: 0.9,
         conscientiousness: 0.5,
@@ -92,7 +97,8 @@ async function main() {
     {
       name: "Mio",
       role: "ウェルネスコーチ",
-      description: "マインドフルネス、ヨガ、栄養学の専門家。穏やかで知的なトーン。",
+      description:
+        "マインドフルネス、ヨガ、栄養学の専門家。穏やかで知的なトーン。",
       personality: {
         openness: 0.6,
         conscientiousness: 0.7,
@@ -117,7 +123,8 @@ async function main() {
     {
       name: "Ren",
       role: "トレンドハンター",
-      description: "最新AI/テック動向、バイラルコンテンツの専門家。スピード感のある情報発信。",
+      description:
+        "最新AI/テック動向、バイラルコンテンツの専門家。スピード感のある情報発信。",
       personality: {
         openness: 0.9,
         conscientiousness: 0.4,
@@ -142,7 +149,8 @@ async function main() {
     {
       name: "Sora",
       role: "知識キュレーター",
-      description: "学術論文、ビジネス書、ハウツー記事のキュレーション。知的で落ち着いたトーン。",
+      description:
+        "学術論文、ビジネス書、ハウツー記事のキュレーション。知的で落ち着いたトーン。",
       personality: {
         openness: 0.8,
         conscientiousness: 0.9,

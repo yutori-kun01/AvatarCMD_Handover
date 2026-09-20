@@ -42,7 +42,7 @@ function startSite(): Promise<{
           fetch('/submit', { method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({ title: document.getElementById('title').value,
                                    body: document.getElementById('editor').innerText }) })
-            .then(function () { document.body.innerHTML = '<p id=done>done</p>'; });
+            .then(function () { history.pushState({}, '', '/published/1'); document.body.innerHTML = '<p id=done>done</p>'; });
         ">publish</button>
       </body></html>`);
       return;
@@ -101,6 +101,7 @@ async function main() {
     const postSteps: OperationStep[] = [
       {
         action: "post",
+        confirmationUrlPattern: "/published/1$",
         url: `${site.origin}/compose`,
         waitFor: "#publish",
         selectors: { title: "#title", editor: "#editor", submit: "#publish" },
@@ -152,6 +153,7 @@ async function main() {
       [
         {
           action: "post",
+        confirmationUrlPattern: "/published/1$",
           url: `${site.origin}/compose`,
           selectors: { title: "#does-not-exist", submit: "#publish" },
           inputData: { title: "x" },

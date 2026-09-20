@@ -12,7 +12,8 @@
     "db:push": "turbo run db:push --filter=@avatar-cmd/db",
     "db:migrate": "turbo run db:migrate --filter=@avatar-cmd/db",
     "db:studio": "turbo run db:studio --filter=@avatar-cmd/db",
-    "clean": "turbo run clean && rimraf node_modules"
+    "clean": "turbo run clean && rimraf node_modules",
+    "check:regression": "node scripts/regression.cjs"
   },
   "devDependencies": {
     "turbo": "^2.3.0",
