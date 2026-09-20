@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma, type Prisma } from "@avatar-cmd/db";
 import { handleApiError, requireWriteUser } from "@/lib/api-auth";
 
+import { automationInput } from "@/lib/automation-input";
+
 export const dynamic = "force-dynamic";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -14,33 +16,42 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     const owned = await prisma.automationRule.findFirst({
       where: { id, avatar: { userId: user.id } },
-      select: { id: true },
     });
     if (!owned) {
-      return NextResponse.json({ error: "自動化ルールが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "自動化ルールが見つかりません" },
+        { status: 404 },
+      );
     }
 
     const body = await request.json();
-    const data: Prisma.AutomationRuleUpdateInput = {};
-
-    // v2 は status 文字列だったが、v3 は isActive (Boolean)
-    if (typeof body.isActive === "boolean") data.isActive = body.isActive;
-    if (typeof body.status === "string") data.isActive = body.status === "ACTIVE";
-    if (typeof body.name === "string") data.name = body.name;
-    if (typeof body.description === "string") data.description = body.description;
-    if (typeof body.category === "string") data.category = body.category;
-    if (typeof body.triggerType === "string") data.triggerType = body.triggerType;
-    if (typeof body.actionType === "string") data.actionType = body.actionType;
-    if (body.triggerConfig && typeof body.triggerConfig === "object") {
-      data.triggerConfig = body.triggerConfig as Prisma.InputJsonValue;
+    if (body.isActive === false && Object.keys(body).length === 1) {
+      return NextResponse.json(
+        await prisma.automationRule.update({
+          where: { id },
+          data: { isActive: false },
+        }),
+      );
     }
-    if (body.actionConfig && typeof body.actionConfig === "object") {
-      data.actionConfig = body.actionConfig as Prisma.InputJsonValue;
+    let validated;
+    try {
+      validated = await automationInput(user.id, owned.avatarId, {
+        ...owned,
+        ...body,
+      });
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : "設定が不正です" },
+        { status: 400 },
+      );
     }
-
-    if (Object.keys(data).length === 0) {
-      return NextResponse.json({ error: "更新可能な項目がありません" }, { status: 400 });
-    }
+    const data: Prisma.AutomationRuleUpdateInput = {
+      ...validated,
+      actionConfig: validated.actionConfig as Prisma.InputJsonValue,
+      ...(typeof body.isActive === "boolean"
+        ? { isActive: body.isActive }
+        : {}),
+    };
 
     const rule = await prisma.automationRule.update({ where: { id }, data });
     return NextResponse.json(rule);
@@ -59,7 +70,10 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
       where: { id, avatar: { userId: user.id } },
     });
     if (result.count === 0) {
-      return NextResponse.json({ error: "自動化ルールが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "自動化ルールが見つかりません" },
+        { status: 404 },
+      );
     }
 
     return NextResponse.json({ success: true });

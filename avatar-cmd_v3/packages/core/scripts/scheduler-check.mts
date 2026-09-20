@@ -23,6 +23,7 @@ async function cleanup() {
 }
 
 async function main() {
+  if (process.env.ALLOW_DISPOSABLE_TEST_DATABASE !== "yes") throw new Error("専用の空DBとRedisを指定し、ALLOW_DISPOSABLE_TEST_DATABASE=yes を設定してください。本番環境では実行しないでください。");
   const avatar = await prisma.avatar.findFirst({ orderBy: { name: "asc" } });
   if (!avatar) throw new Error("アバターが居ません。先に db:seed を実行してください");
 
@@ -129,7 +130,7 @@ async function main() {
   t = await runSchedulerTick();
   check("投入されない", t.scheduledPostsFired === 0, t);
 
-  console.log("── PUBLISHING のまま放置された Content は FAILED に倒される");
+  console.log("── PUBLISHING のまま放置された Content は REVIEW に移す");
   const stuck = await prisma.content.create({
     data: { avatarId: avatar.id, platform: "note", content: "[TEST] 放置された投稿", status: "PUBLISHING" },
   });
@@ -138,7 +139,7 @@ async function main() {
   t = await runSchedulerTick();
   let stuckAfter = await prisma.content.findUniqueOrThrow({ where: { id: stuck.id } });
   check("掃除対象になる", t.stalePublishing === 1, t.stalePublishing);
-  check("status=FAILED", stuckAfter.status === "FAILED", stuckAfter.status);
+  check("status=REVIEW", stuckAfter.status === "REVIEW", stuckAfter.status);
 
   console.log("── 直近に更新された PUBLISHING は掃除しない");
   const fresh = await prisma.content.create({
@@ -161,7 +162,7 @@ async function main() {
 main()
   .catch(async (error) => {
     console.error(error);
-    await cleanup().catch(() => undefined);
+    if (process.env.ALLOW_DISPOSABLE_TEST_DATABASE === "yes") await cleanup().catch(() => undefined);
     process.exit(1);
   })
   .finally(async () => {

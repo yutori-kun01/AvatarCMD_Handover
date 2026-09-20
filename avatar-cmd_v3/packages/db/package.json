@@ -9,7 +9,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:seed": "tsx src/seed.ts",
+    "db:seed": "node --import tsx src/seed.ts",
     "clean": "rimraf node_modules .prisma",
     "build": "tsc --noEmit"
   },

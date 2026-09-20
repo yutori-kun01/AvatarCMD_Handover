@@ -43,8 +43,11 @@ const empire = new ChromeEmpire({
 // ブラウザキューの消費
 const queueWorker = createBrowserWorker(async (job) => {
   const data = job.data;
-  const label = data.kind === "task" ? data.type : `operations(${data.operations.length})`;
-  console.log(`[ChromeWorker] Executing ${job.id} (${label}) for ${data.avatarId}`);
+  const label =
+    data.kind === "task" ? data.type : `operations(${data.operations.length})`;
+  console.log(
+    `[ChromeWorker] Executing ${job.id} (${label}) for ${data.avatarId}`,
+  );
 
   // executeTask / executeOperationsForAvatar は既存インスタンスを前提に
   // するため、無ければ先に起動する。プール上限のチェックは
@@ -58,7 +61,7 @@ const queueWorker = createBrowserWorker(async (job) => {
   if (data.kind === "operations") {
     const result = await empire.executeOperationsForAvatar(
       data.avatarId,
-      data.operations as OperationStep[]
+      data.operations as OperationStep[],
     );
     if (!result.success) {
       // 失敗を投げて BullMQ のリトライに乗せる。
@@ -71,6 +74,7 @@ const queueWorker = createBrowserWorker(async (job) => {
     if (data.contentId) {
       await reportBrowserResult({
         contentId: data.contentId,
+        attemptId: data.attemptId,
         avatarId: data.avatarId,
         success: true,
         // 最後に開いていた URL を投稿先として記録する
@@ -97,6 +101,7 @@ const queueWorker = createBrowserWorker(async (job) => {
 /** ブラウザ投稿の結果を app キューへ戻す */
 async function reportBrowserResult(result: {
   contentId: string;
+  attemptId?: string;
   avatarId: string;
   success: boolean;
   url?: string;
@@ -107,6 +112,7 @@ async function reportBrowserResult(result: {
       avatarId: result.avatarId,
       data: {
         contentId: result.contentId,
+        attemptId: result.attemptId,
         success: result.success,
         url: result.url,
         error: result.error,
@@ -124,7 +130,7 @@ queueWorker.on("failed", (job, error) => {
   const made = job?.attemptsMade ?? 0;
   console.error(
     `[ChromeWorker] Job ${job?.id} (${job?.name}) failed on attempt ${made}/${attempts}:`,
-    error?.message ?? error
+    error?.message ?? error,
   );
 
   // リトライが残っている間は確定させない。使い切った時点で失敗を報告する
@@ -134,6 +140,7 @@ queueWorker.on("failed", (job, error) => {
   if (data && data.kind === "operations" && data.contentId) {
     void reportBrowserResult({
       contentId: data.contentId,
+      attemptId: data.attemptId,
       avatarId: data.avatarId,
       success: false,
       error: error?.message ?? "Browser operations failed",
@@ -156,7 +163,7 @@ const server = createServer((req, res) => {
       JSON.stringify({
         status: ok ? "ok" : "stopped",
         uptime: Math.floor(process.uptime()),
-      })
+      }),
     );
     return;
   }
@@ -165,10 +172,10 @@ const server = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     void getQueueStats(getBrowserQueue())
       .then((queue) =>
-        res.end(JSON.stringify({ pool: empire.getPoolStatus(), queue }))
+        res.end(JSON.stringify({ pool: empire.getPoolStatus(), queue })),
       )
       .catch(() =>
-        res.end(JSON.stringify({ pool: empire.getPoolStatus(), queue: null }))
+        res.end(JSON.stringify({ pool: empire.getPoolStatus(), queue: null })),
       );
     return;
   }

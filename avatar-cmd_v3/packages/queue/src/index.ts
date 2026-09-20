@@ -30,6 +30,7 @@ export type AppJobType =
   | "system_maintenance";
 
 export interface AppJobPayload {
+  userId?: string;
   avatarId?: string;
   automationId?: string;
   data?: Record<string, unknown>;
@@ -72,6 +73,7 @@ export interface BrowserOperationStep {
   url: string;
   selectors?: Record<string, string>;
   inputData?: Record<string, string>;
+  confirmationUrlPattern?: string;
   waitFor?: string;
   timeout?: number;
 }
@@ -83,6 +85,7 @@ export interface BrowserOperationsJob {
   platform?: string;
   /** 紐づく Content のID。完了時に状態を戻すために使う */
   contentId?: string;
+  attemptId?: string;
   operations: BrowserOperationStep[];
 }
 
@@ -145,18 +148,28 @@ export function getBrowserQueue(): Queue<BrowserJobPayload> {
 /** アプリジョブを投入し、ジョブIDを返す */
 export async function enqueueAppJob(
   type: AppJobType,
-  payload: AppJobPayload
+  payload: AppJobPayload,
+  jobId?: string,
 ): Promise<string> {
-  const job = await getAppQueue().add(type, payload);
+  const job = await getAppQueue().add(
+    type,
+    payload,
+    jobId ? { jobId } : undefined,
+  );
   return job.id ?? "";
 }
 
 /** ブラウザ操作ジョブを投入し、ジョブIDを返す */
 export async function enqueueBrowserJob(
-  payload: BrowserJobPayload
+  payload: BrowserJobPayload,
 ): Promise<string> {
   const name = payload.kind === "task" ? payload.type : "operations";
-  const job = await getBrowserQueue().add(name, payload);
+  const job = await getBrowserQueue().add(name, payload, {
+    attempts: 1,
+    ...(payload.kind === "operations" && payload.attemptId
+      ? { jobId: `browser-${payload.attemptId}` }
+      : {}),
+  });
   return job.id ?? "";
 }
 
@@ -176,7 +189,7 @@ export async function getQueueStats(queue: Queue): Promise<QueueStats> {
     "active",
     "completed",
     "failed",
-    "delayed"
+    "delayed",
   );
   return {
     name: queue.name,
@@ -196,7 +209,7 @@ function concurrency(envName: string, fallback: number): number {
 }
 
 export function createAppWorker(
-  processor: Processor<AppJobPayload, unknown, AppJobType>
+  processor: Processor<AppJobPayload, unknown, AppJobType>,
 ): Worker<AppJobPayload, unknown, AppJobType> {
   return new Worker(APP_QUEUE_NAME, processor, {
     connection: connectionOptions(),
@@ -205,7 +218,7 @@ export function createAppWorker(
 }
 
 export function createBrowserWorker(
-  processor: Processor<BrowserJobPayload>
+  processor: Processor<BrowserJobPayload>,
 ): Worker<BrowserJobPayload> {
   return new Worker(BROWSER_QUEUE_NAME, processor, {
     connection: connectionOptions(),
@@ -231,7 +244,7 @@ function getLockRedis(): IORedis {
 export async function withLock<T>(
   key: string,
   ttlMs: number,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T | null> {
   const redis = getLockRedis();
   const token = `${process.pid}-${Date.now()}-${Math.random()}`;
@@ -249,7 +262,7 @@ export async function withLock<T>(
         "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
         1,
         lockKey,
-        token
+        token,
       )
       .catch(() => undefined);
   }
@@ -262,7 +275,11 @@ export async function withLock<T>(
  */
 export async function closeQueues(): Promise<void> {
   const lock = lockRedis;
-  await Promise.allSettled([appQueue?.close(), browserQueue?.close(), lock?.quit()]);
+  await Promise.allSettled([
+    appQueue?.close(),
+    browserQueue?.close(),
+    lock?.quit(),
+  ]);
   lock?.disconnect();
   appQueue = null;
   browserQueue = null;

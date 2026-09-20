@@ -1,87 +1,167 @@
 "use client";
-import { useState } from "react";
-
-const automationRules = [
-  { id: "r1", name: "ゴールデンタイム自動投稿", description: "19-21時に予約済みコンテンツを自動投稿", trigger: "schedule", frequency: "daily", avatarIds: ["1", "2", "4"], platforms: ["x", "note"], enabled: true, lastRun: "10分前", successRate: 98.5 },
-  { id: "r2", name: "トレンドキーワード収集", description: "X/TikTokのトレンドを1時間ごとにスキャン", trigger: "interval", frequency: "hourly", avatarIds: ["4"], platforms: ["x", "tiktok"], enabled: true, lastRun: "24分前", successRate: 99.2 },
-  { id: "r3", name: "エンゲージメント自動返信", description: "条件に合うリプライに自動でいいね・返信", trigger: "event", frequency: "realtime", avatarIds: ["1", "3"], platforms: ["x", "instagram"], enabled: true, lastRun: "3分前", successRate: 94.8 },
-  { id: "r4", name: "メトリクス定期収集", description: "全アバターの各SNSメトリクスを6時間ごと収集", trigger: "interval", frequency: "6hours", avatarIds: ["1", "2", "3", "4", "5"], platforms: ["x", "note", "zenn", "instagram", "youtube"], enabled: true, lastRun: "2時間前", successRate: 100 },
-  { id: "r5", name: "改善サイクル自動実行", description: "毎週月曜にImprovementEngineを実行し提案生成", trigger: "schedule", frequency: "weekly", avatarIds: ["1", "2", "3", "4", "5"], platforms: [], enabled: true, lastRun: "3日前", successRate: 100 },
-  { id: "r6", name: "セッション自動更新", description: "Browser-onlyプラットフォームのセッション期限前に自動再ログイン", trigger: "threshold", frequency: "as_needed", avatarIds: ["1", "3", "5"], platforms: ["note", "tiktok", "zenn"], enabled: true, lastRun: "1日前", successRate: 95.0 },
-  { id: "r7", name: "A/Bテスト結果分析", description: "48時間後にバリアント比較して勝者を判定", trigger: "event", frequency: "on_complete", avatarIds: ["1", "2"], platforms: ["x"], enabled: false, lastRun: "5日前", successRate: 100 },
-];
-
-const avatarNames: Record<string, string> = { "1": "Haru", "2": "Kai", "3": "Mio", "4": "Ren", "5": "Sora" };
-
+import { useApiData } from "@/hooks/use-api";
+import {
+  Panel,
+  Notice,
+  api,
+  useAction,
+  field,
+  button,
+  primary,
+  date,
+  type Avatar,
+} from "@/components/dashboard/live-ui";
+type Rule = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  avatar: { name: string };
+  triggerConfig: { cron?: string };
+  executionCount: number;
+  lastExecutedAt: string | null;
+  lastError: string | null;
+};
 export default function AutomationPage() {
-  const [rules, setRules] = useState(automationRules);
-
-  const toggleRule = (id: string) => {
-    setRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
-  };
-
-  const triggerLabel = (t: string) => t === "schedule" ? "⏰ スケジュール" : t === "interval" ? "🔁 インターバル" : t === "event" ? "⚡ イベント" : "📊 閾値";
-  const triggerColor = (t: string) => t === "schedule" ? "#3b82f6" : t === "interval" ? "#22d3ee" : t === "event" ? "#f59e0b" : "#a78bfa";
-
+  const rules = useApiData<Rule[]>("/api/automations");
+  const avatars = useApiData<Avatar[]>("/api/avatars");
+  const action = useAction();
   return (
-    <>
-      {/* Summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
-        {[
-          { label: "総ルール数", value: rules.length, color: "#fff" },
-          { label: "有効", value: rules.filter(r => r.enabled).length, color: "#22c55e" },
-          { label: "無効", value: rules.filter(r => !r.enabled).length, color: "#ef4444" },
-          { label: "平均成功率", value: `${(rules.reduce((s, r) => s + r.successRate, 0) / rules.length).toFixed(1)}%`, color: "#22d3ee" },
-        ].map(s => (
-          <div key={s.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", textAlign: "center" }}>
-            <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Rules List */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {rules.map(rule => (
-          <div key={rule.id} style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${rule.enabled ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)"}`, borderRadius: 14, padding: 20, opacity: rule.enabled ? 1 : 0.6, transition: "all 0.2s" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600, fontSize: 15 }}>{rule.name}</span>
-                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: `${triggerColor(rule.trigger)}15`, color: triggerColor(rule.trigger), border: `1px solid ${triggerColor(rule.trigger)}30` }}>{triggerLabel(rule.trigger)}</span>
-                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.4)" }}>{rule.frequency}</span>
-                </div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>{rule.description}</div>
-                <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
-                  <span style={{ color: "rgba(255,255,255,0.4)" }}>
-                    アバター: {rule.avatarIds.map(id => avatarNames[id]).join(", ")}
-                  </span>
-                  {rule.platforms.length > 0 && (
-                    <span style={{ color: "rgba(255,255,255,0.4)" }}>
-                      SNS: {rule.platforms.join(", ")}
-                    </span>
-                  )}
-                </div>
+    <div className="space-y-5">
+      <p className="text-sm text-muted-foreground">
+        指定した時刻にAIが下書きを作成します。公開するには「SNS運用」で本文を確認し、承認してください。時刻は日本時間です。
+      </p>
+      {action.feedback}
+      <Notice error={rules.error || avatars.error} loading={rules.loading} />
+      <Panel title="定期実行ルール">
+        {!rules.loading && !rules.data?.length && (
+          <p className="text-sm text-muted-foreground">
+            ルールはまだありません。
+          </p>
+        )}
+        {rules.data?.map((r) => (
+          <article
+            key={r.id}
+            className="rounded-lg border border-white/10 p-4 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3>{r.name}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {r.avatar.name} · {r.triggerConfig.cron} ·{" "}
+                  {r.isActive ? "有効" : "停止中"}
+                </p>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
-                {/* Toggle */}
-                <button onClick={() => toggleRule(rule.id)} style={{ width: 44, height: 24, borderRadius: 12, border: "none", cursor: "pointer", background: rule.enabled ? "#22c55e" : "rgba(255,255,255,0.15)", position: "relative", transition: "background 0.2s" }}>
-                  <span style={{ position: "absolute", width: 18, height: 18, borderRadius: "50%", background: "#fff", top: 3, left: rule.enabled ? 23 : 3, transition: "left 0.2s" }} />
+              <div className="flex gap-2">
+                <button
+                  disabled={action.busy}
+                  className={button}
+                  onClick={() =>
+                    action.run(async () => {
+                      await api(`/api/automations/${r.id}`, "PATCH", {
+                        isActive: !r.isActive,
+                      });
+                      await rules.refetch();
+                    })
+                  }
+                >
+                  {r.isActive ? "停止" : "有効にする"}
                 </button>
-                <div style={{ display: "flex", gap: 12, fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
-                  <span>最終: {rule.lastRun}</span>
-                  <span style={{ color: rule.successRate > 97 ? "#22c55e" : rule.successRate > 90 ? "#f59e0b" : "#ef4444" }}>成功率: {rule.successRate}%</span>
-                </div>
+                <button
+                  disabled={action.busy}
+                  className={button}
+                  onClick={() => {
+                    if (confirm(`「${r.name}」を削除しますか？`))
+                      void action.run(async () => {
+                        await api(`/api/automations/${r.id}`, "DELETE");
+                        await rules.refetch();
+                      }, "削除しました");
+                  }}
+                >
+                  削除
+                </button>
               </div>
             </div>
-          </div>
+            <p className="text-xs text-muted-foreground">
+              投入回数 {r.executionCount}回 / 最終投入 {date(r.lastExecutedAt)}
+            </p>
+            {r.lastError && <Notice error={r.lastError} />}
+          </article>
         ))}
-      </div>
-
-      {/* Add Rule Button */}
-      <button style={{ width: "100%", marginTop: 16, padding: "16px", borderRadius: 14, border: "1px dashed rgba(255,255,255,0.15)", background: "transparent", cursor: "pointer", color: "rgba(255,255,255,0.3)", fontSize: 14, fontWeight: 500 }}>
-        + 新しい自動化ルールを追加
-      </button>
-    </>
+      </Panel>
+      <Panel title="下書き生成を予約">
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const form = e.currentTarget;
+            const f = new FormData(form);
+            const [hour, minute] = String(f.get("time")).split(":");
+            void action.run(async () => {
+              await api("/api/automations", "POST", {
+                name: f.get("name"),
+                avatarId: f.get("avatarId"),
+                triggerType: "schedule",
+                triggerConfig: {
+                  cron: `${Number(minute)} ${Number(hour)} * * *`,
+                },
+                actionType: "generate",
+                actionConfig: {
+                  topic: f.get("topic"),
+                  platform: f.get("platform"),
+                },
+              });
+              form.reset();
+              await rules.refetch();
+            });
+          }}
+        >
+          <label className="text-sm">
+            ルール名
+            <input name="name" className={field} required maxLength={200} />
+          </label>
+          <label className="text-sm">
+            アバター
+            <select name="avatarId" className={field} required>
+              <option value="">選択してください</option>
+              {avatars.data
+                ?.filter((a) => a.status === "ACTIVE")
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            SNS
+            <select name="platform" className={field}>
+              <option value="x">X</option>
+              <option value="threads">Threads</option>
+              <option value="note">note</option>
+            </select>
+          </label>
+          <label className="text-sm">
+            毎日の実行時刻（日本時間）
+            <input
+              type="time"
+              name="time"
+              className={field}
+              defaultValue="09:00"
+              required
+            />
+          </label>
+          <label className="text-sm md:col-span-2">
+            テーマ
+            <input name="topic" className={field} required maxLength={2000} />
+          </label>
+          <button
+            className={primary}
+            disabled={action.busy || !avatars.data?.length}
+          >
+            ルールを保存
+          </button>
+        </form>
+      </Panel>
+    </div>
   );
 }

@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     // avatarId が null のシステムログも含めるため、自分のアバターに
     // 紐づくものと未紐づけのものを両方拾う
     const where: Prisma.ActivityLogWhereInput = {
-      OR: [{ avatar: { userId: user.id } }, { avatarId: null }],
+      avatar: { userId: user.id },
     };
     const avatarId = searchParams.get("avatarId");
     const category = searchParams.get("category");

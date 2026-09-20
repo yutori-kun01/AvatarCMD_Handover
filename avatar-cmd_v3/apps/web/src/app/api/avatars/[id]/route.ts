@@ -8,15 +8,20 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 /** PATCH で更新を許可するフィールド。body をそのまま渡すと userId 等も
  *  書き換えられてしまうため、ホワイトリストで絞る。 */
-function pickUpdatableFields(body: Record<string, unknown>): Prisma.AvatarUpdateInput {
+function pickUpdatableFields(
+  body: Record<string, unknown>,
+): Prisma.AvatarUpdateInput {
   const data: Prisma.AvatarUpdateInput = {};
 
   if (typeof body.name === "string") data.name = body.name;
   if (typeof body.role === "string") data.role = body.role;
   if (typeof body.description === "string") data.description = body.description;
-  if (typeof body.specialization === "string") data.specialization = body.specialization;
-  if (typeof body.targetAudience === "string") data.targetAudience = body.targetAudience;
-  if (typeof body.avatarImageUrl === "string") data.avatarImageUrl = body.avatarImageUrl;
+  if (typeof body.specialization === "string")
+    data.specialization = body.specialization;
+  if (typeof body.targetAudience === "string")
+    data.targetAudience = body.targetAudience;
+  if (typeof body.avatarImageUrl === "string")
+    data.avatarImageUrl = body.avatarImageUrl;
   if (typeof body.status === "string") {
     data.status = body.status as Prisma.AvatarUpdateInput["status"];
   }
@@ -42,7 +47,19 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     const avatar = await prisma.avatar.findFirst({
       where: { id, userId: user.id },
       include: {
-        snsAccounts: true,
+        snsAccounts: {
+          select: {
+            id: true,
+            platform: true,
+            accountName: true,
+            accountId: true,
+            isActive: true,
+            profileUrl: true,
+            authType: true,
+            tokenExpiry: true,
+            lastError: true,
+          },
+        },
         contents: { orderBy: { createdAt: "desc" }, take: 20 },
         revenues: { orderBy: { earnedAt: "desc" }, take: 20 },
         knowledgeItems: { orderBy: { createdAt: "desc" }, take: 10 },
@@ -52,7 +69,10 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     });
 
     if (!avatar) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
     return NextResponse.json(avatar);
@@ -73,12 +93,32 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       select: { id: true },
     });
     if (!owned) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
-    const data = pickUpdatableFields(await request.json());
+    const body = await request.json();
+    if (
+      body.status !== undefined &&
+      !["ACTIVE", "PAUSED", "LEARNING", "ERROR"].includes(body.status)
+    )
+      return NextResponse.json({ error: "状態が不正です" }, { status: 400 });
+    if (
+      body.name !== undefined &&
+      (typeof body.name !== "string" || !body.name.trim())
+    )
+      return NextResponse.json(
+        { error: "名前を入力してください" },
+        { status: 400 },
+      );
+    const data = pickUpdatableFields(body);
     if (Object.keys(data).length === 0) {
-      return NextResponse.json({ error: "更新可能な項目がありません" }, { status: 400 });
+      return NextResponse.json(
+        { error: "更新可能な項目がありません" },
+        { status: 400 },
+      );
     }
 
     const avatar = await prisma.avatar.update({ where: { id }, data });
@@ -89,14 +129,33 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 }
 
 // DELETE /api/avatars/[id]
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const user = await requireWriteUser();
     const { id } = await context.params;
 
-    const result = await prisma.avatar.deleteMany({ where: { id, userId: user.id } });
+    const { name } = await request.json();
+    const avatar = await prisma.avatar.findFirst({
+      where: { id, userId: user.id },
+      select: { name: true },
+    });
+    if (!avatar || name !== avatar.name)
+      return NextResponse.json(
+        { error: "確認用の名前が一致しません" },
+        { status: 400 },
+      );
+    const result = await prisma.avatar.deleteMany({
+      where: {
+        id,
+        userId: user.id,
+        contents: { none: { status: "PUBLISHING" } },
+      },
+    });
     if (result.count === 0) {
-      return NextResponse.json({ error: "アバターが見つかりません" }, { status: 404 });
+      return NextResponse.json(
+        { error: "アバターが見つかりません" },
+        { status: 404 },
+      );
     }
 
     return NextResponse.json({ success: true });

@@ -1,171 +1,281 @@
 "use client";
-import { useState, useEffect } from "react";
-
-interface PlatformInfo {
+import { useEffect, useState } from "react";
+import { useApiData } from "@/hooks/use-api";
+import {
+  Panel,
+  Notice,
+  api,
+  useAction,
+  field,
+  button,
+  primary,
+  states,
+  date,
+  type Avatar,
+} from "@/components/dashboard/live-ui";
+type Post = {
+  id: string;
+  avatarId: string;
+  avatar: { name: string };
   platform: string;
-  displayName: string;
-  icon: string;
-  authType: string;
-  modes: string[];
-  maxPostLength: number;
-  supportsMedia: boolean;
+  content: string;
   status: string;
-}
-
-interface ContentData {
-  total: number;
-  byStatus: Record<string, number>;
-  byPlatform: Record<string, number>;
-  queueSize: number;
-  recent: { id: string; avatarId: string; platform: string; content: string; status: string; engagement?: { likes: number; comments: number; shares: number; views: number }; publishedAt?: string; scheduledAt?: string }[];
-  campaigns: {
-    total: number; active: number; completed: number; draft: number;
-    activeCampaigns: { id: string; avatarId: string; title: string; type: string; platforms: string[]; contentCount: number; progress: number }[];
-  };
-}
-
-export default function SnsOpsPage() {
-  const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
-  const [content, setContent] = useState<ContentData | null>(null);
-  const [activeTab, setActiveTab] = useState<"platforms" | "content" | "campaigns">("platforms");
-
+  updatedAt: string;
+  postUrl: string | null;
+  scheduledPost: { scheduledAt: string; lastError: string | null } | null;
+};
+export default function SnsPage() {
+  const posts = useApiData<Post[]>("/api/posts");
+  const avatars = useApiData<Avatar[]>("/api/avatars");
+  const action = useAction();
+  const [filter, setFilter] = useState("");
   useEffect(() => {
-    fetch("/api/platforms").then(r => r.json()).then(d => setPlatforms(d.platforms));
-    fetch("/api/content").then(r => r.json()).then(d => setContent(d));
-  }, []);
-
-  const tabs = [
-    { key: "platforms" as const, label: "プラットフォーム", count: platforms.length },
-    { key: "content" as const, label: "コンテンツ", count: content?.total || 0 },
-    { key: "campaigns" as const, label: "キャンペーン", count: content?.campaigns?.active || 0 },
-  ];
-
-  const modeLabel = (m: string) => m === "hybrid" ? "API+Browser" : m === "api" ? "API" : "Browser";
-  const modeColor = (m: string) => m === "hybrid" ? "#22d3ee" : m === "api" ? "#a78bfa" : "#fb923c";
-
+    const timer = setInterval(() => void posts.refetch(), 15000);
+    return () => clearInterval(timer);
+  }, [posts.refetch]);
   return (
-    <>
-      {/* Tab Bar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 24, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 12 }}>
-        {tabs.map(tab => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-            style={{ padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
-              background: activeTab === tab.key ? "linear-gradient(135deg, #3b82f6, #8b5cf6)" : "rgba(255,255,255,0.05)", color: "#fff", transition: "all 0.2s" }}>
-            {tab.label} <span style={{ marginLeft: 6, background: "rgba(255,255,255,0.15)", padding: "2px 8px", borderRadius: 10, fontSize: 12 }}>{tab.count}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* Platforms Tab */}
-      {activeTab === "platforms" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
-          {platforms.map(p => (
-            <div key={p.platform} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 20, transition: "border-color 0.2s" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 24 }}>{p.icon}</span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{p.displayName}</div>
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>Max {p.maxPostLength.toLocaleString()} chars</div>
-                  </div>
-                </div>
-                <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, background: p.status === "available" ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)", color: p.status === "available" ? "#22c55e" : "rgba(255,255,255,0.4)" }}>
-                  {p.status === "available" ? "✓ Active" : "Coming Soon"}
-                </span>
-              </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {p.modes.map(m => (
-                  <span key={m} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px solid ${modeColor(m)}40`, color: modeColor(m), background: `${modeColor(m)}10` }}>
-                    {modeLabel(m)}
-                  </span>
+    <div className="space-y-5">
+      <p className="text-sm text-muted-foreground">
+        AIで下書きを作成し、本文を確認してから公開・予約します。X・Threadsは設定画面でAPIトークンを登録してください。noteは下書き作成に対応しています。
+      </p>
+      {action.feedback}
+      <Notice error={posts.error || avatars.error} />
+      <Panel title="AIで下書きを作る">
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const f = new FormData(e.currentTarget);
+            void action.run(async () => {
+              await api("/api/queue/trigger", "POST", {
+                type: "generate_post",
+                payload: {
+                  avatarId: f.get("avatarId"),
+                  data: { platform: f.get("platform"), topic: f.get("topic") },
+                },
+              });
+            }, "生成を受け付けました。下書きは一覧に自動で反映されます。");
+          }}
+        >
+          <label className="text-sm">
+            アバター
+            <select name="avatarId" className={field} required>
+              <option value="">選択してください</option>
+              {avatars.data
+                ?.filter((a) => a.status === "ACTIVE")
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
                 ))}
-                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.5)" }}>
-                  Auth: {p.authType}
-                </span>
-              </div>
-            </div>
+            </select>
+          </label>
+          <label className="text-sm">
+            SNS
+            <select name="platform" className={field}>
+              <option value="x">X</option>
+              <option value="threads">Threads</option>
+              <option value="note">note</option>
+            </select>
+          </label>
+          <label className="md:col-span-2 text-sm">
+            投稿テーマ
+            <textarea
+              name="topic"
+              className={field}
+              required
+              maxLength={2000}
+            />
+          </label>
+          <button
+            className={primary}
+            disabled={action.busy || !avatars.data?.length}
+          >
+            下書きを生成
+          </button>
+        </form>
+      </Panel>
+      <Panel title="投稿一覧（直近50件）">
+        <div className="flex gap-3">
+          <select
+            aria-label="状態で絞り込む"
+            className={field + " max-w-xs"}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          >
+            <option value="">すべての状態</option>
+            {[
+              "DRAFT",
+              "REVIEW",
+              "APPROVED",
+              "SCHEDULED",
+              "PUBLISHING",
+              "PUBLISHED",
+              "FAILED",
+            ].map((s) => (
+              <option key={s} value={s}>
+                {states[s]}
+              </option>
+            ))}
+          </select>
+          <button className={button} onClick={() => void posts.refetch()}>
+            更新
+          </button>
+        </div>
+        {posts.loading && !posts.data && <Notice loading />}
+        {!posts.loading && !posts.data?.length && (
+          <p className="text-sm text-muted-foreground">
+            投稿はまだありません。
+          </p>
+        )}
+        {posts.data
+          ?.filter((p) => !filter || p.status === filter)
+          .map((p) => (
+            <PostEditor
+              key={p.id + p.updatedAt}
+              post={p}
+              refresh={posts.refetch}
+            />
           ))}
-        </div>
+      </Panel>
+    </div>
+  );
+}
+function PostEditor({
+  post,
+  refresh,
+}: {
+  post: Post;
+  refresh: () => Promise<void>;
+}) {
+  const action = useAction();
+  const [text, setText] = useState(post.content);
+  const [schedule, setSchedule] = useState("");
+  const locked = ["PUBLISHING", "PUBLISHED"].includes(post.status);
+  const canPublish = ["x", "threads"].includes(post.platform.toLowerCase());
+  return (
+    <article className="rounded-lg border border-white/10 p-4 space-y-3">
+      <div className="flex flex-wrap justify-between gap-2">
+        <span className="font-medium">
+          {post.avatar.name} · {post.platform}
+        </span>
+        <span className="text-sm text-cyan-300">{states[post.status]}</span>
+      </div>
+      {action.feedback}
+      {post.status === "REVIEW" && (
+        <p className="text-sm text-amber-300">
+          公開結果が不明です。SNS側に同じ投稿がないことを確認してから再承認してください。
+        </p>
       )}
-
-      {/* Content Tab */}
-      {activeTab === "content" && content && (
-        <div>
-          {/* Status Overview */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 24 }}>
-            {Object.entries(content.byStatus).map(([status, count]) => (
-              <div key={status} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", textAlign: "center" }}>
-                <div style={{ fontSize: 24, fontWeight: 700, color: status === "published" ? "#22c55e" : status === "failed" ? "#ef4444" : "#22d3ee" }}>{count}</div>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4 }}>{status}</div>
-              </div>
-            ))}
-          </div>
-          {/* Recent Content */}
-          <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>最新コンテンツ</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {content.recent.map(item => (
-              <div key={item.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: "rgba(34,211,238,0.1)", color: "#22d3ee" }}>{item.platform}</span>
-                    <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: item.status === "published" ? "rgba(34,197,94,0.1)" : "rgba(251,191,36,0.1)", color: item.status === "published" ? "#22c55e" : "#fbbf24" }}>{item.status}</span>
-                  </div>
-                  <div style={{ fontSize: 14, color: "rgba(255,255,255,0.8)" }}>{item.content}</div>
-                </div>
-                {item.engagement && (
-                  <div style={{ display: "flex", gap: 16, fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
-                    <span>❤️ {item.engagement.likes}</span>
-                    <span>💬 {item.engagement.comments}</span>
-                    <span>🔄 {item.engagement.shares}</span>
-                    <span>👁 {item.engagement.views.toLocaleString()}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+      <textarea
+        aria-label="投稿本文"
+        className={field + " min-h-32"}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={locked || action.busy}
+        maxLength={140000}
+      />
+      {post.postUrl && /^https:\/\//.test(post.postUrl) && (
+        <a
+          href={post.postUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm text-cyan-300 underline"
+        >
+          公開した投稿を見る
+        </a>
       )}
-
-      {/* Campaigns Tab */}
-      {activeTab === "campaigns" && content?.campaigns && (
-        <div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "16px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "#22d3ee" }}>{content.campaigns.active}</div>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>稼働中</div>
-            </div>
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "16px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "#22c55e" }}>{content.campaigns.completed}</div>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>完了</div>
-            </div>
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "16px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>{content.campaigns.total}</div>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>合計</div>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {content.campaigns.activeCampaigns.map(c => (
-              <div key={c.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 15 }}>{c.title}</div>
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{c.type} · {c.contentCount} コンテンツ</div>
-                  </div>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: "#22d3ee" }}>{c.progress}%</span>
-                </div>
-                <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 4, height: 6, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${c.progress}%`, background: "linear-gradient(90deg, #3b82f6, #8b5cf6)", borderRadius: 4, transition: "width 0.5s ease" }} />
-                </div>
-                <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                  {c.platforms.map(p => (
-                    <span key={p} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(34,211,238,0.08)", color: "#22d3ee" }}>{p}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {post.scheduledPost && (
+        <p className="text-sm text-muted-foreground">
+          予約日時 {date(post.scheduledPost.scheduledAt)}{" "}
+          {post.scheduledPost.lastError}
+        </p>
       )}
-    </>
+      {!locked && (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className={button}
+              disabled={action.busy || !text.trim()}
+              onClick={() =>
+                action.run(async () => {
+                  await api(`/api/posts/${post.id}`, "PATCH", {
+                    content: text,
+                    status: "DRAFT",
+                  });
+                  await refresh();
+                }, "下書きを保存しました。予約がある場合は解除しました。")
+              }
+            >
+              下書きを保存
+            </button>
+            <button
+              className={primary}
+              disabled={action.busy || !text.trim() || !canPublish}
+              onClick={() => {
+                if (
+                  !confirm(
+                    post.status === "REVIEW"
+                      ? "SNS側に未公開であることを確認しましたか？再送します。"
+                      : "この本文を承認して、今すぐ公開しますか？",
+                  )
+                )
+                  return;
+                void action.run(async () => {
+                  await api(`/api/posts/${post.id}`, "PATCH", {
+                    content: text,
+                    status: "APPROVED",
+                  });
+                  await api("/api/queue/trigger", "POST", {
+                    type: "publish_post",
+                    payload: {
+                      avatarId: post.avatarId,
+                      data: { contentId: post.id },
+                    },
+                  });
+                  await refresh();
+                }, "投稿を受け付けました。結果は実行履歴でも確認できます。");
+              }}
+            >
+              承認して投稿
+            </button>
+          </div>
+          {canPublish && (
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs text-muted-foreground">
+                予約日時（端末の現地時間）
+                <input
+                  type="datetime-local"
+                  className={field}
+                  value={schedule}
+                  onChange={(e) => setSchedule(e.target.value)}
+                />
+              </label>
+              <button
+                className={button}
+                disabled={action.busy || !schedule || !text.trim()}
+                onClick={() => {
+                  if (!confirm("この内容で公開を予約しますか？")) return;
+                  void action.run(async () => {
+                    await api(`/api/posts/${post.id}`, "PATCH", {
+                      content: text,
+                      scheduledAt: new Date(schedule).toISOString(),
+                    });
+                    await refresh();
+                  }, "公開を予約しました");
+                }}
+              >
+                承認して予約
+              </button>
+            </div>
+          )}
+          {!canPublish && (
+            <p className="text-xs text-muted-foreground">
+              このSNSの公開操作は、実サイトでの確認が完了してから利用できます。
+            </p>
+          )}
+        </>
+      )}
+    </article>
   );
 }

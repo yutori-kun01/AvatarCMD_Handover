@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { Job } from "./orchestrator";
 import { prisma } from "@avatar-cmd/db";
 import { readAvatarFile } from "../persona/soul-engine";
@@ -37,7 +38,21 @@ export async function processJob(job: Job): Promise<void> {
         break;
     }
   } catch (error) {
-    console.error(`[Worker] Error processing job ${job.id}:`, error);
+    if (payload.avatarId) {
+      await prisma.activityLog
+        .create({
+          data: {
+            avatarId: payload.avatarId,
+            action: "job_failed",
+            category: "system",
+            level: "error",
+            description: `処理に失敗しました: ${error instanceof Error ? error.message : "実行エラー"}`,
+            metadata: { jobId: job.id, type },
+          },
+        })
+        .catch(() => undefined);
+    }
+    console.error(`[Worker] Job ${job.id} failed`);
     throw error;
   }
 }
@@ -47,7 +62,10 @@ async function handleGeneratePost(payload: any) {
   if (!avatarId) throw new Error("Missing avatarId in payload");
 
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
-  if (!avatar) throw new Error("Avatar not found");
+  if (!avatar || (payload.userId && avatar.userId !== payload.userId))
+    throw new Error("Avatar not found");
+  if (avatar.status !== "ACTIVE")
+    throw new Error("停止中のアバターは実行できません");
 
   await prisma.activityLog.create({
     data: {
@@ -58,8 +76,19 @@ async function handleGeneratePost(payload: any) {
     },
   });
 
-  const soulContent = await readAvatarFile(avatarId, "soul.md") || `Role: ${avatar.role}\nTone: ${avatar.role}`;
-  
+  const soulContent = [
+    `名前: ${avatar.name}\n役割: ${avatar.role}\n専門: ${avatar.specialization ?? ""}\n読者: ${avatar.targetAudience ?? ""}`,
+    ...(await Promise.all(
+      ["soul.md", "identity.md", "rules.md"].map((name) =>
+        readAvatarFile(avatarId, name),
+      ),
+    )),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const platform = String(payload.data?.platform ?? "x").toLowerCase();
+  if (!registry.has(platform as Platform)) throw new Error("未対応のSNSです");
+
   // ナレッジの情報を取得してコンテキストに含める (最大最新5件)
   const recentKnowledge = await prisma.knowledgeItem.findMany({
     where: { avatarId },
@@ -69,13 +98,21 @@ async function handleGeneratePost(payload: any) {
 
   let contextExt = "";
   if (recentKnowledge.length > 0) {
-    contextExt = "\n\n【最近学習した知識（参考）】\n" + recentKnowledge.map(k => `・${k.title}: ${k.content ? k.content.slice(0, 100) : k.sourceUrl}`).join("\n");
+    contextExt =
+      "\n\n【最近学習した知識（参考）】\n" +
+      recentKnowledge
+        .map(
+          (k) =>
+            `・${k.title}: ${k.content ? k.content.slice(0, 100) : k.sourceUrl}`,
+        )
+        .join("\n");
   }
 
   const fullPromptLength = (soulContent + contextExt).length;
 
   const generatedText = await generatePostContent({
     soulContext: soulContent + contextExt,
+    platform,
     topic: payload.data?.topic || "日々の気づき",
   });
 
@@ -83,7 +120,7 @@ async function handleGeneratePost(payload: any) {
   const post = await prisma.content.create({
     data: {
       avatarId,
-      platform: "X",
+      platform,
       content: generatedText,
       status: "DRAFT",
     },
@@ -106,7 +143,7 @@ async function handleGeneratePost(payload: any) {
       },
     },
   });
-  
+
   console.log(`[Worker] Successfully generated and saved content ${post.id}`);
 }
 
@@ -114,7 +151,10 @@ async function handleGeneratePost(payload: any) {
 const registry = createDefaultRegistry();
 
 /** 暗号化された認証情報を復号する。復号できない値は捨てる */
-function decryptOrNull(vault: CredentialVault, value: string | null): string | undefined {
+function decryptOrNull(
+  vault: CredentialVault,
+  value: string | null,
+): string | undefined {
   if (!value) return undefined;
   try {
     return vault.decrypt(value);
@@ -126,239 +166,214 @@ function decryptOrNull(vault: CredentialVault, value: string | null): string | u
   }
 }
 
+/** Claim before any external side effect. Unknown outcomes require human review. */
 async function handlePublishPost(payload: any) {
-  // 対象の指定場所は投入元によって異なる:
-  //   - スケジューラ (tick.ts) は data.contentId
-  //   - API から直接投げる場合は payload 直下
-  //   - v2 互換の呼び名は postId
-  const contentId: string | undefined =
-    payload.contentId ??
-    payload.postId ??
-    payload.data?.contentId ??
-    payload.data?.postId;
-  if (!contentId) throw new Error("Missing contentId");
-
-  const content = await prisma.content.findUnique({
-    where: { id: contentId },
-    include: { avatar: { select: { id: true, name: true } } },
+  const contentId =
+    payload.data?.contentId ?? payload.contentId ?? payload.postId;
+  if (typeof contentId !== "string" || !payload.avatarId)
+    throw new Error("投稿とアバターを指定してください");
+  const content = await prisma.content.findFirst({
+    where: {
+      id: contentId,
+      avatarId: payload.avatarId,
+      ...(payload.userId ? { avatar: { userId: payload.userId } } : {}),
+    },
+    include: { avatar: { select: { status: true } } },
   });
-  if (!content) throw new Error(`Content not found: ${contentId}`);
-
-  // 二重投稿を避ける
-  if (content.status === "PUBLISHED") {
-    console.log(`[Worker] Content ${contentId} is already published; skipping`);
-    return;
-  }
-
-  const provider = registry.get(content.platform as Platform);
-  if (!provider) {
-    await failContent(content.id, content.avatarId, `未対応のプラットフォーム: ${content.platform}`);
-    return;
-  }
-
-  const account = await prisma.snsAccount.findFirst({
-    where: { avatarId: content.avatarId, platform: content.platform, isActive: true },
+  if (!content) throw new Error("投稿が見つかりません");
+  if (content.avatar.status !== "ACTIVE") return;
+  if (!["APPROVED", "SCHEDULED"].includes(content.status)) return;
+  const platform = content.platform.toLowerCase() as Platform;
+  const provider = registry.get(platform);
+  if (!provider) throw new Error("未対応のSNSです");
+  const accounts = await prisma.snsAccount.findMany({
+    where: {
+      avatarId: content.avatarId,
+      platform: { equals: platform, mode: "insensitive" },
+      isActive: true,
+    },
   });
-  if (!account) {
-    await failContent(
+  if (accounts.length !== 1)
+    throw new Error("投稿先の有効なアカウントを1件だけ設定してください");
+  const account = accounts[0];
+  const vault = new CredentialVault();
+  let accessToken = decryptOrNull(vault, account.accessToken);
+  const refreshToken = decryptOrNull(vault, account.refreshToken);
+  const browser =
+    account.authType === "session" || account.authType === "cookie";
+  if (!browser && account.tokenExpiry && account.tokenExpiry <= new Date()) {
+    if (!refreshToken || !provider.refreshToken)
+      throw new Error("認証の期限切れです。接続情報を更新してください");
+    const tokens = await provider.refreshToken(refreshToken);
+    if (!tokens.accessToken) throw new Error("認証の更新に失敗しました");
+    accessToken = tokens.accessToken;
+    await prisma.snsAccount.update({
+      where: { id: account.id },
+      data: {
+        accessToken: vault.encrypt(tokens.accessToken),
+        ...(tokens.refreshToken
+          ? { refreshToken: vault.encrypt(tokens.refreshToken) }
+          : {}),
+        tokenExpiry: tokens.expiresAt ?? null,
+      },
+    });
+  }
+  if (!browser && !accessToken)
+    throw new Error("APIトークンを設定してください");
+  const metadata = (
+    content.metadata &&
+    typeof content.metadata === "object" &&
+    !Array.isArray(content.metadata)
+      ? content.metadata
+      : {}
+  ) as Record<string, any>;
+  const postContent: PostContent = { text: content.content, metadata };
+  const operations = browser ? provider.getPostSteps?.(postContent) : undefined;
+  // Without a post-specific success signal, clicking is not evidence of publication.
+  if (
+    browser &&
+    (!operations?.length || !operations.some((op) => op.confirmationUrlPattern))
+  ) {
+    throw new Error(
+      "このSNSのブラウザ投稿は公開確認手順の検証が必要です。現在は実行できません",
+    );
+  }
+  const attemptId = randomUUID();
+  const claimed = await prisma.content.updateMany({
+    where: {
+      id: content.id,
+      status: { in: ["APPROVED", "SCHEDULED"] },
+      updatedAt: content.updatedAt,
+      avatar: { status: "ACTIVE" },
+    },
+    data: {
+      status: "PUBLISHING",
+      platform,
+      metadata: { ...metadata, publishAttemptId: attemptId },
+    },
+  });
+  if (!claimed.count) return;
+  try {
+    if (browser && operations) {
+      await enqueueBrowserJob({
+        kind: "operations",
+        avatarId: content.avatarId,
+        platform,
+        contentId: content.id,
+        attemptId,
+        operations,
+      });
+      return;
+    }
+    // Do not retry through a browser after an ambiguous API response.
+    const credentials: ProviderCredentials = {
+      authType: account.authType as ProviderCredentials["authType"],
+      operationMode: "api",
+      accessToken,
+      refreshToken,
+      avatarId: content.avatarId,
+    };
+    const result = await provider.post(postContent, credentials);
+    if (!result.success || (!result.postId && !result.url))
+      throw new Error("公開結果を確認できませんでした");
+    await settlePublication(
       content.id,
       content.avatarId,
-      `${content.platform} の有効なSNSアカウントが登録されていません`
+      attemptId,
+      true,
+      result.url,
+      result.postId,
     );
-    return;
+  } catch {
+    await settlePublication(content.id, content.avatarId, attemptId, false);
+    // REVIEW is deliberately not retryable: the external post may already exist.
   }
-
-  await prisma.content.update({
-    where: { id: content.id },
-    data: { status: "PUBLISHING" },
-  });
-
-  const vault = new CredentialVault();
-  const credentials: ProviderCredentials = {
-    authType: account.authType as ProviderCredentials["authType"],
-    // hybrid にしておくと BaseProvider が API → ブラウザの順に試す
-    operationMode: "hybrid",
-    accessToken: decryptOrNull(vault, account.accessToken),
-    refreshToken: decryptOrNull(vault, account.refreshToken),
-    avatarId: content.avatarId,
-    chromeProfileId: content.avatarId,
-  };
-
-  const postContent: PostContent = {
-    text: content.content,
-    metadata: (content.metadata ?? {}) as Record<string, unknown>,
-  };
-
-  const result = await provider.post(postContent, credentials);
-
-  if (result.success) {
-    await prisma.content.update({
-      where: { id: content.id },
-      data: {
-        status: "PUBLISHED",
-        publishedAt: new Date(),
-        externalPostId: result.postId ?? null,
-        postUrl: result.url ?? null,
-      },
-    });
-    // 予約でない投稿には ScheduledPost が無い。update だと例外になり
-    // Prisma がエラーログを吐くため updateMany を使う（0件でも成功）
-    await prisma.scheduledPost.updateMany({
-      where: { contentId: content.id },
-      data: { status: "published", publishedAt: new Date() },
-    });
-
-    await prisma.activityLog.create({
-      data: {
-        avatarId: content.avatarId,
-        action: "post_published",
-        category: "sns",
-        description: `${content.platform} に投稿しました (${result.mode}): ${result.url ?? result.postId ?? ""}`,
-        metadata: { contentId: content.id, mode: result.mode, postId: result.postId ?? null },
-        level: "success",
-      },
-    });
-    console.log(`[Worker] Published ${content.id} to ${content.platform} via ${result.mode}`);
-    return;
-  }
-
-  // ブラウザモードに回された場合、Provider は操作列を用意できる。
-  // ブラウザキューへ渡して chrome-empire に実行させる。
-  if (result.mode === "browser" && provider.getPostSteps) {
-    const operations = provider.getPostSteps(postContent);
-    const jobId = await enqueueBrowserJob({
-      kind: "operations",
-      avatarId: content.avatarId,
-      platform: content.platform,
-      contentId: content.id,
-      operations,
-    });
-
-    await prisma.activityLog.create({
-      data: {
-        avatarId: content.avatarId,
-        action: "post_browser_queued",
-        category: "sns",
-        description: `${content.platform} はブラウザ操作で投稿します（${operations.length}ステップ）`,
-        metadata: { contentId: content.id, browserJobId: jobId },
-        level: "info",
-      },
-    });
-    console.log(`[Worker] Queued browser job ${jobId} for ${content.id} (${content.platform})`);
-    // Content は PUBLISHING のまま。chrome-empire 側の完了で確定させる
-    return;
-  }
-
-  await failContent(content.id, content.avatarId, result.error ?? "投稿に失敗しました");
 }
 
-/**
- * chrome-empire から返ってきたブラウザ投稿の結果を反映する。
- * chrome-empire は DB を持たないため、Content の確定はここで行う。
- */
+async function settlePublication(
+  contentId: string,
+  avatarId: string,
+  attemptId: string,
+  success: boolean,
+  url?: string,
+  postId?: string,
+) {
+  await prisma.$transaction(async (tx) => {
+    const changed = await tx.content.updateMany({
+      where: {
+        id: contentId,
+        avatarId,
+        status: "PUBLISHING",
+        metadata: { path: ["publishAttemptId"], equals: attemptId },
+      },
+      data: success
+        ? {
+            status: "PUBLISHED",
+            publishedAt: new Date(),
+            postUrl: url ?? null,
+            externalPostId: postId ?? null,
+          }
+        : { status: "REVIEW" },
+    });
+    if (!changed.count) return;
+    await tx.scheduledPost.updateMany({
+      where: { contentId },
+      data: success
+        ? { status: "published", publishedAt: new Date(), lastError: null }
+        : {
+            status: "review",
+            lastError:
+              "公開先を確認してから再承認してください（自動再送は停止しました）",
+          },
+    });
+    await tx.activityLog.create({
+      data: {
+        avatarId,
+        action: success ? "post_published" : "post_needs_review",
+        category: "sns",
+        description: success
+          ? "公開を確認しました"
+          : "公開結果が不明です。公開先を確認してから再承認してください。",
+        level: success ? "success" : "warning",
+        metadata: { contentId, attemptId },
+      },
+    });
+  });
+}
+
 async function handleBrowserResult(payload: any) {
   const data = payload?.data ?? {};
-  const contentId: string | undefined = data.contentId;
-  if (!contentId) throw new Error("Missing contentId");
-
-  const content = await prisma.content.findUnique({
-    where: { id: contentId },
-    select: { id: true, avatarId: true, platform: true, status: true },
-  });
-  if (!content) {
-    console.warn(`[Worker] browser_result: content not found: ${contentId}`);
-    return;
-  }
-
-  // 既に確定済みなら触らない（タイムアウト掃除と競合した場合など）
-  if (content.status === "PUBLISHED" || content.status === "FAILED") {
-    console.log(
-      `[Worker] browser_result: content ${contentId} is already ${content.status}; skipping`
-    );
-    return;
-  }
-
-  if (data.success) {
-    await prisma.content.update({
-      where: { id: content.id },
-      data: {
-        status: "PUBLISHED",
-        publishedAt: new Date(),
-        postUrl: typeof data.url === "string" ? data.url : null,
-      },
-    });
-    await prisma.scheduledPost.updateMany({
-      where: { contentId: content.id },
-      data: { status: "published", publishedAt: new Date() },
-    });
-    await prisma.activityLog.create({
-      data: {
-        avatarId: content.avatarId,
-        action: "post_published",
-        category: "sns",
-        description: `${content.platform} にブラウザ操作で投稿しました${
-          typeof data.url === "string" ? `: ${data.url}` : ""
-        }`,
-        metadata: { contentId: content.id, mode: "browser" },
-        level: "success",
-      },
-    });
-    console.log(`[Worker] browser_result: ${content.id} published via browser`);
-    return;
-  }
-
-  const message =
-    typeof data.error === "string" && data.error
-      ? data.error
-      : "ブラウザ操作での投稿に失敗しました";
-
-  await prisma.content.update({ where: { id: content.id }, data: { status: "FAILED" } });
-  await prisma.scheduledPost.updateMany({
-    where: { contentId: content.id },
-    data: { status: "failed", lastError: message },
-  });
-  await prisma.activityLog.create({
-    data: {
-      avatarId: content.avatarId,
-      action: "post_failed",
-      category: "sns",
-      description: `${content.platform} のブラウザ投稿に失敗しました: ${message}`,
-      metadata: { contentId: content.id, mode: "browser" },
-      level: "error",
-    },
-  });
-  console.log(`[Worker] browser_result: ${content.id} failed via browser`);
-  // ここでは例外にしない。ブラウザ側で既にリトライを使い切っている
-}
-
-/** 投稿失敗を Content と ActivityLog に記録する */
-async function failContent(contentId: string, avatarId: string, message: string): Promise<void> {
-  await prisma.content.update({
-    where: { id: contentId },
-    data: { status: "FAILED" },
-  });
-  // 予約でない投稿には ScheduledPost が無いので updateMany（0件でも成功）
-  await prisma.scheduledPost.updateMany({
-    where: { contentId },
-    data: { status: "failed", lastError: message },
-  });
-  await prisma.activityLog.create({
-    data: {
-      avatarId,
-      action: "post_failed",
-      category: "sns",
-      description: message,
-      metadata: { contentId },
-      level: "error",
-    },
-  });
-  // BullMQ のリトライに乗せるため例外にする
-  throw new Error(message);
+  if (
+    typeof data.contentId !== "string" ||
+    typeof data.attemptId !== "string" ||
+    !payload.avatarId
+  )
+    throw new Error("投稿結果の識別情報が不足しています");
+  const confirmed =
+    data.success === true &&
+    typeof data.url === "string" &&
+    /^https:\/\//.test(data.url);
+  await settlePublication(
+    data.contentId,
+    payload.avatarId,
+    data.attemptId,
+    confirmed,
+    confirmed ? data.url : undefined,
+  );
 }
 
 async function handleFetchKnowledge(payload: any) {
   const { avatarId, data } = payload;
   const { knowledgeId, url } = data;
+  const target = await prisma.knowledgeItem.findFirst({
+    where: {
+      id: knowledgeId,
+      avatarId,
+      ...(payload.userId ? { avatar: { userId: payload.userId } } : {}),
+    },
+  });
+  if (!target || target.sourceUrl !== url)
+    throw new Error("収集対象が一致しません");
 
   if (!knowledgeId || !url) throw new Error("Missing knowledgeId or url");
 
@@ -380,7 +395,7 @@ async function handleFetchKnowledge(payload: any) {
     const html = await res.text();
     const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
     const bodyContent = bodyMatch ? bodyMatch[1] : html;
-    
+
     const cleanText = bodyContent
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
       .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
@@ -405,7 +420,6 @@ async function handleFetchKnowledge(payload: any) {
         description: `${url} からコンテンツを抽出しナレッジベースに保存しました。`,
       },
     });
-
   } catch (error: any) {
     const blocked = error instanceof SsrfBlockedError;
     console.error(`[Worker] Failed to fetch knowledge: ${error.message}`);
@@ -420,5 +434,6 @@ async function handleFetchKnowledge(payload: any) {
         level: blocked ? "warning" : "error",
       },
     });
+    throw error;
   }
 }

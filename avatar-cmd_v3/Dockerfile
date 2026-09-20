@@ -89,6 +89,7 @@ COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=builder /app/packages/queue ./packages/queue
 COPY --from=builder /app/packages/db ./packages/db
 COPY --from=builder /app/packages/core ./packages/core
+COPY --from=builder /app/packages/integrations ./packages/integrations
 
 # Soul Engine のファイルを読むため web と同じボリュームをマウントする
 RUN mkdir -p /app/data/avatars && chown -R nodeuser:nodejs /app/data

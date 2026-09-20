@@ -23,6 +23,7 @@ export interface OperationStep {
   url: string;
   selectors?: Record<string, string>;
   inputData?: Record<string, string>;
+  confirmationUrlPattern?: string;
   waitFor?: string;
   timeout?: number;
 }
@@ -47,7 +48,7 @@ const EDITOR_KEYS = ["editor", "body", "text", "content", "textarea"];
 
 function pick(
   selectors: Record<string, string> | undefined,
-  keys: string[]
+  keys: string[],
 ): { key: string; selector: string } | null {
   if (!selectors) return null;
   for (const key of keys) {
@@ -64,7 +65,7 @@ function pick(
 async function runStep(
   page: Page,
   step: OperationStep,
-  defaultTimeout: number
+  defaultTimeout: number,
 ): Promise<OperationStepResult> {
   const timeout = step.timeout ?? defaultTimeout;
   const result: OperationStepResult = {
@@ -73,6 +74,8 @@ async function runStep(
     success: false,
   };
 
+  if (step.action === "post" && !step.confirmationUrlPattern)
+    throw new Error("公開確認URLの定義がありません");
   await page.goto(step.url, { timeout, waitUntil: "domcontentloaded" });
 
   if (step.waitFor) {
@@ -103,17 +106,22 @@ async function runStep(
 
   if (items) {
     const texts = await page.locator(items.selector).allInnerTexts();
-    result.items = texts.map((t) => t.trim()).filter(Boolean).slice(0, 50);
+    result.items = texts
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 50);
   }
 
   if (submit && step.action !== "read" && step.action !== "search") {
     await page.locator(submit.selector).first().click({ timeout });
-    // 送信後の遷移や描画を待つ（完了セレクタは Provider 側が持たないため
-    // networkidle で代替する）
-    await page.waitForLoadState("networkidle", { timeout }).catch(() => undefined);
+    if (step.action === "post") {
+      const pattern = new RegExp(step.confirmationUrlPattern!);
+      await page.waitForURL((url) => pattern.test(url.href), { timeout });
+    }
     result.submitted = submit.selector;
   }
 
+  result.url = page.url();
   result.success = true;
   return result;
 }
@@ -131,7 +139,7 @@ export interface OperationsResult {
 export async function executeOperations(
   page: Page,
   operations: OperationStep[],
-  defaultTimeout: number
+  defaultTimeout: number,
 ): Promise<OperationsResult> {
   const steps: OperationStepResult[] = [];
 

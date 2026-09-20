@@ -9,7 +9,7 @@
     "dev": "tsc --watch",
     "start": "node dist/worker.bundle.cjs",
     "build:worker": "esbuild src/worker.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/worker.bundle.cjs --external:playwright --external:bullmq --external:ioredis",
-    "check:operations": "tsx scripts/operations-check.mts"
+    "check:operations": "node --import tsx scripts/operations-check.mts"
   },
   "dependencies": {
     "playwright": "1.63.0",

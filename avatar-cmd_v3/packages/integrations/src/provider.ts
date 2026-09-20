@@ -32,13 +32,14 @@ export type Platform =
 export type OperationMode = "api" | "browser" | "hybrid";
 
 // --- Auth ---
-export type AuthType = "oauth" | "session" | "app_password" | "api_key" | "cookie";
+export type AuthType =
+  "oauth" | "session" | "app_password" | "api_key" | "cookie";
 
 export interface AuthConfig {
-  primary: AuthType;           // メインの認証方式
-  fallback?: AuthType;         // フォールバック認証
-  oauthScopes?: string[];      // OAuth必要スコープ
-  requiresBrowser?: boolean;   // ブラウザログインが必要か
+  primary: AuthType; // メインの認証方式
+  fallback?: AuthType; // フォールバック認証
+  oauthScopes?: string[]; // OAuth必要スコープ
+  requiresBrowser?: boolean; // ブラウザログインが必要か
 }
 
 // --- Content ---
@@ -110,11 +111,19 @@ export interface ProviderCredentials {
 
 // --- Browser Task (Chrome Empire 連携用) ---
 export interface BrowserOperation {
-  action: "login" | "post" | "read" | "engage" | "collect_metrics" | "search" | "navigate";
+  action:
+    | "login"
+    | "post"
+    | "read"
+    | "engage"
+    | "collect_metrics"
+    | "search"
+    | "navigate";
   url: string;
-  selectors?: Record<string, string>;  // CSS selectors for UI elements
-  inputData?: Record<string, string>;  // Form data
-  waitFor?: string;                    // Selector to wait for
+  selectors?: Record<string, string>; // CSS selectors for UI elements
+  inputData?: Record<string, string>; // Form data
+  confirmationUrlPattern?: string;
+  waitFor?: string; // Selector to wait for
   timeout?: number;
 }
 
@@ -137,10 +146,19 @@ export interface SnsProvider {
   refreshToken?(refreshToken: string): Promise<AuthTokens>;
 
   // --- API Mode Operations ---
-  postViaApi?(content: PostContent, credentials: ProviderCredentials): Promise<PostResult>;
+  postViaApi?(
+    content: PostContent,
+    credentials: ProviderCredentials,
+  ): Promise<PostResult>;
   getMetricsViaApi?(credentials: ProviderCredentials): Promise<AccountMetrics>;
-  engageViaApi?(action: EngagementAction, credentials: ProviderCredentials): Promise<boolean>;
-  deletePostViaApi?(postId: string, credentials: ProviderCredentials): Promise<boolean>;
+  engageViaApi?(
+    action: EngagementAction,
+    credentials: ProviderCredentials,
+  ): Promise<boolean>;
+  deletePostViaApi?(
+    postId: string,
+    credentials: ProviderCredentials,
+  ): Promise<boolean>;
 
   // --- Browser Mode Operations ---
   // Returns BrowserOperation[] for Chrome Empire to execute
@@ -151,9 +169,15 @@ export interface SnsProvider {
   getSearchSteps?(query: string): BrowserOperation[];
 
   // --- Unified Interface (auto-selects mode) ---
-  post(content: PostContent, credentials: ProviderCredentials): Promise<PostResult>;
+  post(
+    content: PostContent,
+    credentials: ProviderCredentials,
+  ): Promise<PostResult>;
   getMetrics?(credentials: ProviderCredentials): Promise<AccountMetrics>;
-  engage?(action: EngagementAction, credentials: ProviderCredentials): Promise<boolean>;
+  engage?(
+    action: EngagementAction,
+    credentials: ProviderCredentials,
+  ): Promise<boolean>;
 
   // --- Validation ---
   validateCredentials(credentials: ProviderCredentials): Promise<boolean>;
