@@ -2,6 +2,7 @@ import { Job } from "./orchestrator";
 import { PrismaClient } from "@prisma/client";
 import { readAvatarFile } from "../persona/soul-engine";
 import { generatePostContent } from "../ai/router";
+import { evaluatePostDecision } from "../decision/post-review";
 // import cheerio for future HTML parsing, but for now fallback to fetch text
 
 const prisma = new PrismaClient();
@@ -69,6 +70,16 @@ async function handleGeneratePost(payload: any) {
     topic: payload.data?.topic || "日々の気づき",
   });
 
+  // Shadow-mode Jev review. This result is logged only and never blocks publishing.
+  const jevDecision = await evaluatePostDecision({
+    avatarId,
+    platform: "X",
+    content: generatedText,
+    topic: payload.data?.topic || "日々の気づき",
+    soulContext: soulContent,
+    recentKnowledge: recentKnowledge.map(k => k.summary || k.title),
+  });
+
   // Prisma Schema V3 is Content, V2 was Post.
   const post = await prisma.content.create({
     data: {
@@ -93,6 +104,7 @@ async function handleGeneratePost(payload: any) {
         knowledgeItems: recentKnowledge.length,
         postId: post.id,
         automationId: payload.automationId || null,
+        jevShadowDecision: jevDecision,
       }),
     },
   });
