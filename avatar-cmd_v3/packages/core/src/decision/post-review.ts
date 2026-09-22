@@ -85,7 +85,7 @@ export async function evaluatePostDecision(
       mode: "shadow",
       model: response.model || model,
       action: actionAnswer.choice,
-      actionConfidence: actionAnswer.confidence,
+      actionConfidence: actionAnswer.probabilities?.[actionAnswer.choice],
       personaFitScore: personaFitAnswer.score,
       salesPressureScore: salesPressureAnswer.score,
       duplicateRisk: duplicateRiskAnswer.noul,
