@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@avatar-cmd/db": "workspace:*",
-    "@google/genai": "^2.21.0"
+    "@google/genai": "^2.21.0",
+    "@typesafe-ai/sdk": "0.6.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

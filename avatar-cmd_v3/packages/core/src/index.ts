@@ -20,3 +20,8 @@ export { SchedulerService, type ScheduledJob, type SchedulerStats, type Schedule
 // Phase 7: AI & Soul Engine (from V2 integration)
 export * from "./ai/router";
 export * from "./persona/soul-engine";
+
+// Phase 8: Decision Layer (Jev shadow mode)
+export * from "./decision/types";
+export * from "./decision/jev-client";
+export * from "./decision/post-review";
