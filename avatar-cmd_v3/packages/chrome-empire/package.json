@@ -5,14 +5,19 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch"
+    "typecheck": "tsc --noEmit",
+    "worker": "tsx src/worker.ts",
+    "build": "esbuild src/worker.ts --bundle --platform=node --target=node20 --external:playwright --external:playwright-core --outfile=dist/worker.js"
   },
   "dependencies": {
-    "playwright": "^1.52.0"
+    "bullmq": "^6.3.0",
+    "ioredis": "^5.7.0",
+    "playwright": "^1.55.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "@types/node": "^22.13.11"
+    "@types/node": "^22.13.11",
+    "esbuild": "^0.25.9",
+    "tsx": "^4.20.5",
+    "typescript": "^5.7.3"
   }
 }

@@ -98,6 +98,7 @@ model Avatar {
   role            String       @default("sns_marketer")
   specialization  String?
   targetAudience  String?      @map("target_audience")
+  tone            String?
   status          AvatarStatus @default(ACTIVE)
   description     String?
   avatarImageUrl  String?      @map("avatar_image_url")
@@ -297,6 +298,8 @@ model Content {
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
+  @@index([avatarId, createdAt])
+  @@index([status])
   @@map("contents")
 }
 
@@ -356,6 +359,7 @@ model Revenue {
 
   createdAt     DateTime @default(now()) @map("created_at")
 
+  @@index([avatarId, earnedAt])
   @@map("revenues")
 }
 
@@ -553,8 +557,10 @@ model Collaboration {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  initiator Avatar @relation("CollabInitiator", fields: [initiatorId], references: [id])
-  partner   Avatar @relation("CollabPartner", fields: [partnerId], references: [id])
+  initiator Avatar @relation("CollabInitiator", fields: [initiatorId], references: [id], onDelete: Cascade)
+  partner   Avatar @relation("CollabPartner", fields: [partnerId], references: [id], onDelete: Cascade)
 
+  @@index([initiatorId])
+  @@index([partnerId])
   @@map("collaborations")
 }

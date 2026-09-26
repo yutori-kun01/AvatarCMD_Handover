@@ -33,10 +33,10 @@ export class ThreadsProvider extends BaseProvider {
     // Threads Publishing API: 2-step (create container → publish)
     const createRes = await fetch(`https://graph.threads.net/v1.0/me/threads?text=${encodeURIComponent(content.text)}&media_type=TEXT&access_token=${cred.accessToken}`, { method: "POST" });
     if (!createRes.ok) return { success: false, error: `Threads create: ${createRes.status}`, platform: "threads", mode: "api" };
-    const { id: containerId } = await createRes.json();
+    const { id: containerId } = (await createRes.json() as any);
     const publishRes = await fetch(`https://graph.threads.net/v1.0/me/threads_publish?creation_id=${containerId}&access_token=${cred.accessToken}`, { method: "POST" });
     if (!publishRes.ok) return { success: false, error: `Threads publish: ${publishRes.status}`, platform: "threads", mode: "api" };
-    const d = await publishRes.json();
+    const d = (await publishRes.json() as any);
     return { success: true, postId: d.id, platform: "threads", mode: "api" };
   }
 
@@ -100,7 +100,7 @@ export class YouTubeProvider extends BaseProvider {
   async getMetricsViaApi(cred: ProviderCredentials): Promise<AccountMetrics> {
     const res = await fetch("https://www.googleapis.com/youtube/v3/channels?part=statistics&mine=true", { headers: { Authorization: `Bearer ${cred.accessToken}` } });
     if (!res.ok) throw new Error(`YouTube metrics: ${res.status}`);
-    const ch = (await res.json()).items?.[0]?.statistics || {};
+    const ch = ((await res.json() as any)).items?.[0]?.statistics || {};
     return { followers: parseInt(ch.subscriberCount || "0"), following: 0, posts: parseInt(ch.videoCount || "0"), engagement: 0, impressions: parseInt(ch.viewCount || "0") };
   }
 
@@ -180,7 +180,7 @@ export class BlueskyProvider extends BaseProvider {
       body: JSON.stringify({ repo: cred.apiKey, collection: "app.bsky.feed.post", record: { text: content.text, createdAt: new Date().toISOString(), $type: "app.bsky.feed.post" } }),
     });
     if (!res.ok) return { success: false, error: `Bluesky: ${res.status}`, platform: "bluesky", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: d.uri, platform: "bluesky", mode: "api" };
   }
 
@@ -210,7 +210,7 @@ export class FacebookProvider extends BaseProvider {
       body: JSON.stringify({ message: content.text, access_token: cred.accessToken }),
     });
     if (!res.ok) return { success: false, error: `FB: ${res.status}`, platform: "facebook", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: d.id, platform: "facebook", mode: "api" };
   }
 
@@ -246,7 +246,7 @@ export class WordPressProvider extends BaseProvider {
       body: JSON.stringify({ title: content.metadata?.title || content.text.slice(0, 60), content: content.text, status: content.scheduleAt ? "future" : "publish", date: content.scheduleAt?.toISOString() }),
     });
     if (!res.ok) return { success: false, error: `WP: ${res.status}`, platform: "wordpress", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: String(d.id), url: d.link, platform: "wordpress", mode: "api" };
   }
 
@@ -278,7 +278,7 @@ export class LinkedInProvider extends BaseProvider {
       body: JSON.stringify({ author: `urn:li:person:${(cred as any).personId}`, lifecycleState: "PUBLISHED", specificContent: { "com.linkedin.ugc.ShareContent": { shareCommentary: { text: content.text }, shareMediaCategory: "NONE" } }, visibility: { "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC" } }),
     });
     if (!res.ok) return { success: false, error: `LinkedIn: ${res.status}`, platform: "linkedin", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: d.id, platform: "linkedin", mode: "api" };
   }
 
@@ -314,7 +314,7 @@ export class RedditProvider extends BaseProvider {
       body: new URLSearchParams({ kind: "self", sr: subreddit, title: (content.metadata?.title as string) || content.text.slice(0, 100), text: content.text }),
     });
     if (!res.ok) return { success: false, error: `Reddit: ${res.status}`, platform: "reddit", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: d.json?.data?.name, url: d.json?.data?.url, platform: "reddit", mode: "api" };
   }
 

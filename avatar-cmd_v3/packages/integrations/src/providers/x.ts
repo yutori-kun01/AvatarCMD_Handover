@@ -56,7 +56,7 @@ export class XProvider extends BaseProvider {
       body: new URLSearchParams({ code, grant_type: "authorization_code", redirect_uri: redirectUri, code_verifier: "challenge" }),
     });
     if (!res.ok) throw new Error(`X OAuth error: ${res.status}`);
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { accessToken: d.access_token, refreshToken: d.refresh_token, expiresAt: new Date(Date.now() + d.expires_in * 1000), scope: d.scope };
   }
 
@@ -70,7 +70,7 @@ export class XProvider extends BaseProvider {
       body: new URLSearchParams({ refresh_token: rt, grant_type: "refresh_token" }),
     });
     if (!res.ok) throw new Error(`X token refresh error: ${res.status}`);
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { accessToken: d.access_token, refreshToken: d.refresh_token, expiresAt: new Date(Date.now() + d.expires_in * 1000) };
   }
 
@@ -82,7 +82,7 @@ export class XProvider extends BaseProvider {
       body: JSON.stringify({ text: content.text }),
     });
     if (!res.ok) return { success: false, error: `API ${res.status}`, platform: "x", mode: "api" };
-    const d = await res.json();
+    const d = (await res.json() as any);
     return { success: true, postId: d.data?.id, url: `https://x.com/i/status/${d.data?.id}`, platform: "x", mode: "api" };
   }
 
@@ -91,7 +91,7 @@ export class XProvider extends BaseProvider {
       headers: { Authorization: `Bearer ${cred.accessToken}` },
     });
     if (!res.ok) throw new Error(`X metrics: ${res.status}`);
-    const m = (await res.json()).data?.public_metrics || {};
+    const m = ((await res.json() as any)).data?.public_metrics || {};
     return { followers: m.followers_count || 0, following: m.following_count || 0, posts: m.tweet_count || 0, engagement: 0 };
   }
 
@@ -101,7 +101,7 @@ export class XProvider extends BaseProvider {
     if (!tweetId) return false;
     const meRes = await fetch("https://api.twitter.com/2/users/me", { headers });
     if (!meRes.ok) return false;
-    const userId = (await meRes.json()).data?.id;
+    const userId = ((await meRes.json() as any)).data?.id;
     if (!userId) return false;
     const endpoints: Record<string, string> = {
       like: `https://api.twitter.com/2/users/${userId}/likes`,

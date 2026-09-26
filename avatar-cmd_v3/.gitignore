@@ -14,7 +14,7 @@ dist/
 # Database
 *.db
 *.db-journal
-prisma/migrations/
+
 
 # IDE
 .vscode/
@@ -30,3 +30,13 @@ docker-data/
 # Chrome Empire
 chrome-profiles/
 chrome-sessions/
+
+# Avatar runtime data (Soul Engine) — template is tracked
+data/avatars/*
+!data/avatars/_template/
+data/sessions/
+data/profiles/
+
+# TypeScript
+*.tsbuildinfo
+dump.rdb

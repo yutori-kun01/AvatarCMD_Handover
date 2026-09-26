@@ -21,6 +21,7 @@ export default function MarketingLayout({
             <Link href="/blog" className="text-sm text-white/60 hover:text-white transition-colors">ブログ</Link>
             <Link href="/#faq" className="text-sm text-white/60 hover:text-white transition-colors">FAQ</Link>
           </div>
+          <Link href="/dashboard" className="hidden md:inline-flex px-4 py-2 text-sm text-white/60 hover:text-white transition-colors">ログイン</Link>
           <Link href="/#pricing" className="hidden md:inline-flex px-5 py-2 bg-gradient-to-r from-[#4f7cff] to-[#8b5cf6] rounded-full text-sm font-semibold shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 transition-all">
             プランを見る
           </Link>

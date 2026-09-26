@@ -1,172 +1,201 @@
-import { Job } from "./orchestrator";
-import { PrismaClient } from "@prisma/client";
-import { readAvatarFile } from "../persona/soul-engine";
-import { generatePostContent } from "../ai/router";
-// import cheerio for future HTML parsing, but for now fallback to fetch text
+// ==============================================
+// Workers — job handlers executed by the Orchestrator
+// ==============================================
 
-const prisma = new PrismaClient();
+import { prisma, type Prisma } from "@avatar-cmd/db";
+import type { Job, JobPayload } from "./orchestrator";
+import { orchestrator } from "./orchestrator";
+import { buildSoulContext, appendMemory } from "../persona/soul-engine";
+import { MoodEngine } from "../persona/mood-engine";
+import { generatePost } from "../ai/router";
+import { publishContent } from "../publishing/publisher";
+import { safeFetch, extractText, SsrfError } from "../security/ssrf-guard";
+
+const moodEngine = new MoodEngine();
 
 export async function processJob(job: Job): Promise<void> {
-  const { type, payload } = job;
-
-  try {
-    switch (type) {
-      case "generate_post":
-        await handleGeneratePost(payload);
-        break;
-      case "publish_post":
-        await handlePublishPost(payload);
-        break;
-      case "fetch_knowledge":
-        await handleFetchKnowledge(payload);
-        break;
-      case "system_maintenance":
-      default:
-        console.log(`[Worker] Job type ${type} is not yet implemented.`);
-        await new Promise((resolve) => setTimeout(resolve, 1000)); // ダミー遅延
-        break;
-    }
-  } catch (error) {
-    console.error(`[Worker] Error processing job ${job.id}:`, error);
-    throw error;
+  console.log(`[Worker] Processing ${job.type} (${job.id}) attempt ${job.attempts}`);
+  switch (job.type) {
+    case "generate_post":
+      return handleGeneratePost(job.payload);
+    case "publish_post":
+      return handlePublishPost(job.payload);
+    case "publish_due":
+      return handlePublishDue();
+    case "fetch_knowledge":
+      return handleFetchKnowledge(job.payload);
+    case "system_maintenance":
+      return handleMaintenance();
+    default:
+      throw new Error(`Unknown job type: ${String(job.type)}`);
   }
 }
 
-async function handleGeneratePost(payload: any) {
+// ─── generate_post ────────────────────────────────
+
+async function handleGeneratePost(payload: JobPayload) {
   const { avatarId, automationId } = payload;
   if (!avatarId) throw new Error("Missing avatarId in payload");
 
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
-  if (!avatar) throw new Error("Avatar not found");
+  if (!avatar) throw new Error(`Avatar not found: ${avatarId}`);
 
-  await prisma.activityLog.create({
-    data: {
-      avatarId,
-      action: "automation_started",
-      category: "system",
-      description: `Sagaプロセスを開始します`,
-    },
-  });
+  const data = payload.data ?? {};
+  const topic = String(data.topic || "日々の気づき");
+  const platform = String(data.platform || "x").toLowerCase();
+  const writingRules = (avatar.writingRules ?? {}) as Record<string, unknown>;
+  const maxLength = Number(writingRules.maxLength) || 280;
 
-  const soulContent = await readAvatarFile(avatarId, "soul.md") || `Role: ${avatar.role}\nTone: ${avatar.role}`;
-  
-  // ナレッジの情報を取得してコンテキストに含める (最大最新5件)
+  // Persona context: Soul files + recent knowledge
+  const fallback = `名前: ${avatar.name}\n役割: ${avatar.role}\n専門: ${avatar.specialization ?? ""}\nトーン: ${avatar.tone ?? ""}`;
+  const soulContext = await buildSoulContext(avatarId, fallback);
   const recentKnowledge = await prisma.knowledgeItem.findMany({
-    where: { avatarId },
+    where: { avatarId, isActive: true },
     orderBy: { createdAt: "desc" },
     take: 5,
   });
+  const knowledgeCtx = recentKnowledge.length
+    ? "\n\n【最近学習した知識（参考）】\n" +
+      recentKnowledge.map((k) => `・${k.title}: ${(k.summary || k.content || k.sourceUrl || "").slice(0, 120)}`).join("\n")
+    : "";
 
-  let contextExt = "";
-  if (recentKnowledge.length > 0) {
-    contextExt = "\n\n【最近学習した知識（参考）】\n" + recentKnowledge.map(k => `・${k.title}: ${k.content ? k.content.slice(0, 100) : k.sourceUrl}`).join("\n");
-  }
+  // Mood Engine: time-decayed mood + occasional "intuition spark"
+  const mood = moodEngine.calculate(avatar.moodScore, avatar.moodUpdatedAt);
+  const spark = moodEngine.checkSpark(Number(process.env.SPARK_THRESHOLD || 0.05));
+  await prisma.avatar.update({ where: { id: avatarId }, data: { moodScore: mood.score, moodUpdatedAt: mood.lastUpdated } });
 
-  const fullPromptLength = (soulContent + contextExt).length;
-
-  const generatedText = await generatePostContent({
-    soulContext: soulContent + contextExt,
-    topic: payload.data?.topic || "日々の気づき",
+  const generated = await generatePost({
+    soulContext: soulContext + knowledgeCtx,
+    topic,
+    platform,
+    maxLength,
+    directive: spark?.directive,
+    temperature: 0.7 * mood.creativityModifier,
   });
 
-  // Prisma Schema V3 is Content, V2 was Post.
-  const post = await prisma.content.create({
+  const content = await prisma.content.create({
     data: {
       avatarId,
-      platform: "X",
-      content: generatedText,
+      platform,
+      content: generated.text,
       status: "DRAFT",
+      category: String(data.category || "viral"),
+      moodAtCreation: mood.score,
+      intuitionTriggered: !!spark,
+      sparkType: spark?.type ?? null,
+      metadata: {
+        generatedBy: generated.model,
+        mock: generated.mock,
+        topic,
+        automationId: automationId ?? null,
+        ...(generated.error ? { aiError: generated.error } : {}),
+      },
     },
   });
 
   await prisma.activityLog.create({
     data: {
       avatarId,
-      action: "automation_completed",
+      action: "content_generated",
       category: "content",
-      description: `新しい下書きを作成しました: ${generatedText.slice(0, 40)}...`,
-      metadata: JSON.stringify({
-        model: "gemini-2.5-flash",
-        promptChars: fullPromptLength,
-        outputChars: generatedText.length,
-        topic: payload.data?.topic || "日々の気づき",
+      level: generated.mock ? "warning" : "success",
+      description: `新しい下書きを作成しました${generated.mock ? "（モック）" : ""}: ${generated.text.slice(0, 40)}...`,
+      metadata: {
+        model: generated.model,
+        promptChars: soulContext.length + knowledgeCtx.length,
+        outputChars: generated.text.length,
+        topic,
         knowledgeItems: recentKnowledge.length,
-        postId: post.id,
-        automationId: payload.automationId || null,
-      }),
+        contentId: content.id,
+        automationId: automationId ?? null,
+        mood: Math.round(mood.score * 100) / 100,
+        spark: spark?.type ?? null,
+      } satisfies Prisma.InputJsonValue,
     },
   });
-  
-  console.log(`[Worker] Successfully generated and saved content ${post.id}`);
+  await appendMemory(avatarId, `generated content ${content.id} on "${topic}"`).catch(() => {});
+
+  // Optional: publish immediately (automation actionConfig.autoPublish)
+  if (data.autoPublish === true) {
+    await orchestrator.addJob("publish_post", { avatarId, contentId: content.id });
+  }
+  console.log(`[Worker] Generated content ${content.id} (${generated.model})`);
 }
 
-async function handlePublishPost(payload: any) {
-  const { postId } = payload;
-  if (!postId) throw new Error("Missing postId");
+// ─── publish_post / publish_due ───────────────────
 
-  console.log(`[Worker] Publishing post ${postId}...`);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+async function handlePublishPost(payload: JobPayload) {
+  const contentId = payload.contentId ?? (payload.data?.contentId as string | undefined) ?? (payload.data?.postId as string | undefined);
+  if (!contentId) throw new Error("Missing contentId");
+  const outcome = await publishContent(contentId);
+  console.log(`[Worker] Publish ${contentId}: ${outcome.status} (${outcome.mode})`);
 }
 
-async function handleFetchKnowledge(payload: any) {
-  const { avatarId, data } = payload;
-  const { knowledgeId, url } = data;
+async function handlePublishDue() {
+  const due = await prisma.scheduledPost.findMany({
+    where: { status: "pending", scheduledAt: { lte: new Date() } },
+    take: 20,
+  });
+  for (const sp of due) {
+    // Atomic claim so parallel schedulers never double-publish
+    const claimed = await prisma.scheduledPost.updateMany({ where: { id: sp.id, status: "pending" }, data: { status: "processing" } });
+    if (claimed.count === 1) await publishContent(sp.contentId);
+  }
+}
 
+// ─── fetch_knowledge (SSRF-safe) ──────────────────
+
+async function handleFetchKnowledge(payload: JobPayload) {
+  const { avatarId } = payload;
+  const knowledgeId = payload.data?.knowledgeId as string | undefined;
+  const url = payload.data?.url as string | undefined;
   if (!knowledgeId || !url) throw new Error("Missing knowledgeId or url");
 
-  console.log(`[Worker] Fetching knowledge from ${url}...`);
   await prisma.activityLog.create({
-    data: {
-      avatarId,
-      action: "knowledge_update",
-      category: "system",
-      description: `URLからテキストの抽出を開始します: ${url}`,
-    },
+    data: { avatarId, action: "knowledge_fetch_started", category: "system", description: `URLからテキストの抽出を開始します: ${url}` },
   });
 
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-    
-    // SSRF対策などが必要だが簡易版として実装
-    const html = await res.text();
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-    const bodyContent = bodyMatch ? bodyMatch[1] : html;
-    
-    const cleanText = bodyContent
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .substring(0, 5000);
-
+    const res = await safeFetch(url, { timeoutMs: 15_000, maxBytes: 3 * 1024 * 1024 });
+    if (res.status < 200 || res.status >= 300) throw Object.assign(new Error(`HTTP ${res.status}`), { httpStatus: res.status });
+    const { title, text } = extractText(res.body, 8000);
+    const item = await prisma.knowledgeItem.findUnique({ where: { id: knowledgeId } });
     await prisma.knowledgeItem.update({
       where: { id: knowledgeId },
       data: {
-        content: `【自動抽出】\n${cleanText}`,
-        updatedAt: new Date(),
+        content: text,
+        summary: text.slice(0, 200),
+        freshness: new Date(),
+        ...(item && (!item.title || item.title === url) && title ? { title: title.slice(0, 200) } : {}),
       },
     });
-
+    await prisma.activityLog.create({
+      data: { avatarId, action: "knowledge_update", category: "system", level: "success", description: `${url} からコンテンツを抽出しナレッジベースに保存しました（${text.length}文字）` },
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    await prisma.knowledgeItem.update({ where: { id: knowledgeId }, data: { summary: `取得失敗: ${msg}` } }).catch(() => {});
     await prisma.activityLog.create({
       data: {
         avatarId,
-        action: "success",
-        category: "system",
-        description: `${url} からコンテンツを抽出しナレッジベースに保存しました。`,
+        action: error instanceof SsrfError ? "security_blocked" : "error",
+        category: error instanceof SsrfError ? "security" : "system",
+        level: "error",
+        description: `${url} の取得に失敗しました: ${msg}`,
       },
     });
-
-  } catch (error: any) {
-    console.error(`[Worker] Failed to fetch knowledge: ${error.message}`);
-    await prisma.activityLog.create({
-      data: {
-        avatarId,
-        action: "error",
-        category: "system",
-        description: `${url} の取得に失敗しました: ${error.message}`,
-      },
-    });
+    // SSRF blocks and client errors (4xx) are final — only retry network/5xx failures
+    const status = (error as { httpStatus?: number }).httpStatus;
+    const final = error instanceof SsrfError || (status !== undefined && status >= 400 && status < 500);
+    if (!final) throw error;
   }
+}
+
+// ─── system_maintenance ───────────────────────────
+
+async function handleMaintenance() {
+  const retentionDays = Number(process.env.ACTIVITY_RETENTION_DAYS || 90);
+  const cutoff = new Date(Date.now() - retentionDays * 86400_000);
+  const { count } = await prisma.activityLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  console.log(`[Worker] Maintenance: removed ${count} old activity logs`);
 }

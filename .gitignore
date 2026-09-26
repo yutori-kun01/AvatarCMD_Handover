@@ -28,4 +28,4 @@ docker-data/
 
 # Lock files (large)
 package-lock.json
-pnpm-lock.yaml
+

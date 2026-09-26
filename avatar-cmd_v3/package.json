@@ -12,10 +12,16 @@
     "db:push": "turbo run db:push --filter=@avatar-cmd/db",
     "db:migrate": "turbo run db:migrate --filter=@avatar-cmd/db",
     "db:studio": "turbo run db:studio --filter=@avatar-cmd/db",
-    "clean": "turbo run clean && rimraf node_modules"
+    "clean": "turbo run clean && rimraf node_modules",
+    "typecheck": "turbo run typecheck",
+    "test": "pnpm --filter @avatar-cmd/core test",
+    "db:deploy": "pnpm --filter @avatar-cmd/db db:deploy",
+    "db:seed": "pnpm --filter @avatar-cmd/db db:seed",
+    "start": "pnpm --filter @avatar-cmd/web start",
+    "worker:chrome": "pnpm --filter @avatar-cmd/chrome-empire worker"
   },
   "devDependencies": {
-    "turbo": "^2.3.0",
+    "turbo": "^2.5.6",
     "rimraf": "^6.0.1",
     "typescript": "^5.7.3"
   }

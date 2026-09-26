@@ -19,6 +19,10 @@ const DEFAULT_RATE_LIMITS: Record<Platform, RateLimitConfig> = {
   reddit: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 60_000 },
   medium: { maxRequests: 10, windowMs: 60 * 60 * 1000, retryAfterMs: 300_000 },
   substack: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
+  facebook: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 300_000 },
+  wordpress: { maxRequests: 30, windowMs: 60 * 60 * 1000, retryAfterMs: 60_000 },
+  ameba: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
+  standfm: { maxRequests: 5, windowMs: 60 * 60 * 1000, retryAfterMs: 600_000 },
 };
 
 export class ProviderRegistry {
@@ -31,7 +35,7 @@ export class ProviderRegistry {
    */
   register(provider: SnsProvider): void {
     this.providers.set(provider.platform, provider);
-    console.log(`[Registry] Registered provider: ${provider.displayName} (${provider.platform})`);
+    if (process.env.DEBUG_REGISTRY) console.log(`[Registry] Registered provider: ${provider.displayName} (${provider.platform})`);
   }
 
   /**
@@ -56,16 +60,20 @@ export class ProviderRegistry {
     displayName: string;
     icon: string;
     authType: string;
+    modes: string[];
     maxPostLength: number;
     supportsMedia: boolean;
+    supportsScheduling: boolean;
   }[] {
     return this.listAll().map((p) => ({
       platform: p.platform,
       displayName: p.displayName,
       icon: p.icon,
-      authType: p.authType,
+      authType: p.authConfig.primary,
+      modes: p.supportedModes,
       maxPostLength: p.maxPostLength,
       supportsMedia: p.supportsMedia,
+      supportsScheduling: p.supportsScheduling,
     }));
   }
 
