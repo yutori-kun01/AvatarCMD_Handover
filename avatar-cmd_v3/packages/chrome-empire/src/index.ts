@@ -15,5 +15,6 @@ export {
   type PoolEvent,
   type PoolEventListener,
   type ChromeEmpireConfig,
+  type BrowserStep,
   DEFAULT_CONFIG,
 } from "./types";

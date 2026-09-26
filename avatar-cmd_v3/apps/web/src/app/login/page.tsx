@@ -7,7 +7,7 @@ export const metadata = { title: "ログイン | Avatar CMD" }
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; callbackUrl?: string }> }) {
   const { error, callbackUrl } = await searchParams
-  const safeCallback = callbackUrl && callbackUrl.startsWith("/") && !callbackUrl.startsWith("//") ? callbackUrl : "/dashboard"
+  const safeCallback = toSafePath(callbackUrl)
 
   async function login(formData: FormData) {
     "use server"
@@ -57,4 +57,17 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       </div>
     </div>
   )
+}
+
+// Keep only the path of the callback (the middleware may build it with the
+// container's internal host). Never redirect off-site.
+function toSafePath(callbackUrl?: string): string {
+  if (!callbackUrl) return "/dashboard"
+  try {
+    const u = new URL(callbackUrl, "http://internal")
+    const path = u.pathname + u.search
+    return path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/login") ? path : "/dashboard"
+  } catch {
+    return "/dashboard"
+  }
 }

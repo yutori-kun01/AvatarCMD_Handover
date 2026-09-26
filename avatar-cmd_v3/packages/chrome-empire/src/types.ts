@@ -120,3 +120,13 @@ export const DEFAULT_CONFIG: ChromeEmpireConfig = {
   recycleAfterTasks: 100,
   stealthMode: true,
 };
+
+// --- Provider step (mirror of @avatar-cmd/integrations BrowserOperation) ---
+export interface BrowserStep {
+  action: "login" | "post" | "read" | "engage" | "collect_metrics" | "search" | "navigate";
+  url: string;
+  selectors?: Record<string, string>;
+  inputData?: Record<string, string>;
+  waitFor?: string;
+  timeout?: number;
+}

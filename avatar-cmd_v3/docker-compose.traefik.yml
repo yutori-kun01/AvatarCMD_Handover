@@ -1,0 +1,18 @@
+# Traefik override — attach web to an existing Traefik network with HTTPS.
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+services:
+  web:
+    ports: !reset []
+    networks: [internal, traefik-net]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik-net}"
+      - "traefik.http.routers.avatar-cmd.rule=Host(`avatar-cmd.${DOMAIN:?set DOMAIN in .env}`)"
+      - "traefik.http.routers.avatar-cmd.entrypoints=websecure"
+      - "traefik.http.routers.avatar-cmd.tls.certresolver=letsencrypt"
+      - "traefik.http.services.avatar-cmd.loadbalancer.server.port=3000"
+
+networks:
+  traefik-net:
+    name: ${TRAEFIK_NETWORK:-traefik-net}
+    external: true

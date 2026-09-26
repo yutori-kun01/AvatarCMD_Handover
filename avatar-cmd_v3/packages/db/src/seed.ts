@@ -27,6 +27,12 @@ function daysAgo(n: number, hour = 12): Date {
   return d;
 }
 
+/** Clamp a sample timestamp to the past (keeps ordering by offset). */
+function notFuture(d: Date, offsetMinutes = 0): Date {
+  const limit = Date.now() - (offsetMinutes + 1) * 60_000;
+  return d.getTime() > limit ? new Date(limit) : d;
+}
+
 function findRepoRoot(start: string): string {
   let dir = start;
   for (let i = 0; i < 6; i++) {
@@ -303,7 +309,7 @@ async function seedSampleData(user: { id: string }, avatarIds: Record<string, st
       const platform = a.platforms[i % a.platforms.length].platform;
       const text = templates[i % templates.length];
       const published = i < 9;
-      const created = daysAgo(i, 8 + (i % 12));
+      const created = notFuture(daysAgo(i, 8 + (i % 12)), i);
       const content = await prisma.content.create({
         data: {
           avatarId: ids[a.key],
@@ -345,6 +351,7 @@ async function seedSampleData(user: { id: string }, avatarIds: Record<string, st
         earned.setDate(1);
         earned.setMonth(earned.getMonth() - m);
         earned.setDate(randInt(1, 27));
+        if (earned.getTime() > Date.now()) earned.setTime(Date.now() - randInt(1, 72) * 3600_000);
         const amount = Math.round((base * (1 + (5 - m) * 0.06) + randInt(-4000, 4000)) / 100) * 100;
         revenueRows.push({
           avatarId: ids[a.key],

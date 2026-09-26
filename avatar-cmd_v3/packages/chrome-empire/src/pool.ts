@@ -6,7 +6,7 @@
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { ProfileManager } from "./profile";
 import {
   type ChromeEmpireConfig,
@@ -17,6 +17,7 @@ import {
   type TaskResult,
   type PoolEvent,
   type PoolEventListener,
+  type BrowserStep,
   DEFAULT_CONFIG,
 } from "./types";
 
@@ -105,6 +106,7 @@ export class ChromeEmpire {
       // Launch browser with persistent context (session persistence)
       const browser = await chromium.launch({
         headless: this.config.headless,
+        ...(process.env.CHROME_EXECUTABLE_PATH ? { executablePath: process.env.CHROME_EXECUTABLE_PATH } : {}),
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -289,6 +291,78 @@ export class ChromeEmpire {
     }
   }
 
+  /**
+   * Execute a sequence of provider-defined BrowserOperation steps
+   * (from @avatar-cmd/integrations getPostSteps etc.) in one page.
+   * Relies on a persisted session (storageState) — login steps are not
+   * automated and must be performed once manually for the profile.
+   */
+  async executeSteps(avatarId: string, steps: BrowserStep[]): Promise<TaskResult> {
+    const instance = await this.spawnForAvatar(avatarId);
+    const startTime = Date.now();
+    instance.status = "running";
+    instance.lastActivity = new Date();
+    this.emit({ type: "task:started", avatarId, taskType: "custom" });
+    const page = await instance.context.newPage();
+    const collected: Record<string, string[]> = {};
+    try {
+      for (const step of steps) {
+        const timeout = step.timeout ?? this.config.defaultTimeout;
+        switch (step.action) {
+          case "navigate":
+            await page.goto(step.url, { timeout, waitUntil: "domcontentloaded" });
+            if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout });
+            break;
+          case "post": {
+            const editor = step.selectors?.editor;
+            const submit = step.selectors?.submit;
+            const text = step.inputData?.text ?? "";
+            if (!editor || !submit) throw new Error("post step requires editor and submit selectors");
+            if (!page.url().startsWith(step.url)) await page.goto(step.url, { timeout, waitUntil: "domcontentloaded" });
+            const el = page.locator(editor).first();
+            await el.waitFor({ timeout });
+            await el.click();
+            await page.keyboard.type(text, { delay: 15 });
+            await page.locator(submit).first().click({ timeout });
+            await page.waitForLoadState("networkidle", { timeout }).catch(() => {});
+            break;
+          }
+          case "read":
+          case "collect_metrics":
+            for (const [key, sel] of Object.entries(step.selectors ?? {})) {
+              collected[key] = await page.locator(sel).allInnerTexts();
+            }
+            break;
+          case "login":
+            // Credentials are never sent to the worker. A logged-in session
+            // must already exist in the profile's storage state.
+            if (step.waitFor && !(await page.locator(step.waitFor).count())) {
+              throw new Error("Session expired: manual login required for this profile");
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      const url = page.url();
+      await this.saveSessionState(instance);
+      instance.status = "idle";
+      instance.metrics.tasksCompleted++;
+      const duration = Date.now() - startTime;
+      this.emit({ type: "task:completed", avatarId, taskType: "custom", duration });
+      return { success: true, taskType: "custom", avatarId, data: { url, collected }, duration };
+    } catch (error) {
+      instance.status = "error";
+      instance.metrics.tasksErrored++;
+      const msg = error instanceof Error ? error.message : String(error);
+      this.emit({ type: "task:failed", avatarId, taskType: "custom", error: msg });
+      return { success: false, taskType: "custom", avatarId, error: msg, duration: Date.now() - startTime };
+    } finally {
+      await page.close().catch(() => {});
+      if (instance.status === "error") instance.status = "idle";
+    }
+  }
+
   // ============================================
   // Pool Status
   // ============================================
@@ -372,9 +446,8 @@ export class ChromeEmpire {
 
   private async saveSessionState(instance: ChromeInstance): Promise<void> {
     try {
-      const statePath = this.getStorageStatePath(instance.profile);
+      const statePath = `${instance.profile.storageDir}/session-state.json`;
       const state = await instance.context.storageState();
-      const { writeFileSync } = require("fs") as typeof import("fs");
       writeFileSync(statePath, JSON.stringify(state), "utf-8");
     } catch {
       // Best-effort save
@@ -383,7 +456,6 @@ export class ChromeEmpire {
 
   private getStorageStatePath(profile: ChromeProfile): string | undefined {
     const path = `${profile.storageDir}/session-state.json`;
-    const { existsSync } = require("fs") as typeof import("fs");
     return existsSync(path) ? path : undefined;
   }
 

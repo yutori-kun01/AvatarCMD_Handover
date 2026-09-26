@@ -1,0 +1,13 @@
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+.env
+**/.env
+**/.env.local
+data/avatars/*
+!data/avatars/_template
+data/chrome
+dump.rdb
+.git

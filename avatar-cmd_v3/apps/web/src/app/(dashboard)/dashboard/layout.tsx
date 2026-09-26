@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 
 export const dynamic = "force-dynamic"
+export const metadata = { title: "ダッシュボード | Avatar CMD" }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await auth()

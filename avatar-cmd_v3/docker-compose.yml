@@ -1,46 +1,17 @@
 # ============================================
-# Avatar CMD v3 — Docker Compose (Production)
+# Avatar CMD v3 — Docker Compose
 # ============================================
-# VPS: Ubuntu 22.04, Traefik + Portainer 稼働中
+#   cp .env.example .env   # set DB_PASSWORD / AUTH_SECRET / ENCRYPTION_KEY / ADMIN_PASSWORD
+#   docker compose up -d --build
+#   → http://localhost:3333  (login: ADMIN_EMAIL / ADMIN_PASSWORD)
+#
+# Behind Traefik (VPS):
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 # ============================================
+
+x-database-url: &database-url "postgresql://avatar:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/avatar_cmd?schema=public"
 
 services:
-  # ─── Web Dashboard ───
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: avatar-cmd-web
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-      - NEXTAUTH_URL=${NEXTAUTH_URL}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-    ports:
-      - "3333:3000"
-    networks:
-      - internal
-      - traefik-net
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    labels:
-      # ── Traefik Labels ──
-      - "traefik.enable=true"
-      - "traefik.http.routers.avatar-cmd.rule=Host(`avatar-cmd.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.avatar-cmd.entrypoints=websecure"
-      - "traefik.http.routers.avatar-cmd.tls.certresolver=letsencrypt"
-      - "traefik.http.services.avatar-cmd.loadbalancer.server.port=3000"
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-
   # ─── PostgreSQL ───
   db:
     image: postgres:16-alpine
@@ -49,11 +20,10 @@ services:
     environment:
       POSTGRES_DB: avatar_cmd
       POSTGRES_USER: avatar
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
     volumes:
       - db-data:/var/lib/postgresql/data
-    networks:
-      - internal
+    networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U avatar -d avatar_cmd"]
       interval: 10s
@@ -61,20 +31,18 @@ services:
       retries: 5
     deploy:
       resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
+        limits: { memory: 512M, cpus: "0.5" }
 
-  # ─── Redis (Queue + Cache) ───
+  # ─── Redis (job queue) ───
   redis:
     image: redis:7-alpine
     container_name: avatar-cmd-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    # noeviction: BullMQ jobs must never be evicted
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
-    networks:
-      - internal
+    networks: [internal]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -82,49 +50,87 @@ services:
       retries: 5
     deploy:
       resources:
-        limits:
-          memory: 192M
-          cpus: '0.2'
+        limits: { memory: 192M, cpus: "0.2" }
 
-  # ─── Chrome Empire (Playwright) ───
-  chrome-empire:
-    image: mcr.microsoft.com/playwright:v1.49.1-jammy
-    container_name: avatar-cmd-chrome
-    restart: unless-stopped
-    working_dir: /app
-    command: ["node", "packages/chrome-empire/dist/worker.js"]
+  # ─── One-shot: migrations + seed ───
+  migrate:
+    build:
+      context: .
+      target: migrator
+    image: avatar-cmd-migrator
+    container_name: avatar-cmd-migrate
+    restart: "no"
     environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL}
-      - CHROME_POOL_SIZE=${CHROME_POOL_SIZE:-3}
-      - CHROME_HEADLESS=true
+      DATABASE_URL: *database-url
+      AVATAR_DATA_DIR: /app/data/avatars
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@avatar-cmd.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-true}
     volumes:
-      - chrome-sessions:/app/data/sessions
-      - chrome-profiles:/app/data/profiles
-    networks:
-      - internal
-      - chrome-net
-    shm_size: '2gb'
+      - avatar-data:/app/data/avatars
+    networks: [internal]
+    depends_on:
+      db: { condition: service_healthy }
+
+  # ─── Web Dashboard + API + Scheduler ───
+  web:
+    build:
+      context: .
+      target: web
+    image: avatar-cmd-web
+    container_name: avatar-cmd-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379
+      AVATAR_DATA_DIR: /app/data/avatars
+      AUTH_TRUST_HOST: "true"
+    ports:
+      - "${WEB_PORT:-3333}:3000"
+    volumes:
+      - avatar-data:/app/data/avatars
+    networks: [internal]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     deploy:
       resources:
-        limits:
-          memory: 3G
-          cpus: '3.0'
+        limits: { memory: 768M, cpus: "1.0" }
+
+  # ─── Chrome Empire (Playwright worker) ───
+  chrome-empire:
+    build:
+      context: .
+      target: chrome
+    image: avatar-cmd-chrome
+    container_name: avatar-cmd-chrome
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      CHROME_POOL_SIZE: ${CHROME_POOL_SIZE:-3}
+      CHROME_HEADLESS: "true"
+      CHROME_STEALTH: ${CHROME_STEALTH:-true}
+      CHROME_DATA_DIR: /app/data/chrome
+    volumes:
+      - chrome-data:/app/data/chrome
+    networks: [internal]
+    shm_size: "2gb"
     depends_on:
-      redis:
-        condition: service_healthy
+      redis: { condition: service_healthy }
+    profiles: ["chrome"]
+    deploy:
+      resources:
+        limits: { memory: 3G, cpus: "3.0" }
 
 networks:
   internal:
     driver: bridge
-  chrome-net:
-    driver: bridge
-    internal: true  # 外部アクセス遮断
-  traefik-net:
-    external: true  # 既存Traefikネットワーク
 
 volumes:
   db-data:
   redis-data:
-  chrome-sessions:
-  chrome-profiles:
+  avatar-data:   # Soul Engine files (soul.md / identity.md / rules.md)
+  chrome-data:   # Browser profiles & session state
