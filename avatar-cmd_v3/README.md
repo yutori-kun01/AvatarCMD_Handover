@@ -31,14 +31,14 @@ pnpm test                                         # SNS 連携のリクエスト
 ### 設定の考え方
 
 `.env` に置くのは起動に必要な値（DB・暗号鍵・管理者パスワード・公開URL）だけです。
-**SNS の Client ID / Secret、トークン、アプリパスワード、ログインCookie、Gemini API キーは
+**SNS の Client ID / Secret、トークン、アプリパスワード、ログインCookie、AI（Claude / OpenAI / Gemini）の API キーは
 すべてダッシュボードの「設定」画面から入力**し、AES-256-GCM で暗号化して DB に保存されます。
 
 | 画面 | できること |
 |---|---|
 | 設定 > SNS連携アプリ | 各SNSの開発者アプリ情報を登録。登録すべきリダイレクトURIと手順・公式ドキュメントへのリンクを表示 |
 | 設定 > アカウント | アバターごとに SNS アカウントを接続（OAuth / アプリパスワード / トークン / Cookie）、投稿設定 |
-| 設定 > システム | 公開URL、Meta Graph API / LinkedIn API のバージョン、Gemini API キー |
+| 設定 > システム | 公開URL、Meta Graph API / LinkedIn API のバージョン、AI の API キーと用途ごとのプロバイダ・モデル |
 | 設定 > セキュリティ | 管理者パスワード変更、ログアウト |
 | 投稿 | 投稿先を選んで本文・画像・動画を投稿／予約。AI で下書き生成。送信状況・エラー・再送・下書きの承認 |
 | ダッシュボード | 投稿数・成功率・予約/承認待ち・収益、worker 稼働状況、対応が必要なこと（すべて DB の実データ） |
@@ -186,6 +186,7 @@ avatar-cmd/
 ### Phase 9: 全画面の実データ化・AI 自動化 ✅（v3.1）
 - ダッシュボード / アバター / 自動化 / アクティビティ / SNS運用 / 収益 をモックから DB 実データに置き換え
 - 自動化ルール: worker がスケジュール実行し、Gemini（既定 gemini-3.8-flash、設定で変更可）で投稿文を生成
+  （v3.2 で Claude / OpenAI / Gemini を用途ごとに切り替え可能に）
 - CI（GitHub Actions）: 型チェック・テスト・Next.js ビルド・Docker ビルド
 
 ### Phase 8: 設定画面・投稿キュー・本番デプロイ ✅（v3.1）

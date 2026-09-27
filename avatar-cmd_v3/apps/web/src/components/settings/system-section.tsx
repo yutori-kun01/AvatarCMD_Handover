@@ -1,5 +1,5 @@
 "use client";
-// 「システム」: 公開URL・APIバージョン・AIキー ／「セキュリティ」: パスワード変更
+// 「システム」: 公開URL・APIバージョン・AI（キーと用途ごとの割り当て） ／「セキュリティ」: パスワード変更
 import { useState } from "react";
 import { api, Button, Card, CopyText, Field } from "./ui";
 
@@ -8,26 +8,53 @@ export interface SystemInfo {
   appUrlFromEnv: string | null;
   metaGraphVersion: string;
   linkedinVersion: string;
-  geminiApiKey: string;
-  geminiModel: string;
 }
 
-export function SystemSection({ system, onChanged }: { system: SystemInfo; onChanged: (msg: string, ok: boolean) => void }) {
+export interface AiInfo {
+  providers: {
+    id: string;
+    name: string;
+    defaultModel: string;
+    keyHelp: string;
+    modelHelp: string;
+    /** 保存済みキー（伏せ字）。未保存なら空 */
+    apiKey: string;
+    /** DB には無いが環境変数で設定されている */
+    fromEnv: boolean;
+    env: string;
+  }[];
+  tasks: {
+    id: string;
+    label: string;
+    help: string;
+    provider: string;
+    model: string;
+    effectiveProvider: string | null;
+    effectiveModel: string | null;
+  }[];
+  ready: boolean;
+}
+
+export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; ai: AiInfo; onChanged: (msg: string, ok: boolean) => void }) {
   const [v, setV] = useState({
     appUrl: system.appUrl,
     metaGraphVersion: system.metaGraphVersion,
     linkedinVersion: system.linkedinVersion,
-    geminiApiKey: "",
-    geminiModel: system.geminiModel,
   });
+  const emptyKeys = () => Object.fromEntries(ai.providers.map((p) => [p.id, ""]));
+  const [aiKeys, setAiKeys] = useState<Record<string, string>>(emptyKeys);
+  const [aiTasks, setAiTasks] = useState<Record<string, { provider: string; model: string }>>(() =>
+    Object.fromEntries(ai.tasks.map((t) => [t.id, { provider: t.provider, model: t.model }]))
+  );
+  const providerName = (id: string | null) => ai.providers.find((p) => p.id === id)?.name ?? id ?? "";
   const [busy, setBusy] = useState(false);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
   async function save() {
     setBusy(true);
     try {
-      await api("/api/settings/system", { method: "PUT", json: v });
-      setV({ ...v, geminiApiKey: "" });
+      await api("/api/settings/system", { method: "PUT", json: { ...v, aiKeys, aiTasks } });
+      setAiKeys(emptyKeys());
       onChanged("システム設定を保存しました", true);
     } catch (e) {
       onChanged((e as Error).message, false);
@@ -78,22 +105,62 @@ export function SystemSection({ system, onChanged }: { system: SystemInfo; onCha
 
       <Card className="space-y-4">
         <h3 className="text-sm font-semibold">AI（投稿文の自動生成）</h3>
-        <Field
-          def={{
-            key: "gemini",
-            label: "Google Gemini API キー",
-            type: "password",
-            help: system.geminiApiKey ? `保存済み: ${system.geminiApiKey}（変更する場合のみ入力 / 削除は「-」）` : "Google AI Studio で発行。未設定の場合はモック文章になります",
-          }}
-          value={v.geminiApiKey}
-          configured={!!system.geminiApiKey}
-          onChange={(x) => setV({ ...v, geminiApiKey: x })}
-        />
-        <Field
-          def={{ key: "model", label: "モデル", placeholder: "gemini-3.8-flash", help: "ai.google.dev/gemini-api/docs/models の最新モデル名。gemini-2.5-flash は 2026年10月16日に提供終了" }}
-          value={v.geminiModel}
-          onChange={(x) => setV({ ...v, geminiModel: x })}
-        />
+        <p className="text-xs text-white/50">使うサービスの API キーを入力し、用途ごとにプロバイダとモデルを選びます。「自動」はキーが設定済みのものを Claude → OpenAI → Gemini の順で使います。</p>
+        <div className="grid gap-4 md:grid-cols-3">
+          {ai.providers.map((p) => (
+            <Field
+              key={p.id}
+              def={{
+                key: p.id,
+                label: `${p.name} API キー`,
+                type: "password",
+                help: p.apiKey
+                  ? `保存済み: ${p.apiKey}（変更する場合のみ入力 / 削除は「-」）`
+                  : p.fromEnv
+                    ? `.env の ${p.env} を使用中（ここで入力すると優先されます）`
+                    : p.keyHelp,
+              }}
+              value={aiKeys[p.id] ?? ""}
+              configured={!!p.apiKey || p.fromEnv}
+              onChange={(x) => setAiKeys({ ...aiKeys, [p.id]: x })}
+            />
+          ))}
+        </div>
+        <div className="space-y-3">
+          <div className="text-xs font-semibold text-white/70">用途ごとの割り当て</div>
+          {ai.tasks.map((t) => {
+            const cur = aiTasks[t.id] ?? { provider: "auto", model: "" };
+            const p = ai.providers.find((x) => x.id === cur.provider);
+            return (
+              <div key={t.id} className="grid gap-3 rounded-lg border border-white/5 p-3 md:grid-cols-[10rem_1fr_1fr]">
+                <div>
+                  <div className="text-sm">{t.label}</div>
+                  <div className="text-[11px] text-white/35">{t.help}</div>
+                </div>
+                <Field
+                  def={{
+                    key: `${t.id}-provider`,
+                    label: "プロバイダ",
+                    type: "select",
+                    options: [{ value: "auto", label: "自動（Claude 優先）" }, ...ai.providers.map((x) => ({ value: x.id, label: x.name }))],
+                    help: t.effectiveProvider ? `現在: ${providerName(t.effectiveProvider)} / ${t.effectiveModel}` : "API キーが未設定のため生成できません",
+                  }}
+                  value={cur.provider}
+                  onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { provider: x, model: "" } })}
+                />
+                {p ? (
+                  <Field
+                    def={{ key: `${t.id}-model`, label: "モデル（空欄で既定）", placeholder: p.defaultModel, help: p.modelHelp }}
+                    value={cur.model}
+                    onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { ...cur, model: x } })}
+                  />
+                ) : (
+                  <p className="self-center text-[11px] text-white/35">自動のときは各プロバイダの既定モデルを使います</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </Card>
 
       <Button onClick={save} disabled={busy}>

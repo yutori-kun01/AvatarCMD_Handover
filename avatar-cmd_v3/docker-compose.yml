@@ -14,6 +14,10 @@ x-app-env: &app-env
   APP_URL: ${APP_URL:-http://localhost:3333}
   MEDIA_DIR: /app/data/media
   GEMINI_BASE_URL: ${GEMINI_BASE_URL:-}   # 任意: Gemini API の接続先を変える場合のみ
+  # 任意: AI の API キーを .env で渡す場合（通常はダッシュボードの 設定 > システム > AI で入力）
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
 services:
   # ─── PostgreSQL ───

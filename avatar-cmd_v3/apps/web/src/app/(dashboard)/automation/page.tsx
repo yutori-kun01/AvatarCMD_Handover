@@ -57,7 +57,7 @@ export default function AutomationPage() {
   const [avatars, setAvatars] = useState<{ id: string; name: string }[]>([]);
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
-  const [geminiReady, setGeminiReady] = useState(true);
+  const [aiReady, setAiReady] = useState(true);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
@@ -65,13 +65,13 @@ export default function AutomationPage() {
   const load = useCallback(async () => {
     const [r, i] = await Promise.all([
       api<{ rules: Rule[] }>("/api/automations"),
-      api<{ avatars: { id: string; name: string }[]; accounts: AccountInfo[]; platforms: PlatformInfo[]; system: { geminiApiKey: string } }>("/api/integrations"),
+      api<{ avatars: { id: string; name: string }[]; accounts: AccountInfo[]; platforms: PlatformInfo[]; ai: { ready: boolean } }>("/api/integrations"),
     ]);
     setRules(r.rules);
     setAvatars(i.avatars);
     setAccounts(i.accounts);
     setPlatforms(i.platforms);
-    setGeminiReady(!!i.system.geminiApiKey);
+    setAiReady(i.ai.ready);
   }, []);
   useEffect(() => {
     load().catch((e) => setNotice({ kind: "error", msg: e.message }));
@@ -130,9 +130,9 @@ export default function AutomationPage() {
           {notice.msg}
         </Notice>
       )}
-      {!geminiReady && (
+      {!aiReady && (
         <Notice kind="error">
-          Gemini API キーが未設定のため、ルールを実行すると失敗します。{" "}
+          AI の API キー（Claude / OpenAI / Gemini）が未設定のため、ルールを実行すると失敗します。{" "}
           <Link href="/settings?tab=system" className="underline">
             設定 → システム
           </Link>{" "}

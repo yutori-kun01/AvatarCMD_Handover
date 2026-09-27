@@ -30,11 +30,23 @@ export const SETTING_KEYS = {
   linkedinVersion: "linkedin_version",
   geminiApiKey: "gemini_api_key",
   geminiModel: "gemini_model",
+  anthropicApiKey: "anthropic_api_key",
+  openaiApiKey: "openai_api_key",
+  /** 用途ごとの AI 割り当て（provider: anthropic | openai | gemini、未設定 = 自動） */
+  aiPostProvider: "ai_post_provider",
+  aiPostModel: "ai_post_model",
+  aiArticleProvider: "ai_article_provider",
+  aiArticleModel: "ai_article_model",
   workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;
 
-const SECRET_KEYS = new Set<string>([SETTING_KEYS.geminiApiKey, SETTING_KEYS.adminPasswordHash]);
+const SECRET_KEYS = new Set<string>([
+  SETTING_KEYS.geminiApiKey,
+  SETTING_KEYS.anthropicApiKey,
+  SETTING_KEYS.openaiApiKey,
+  SETTING_KEYS.adminPasswordHash,
+]);
 
 export async function getSetting(key: string): Promise<string | undefined> {
   const row = await prisma.appSetting.findUnique({ where: { key } });

@@ -1,17 +1,20 @@
 // ================================================
-// AI 投稿文生成（Google Gemini API / 公式SDK @google/genai）
+// AI 投稿文生成 — 用途（SNS 投稿 / 長文記事）ごとに Claude / OpenAI / Gemini を使い分ける
 // ================================================
-// APIキーとモデルはダッシュボードの「設定 > システム」で入力する。
-// 既定モデル: gemini-3.8-flash（gemini-2.5-flash は 2026-10-16 に提供終了）
-// キー未設定のときはモック文章で投稿しないよう、明示的にエラーにする。
+// API キーと用途ごとのプロバイダ・モデルはダッシュボードの「設定 > システム > AI」で入力する。
+// プロバイダ呼び出しは ./llm.ts。キー未設定のときはモック文章で投稿しないよう、明示的にエラーにする。
 
-import { GoogleGenAI } from "@google/genai";
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
-import { getSetting, SETTING_KEYS } from "./store";
+import { completeText, type AiTask } from "./llm";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/** 長文記事として書かせるプラットフォーム */
+const LONG_FORM_PLATFORMS = ["wordpress", "zenn", "note", "medium"];
+
+export function taskForPlatform(platform?: string): AiTask {
+  return LONG_FORM_PLATFORMS.includes(platform ?? "") ? "article" : "post";
+}
 
 export interface Persona {
   tone?: string;
@@ -33,10 +36,6 @@ export function readPersona(communication: unknown): Persona {
   };
 }
 
-export async function geminiModel(): Promise<string> {
-  return (await getSetting(SETTING_KEYS.geminiModel)) || DEFAULT_GEMINI_MODEL;
-}
-
 export interface GenerateInput {
   avatarId: string;
   topic: string;
@@ -53,7 +52,7 @@ export function buildPrompts(
 ) {
   const def = input.platform ? getPlatform(input.platform) : undefined;
   const limit = def?.maxLength && def.maxLength <= 3000 ? def.maxLength : undefined;
-  const longForm = ["wordpress", "zenn", "note", "medium"].includes(input.platform ?? "");
+  const longForm = taskForPlatform(input.platform) === "article";
 
   const system = [
     `あなたはSNSで発信するアバター「${avatar.name}」です。`,
@@ -82,9 +81,7 @@ export function buildPrompts(
   return { system, user, limit };
 }
 
-export async function generatePostText(input: GenerateInput): Promise<{ text: string; model: string }> {
-  const apiKey = (await getSetting(SETTING_KEYS.geminiApiKey)) || process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new ConfigError("Gemini API キーが未設定です（設定 > システム > AI）");
+export async function generatePostText(input: GenerateInput): Promise<{ text: string; model: string; provider: string }> {
   const avatar = await prisma.avatar.findUnique({ where: { id: input.avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const knowledge = await prisma.knowledgeItem.findMany({
@@ -94,14 +91,8 @@ export async function generatePostText(input: GenerateInput): Promise<{ text: st
     select: { title: true, summary: true },
   });
   const { system, user, limit } = buildPrompts(avatar, readPersona(avatar.communication), input, knowledge);
-  const model = await geminiModel();
-
-  // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
-  const baseUrl = process.env.GEMINI_BASE_URL;
-  const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
-  const res = await ai.models.generateContent({ model, contents: user, config: { systemInstruction: system, temperature: 0.8 } });
-  let text = (res.text ?? "").trim();
-  if (!text) throw new Error(`Gemini (${model}) から本文が返りませんでした`);
+  const res = await completeText({ task: taskForPlatform(input.platform), system, user });
+  let text = res.text;
   if (limit && [...text].length > limit) text = [...text].slice(0, limit - 1).join("") + "…";
-  return { text, model };
+  return { ...res, text };
 }
