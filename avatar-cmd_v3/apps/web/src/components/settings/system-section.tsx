@@ -14,7 +14,6 @@ export interface AiInfo {
   providers: {
     id: string;
     name: string;
-    defaultModel: string;
     keyHelp: string;
     modelHelp: string;
     /** 保存済みキー（伏せ字）。未保存なら空 */
@@ -27,6 +26,10 @@ export interface AiInfo {
     id: string;
     label: string;
     help: string;
+    /** プロバイダごとの既定（最低限の推奨）モデル */
+    defaults: Record<string, string>;
+    /** 品質を上げたいときの候補 */
+    upgrade: Record<string, string>;
     provider: string;
     model: string;
     effectiveProvider: string | null;
@@ -105,7 +108,7 @@ export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; a
 
       <Card className="space-y-4">
         <h3 className="text-sm font-semibold">AI（投稿文の自動生成）</h3>
-        <p className="text-xs text-white/50">使うサービスの API キーを入力し、用途ごとにプロバイダとモデルを選びます。「自動」はキーが設定済みのものを Claude → OpenAI → Gemini の順で使います。</p>
+        <p className="text-xs text-white/50">使うサービスの API キーを入力し、用途ごとにプロバイダとモデルを選びます。「自動」はキーが設定済みのものを Claude → OpenAI → Gemini の順で使います。モデル欄が空欄なら、用途ごとの「最低限の推奨モデル」を使います（重い用途だけ上位モデル）。</p>
         <div className="grid gap-4 md:grid-cols-3">
           {ai.providers.map((p) => (
             <Field
@@ -150,12 +153,19 @@ export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; a
                 />
                 {p ? (
                   <Field
-                    def={{ key: `${t.id}-model`, label: "モデル（空欄で既定）", placeholder: p.defaultModel, help: p.modelHelp }}
+                    def={{
+                      key: `${t.id}-model`,
+                      label: "モデル（空欄で推奨モデル）",
+                      placeholder: t.defaults[p.id],
+                      help: `推奨（最低限）: ${t.defaults[p.id]}${t.upgrade[p.id] ? ` ／ 品質重視: ${t.upgrade[p.id]}` : ""}。${p.modelHelp}`,
+                    }}
                     value={cur.model}
                     onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { ...cur, model: x } })}
                   />
                 ) : (
-                  <p className="self-center text-[11px] text-white/35">自動のときは各プロバイダの既定モデルを使います</p>
+                  <p className="self-center text-[11px] text-white/35">
+                    自動のときは推奨モデルを使います（{ai.providers.map((x) => `${x.name.replace(/（.*）/, "")}: ${t.defaults[x.id]}`).join(" / ")}）
+                  </p>
                 )}
               </div>
             );

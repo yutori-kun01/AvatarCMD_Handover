@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ExternalLink, Link2, Trash2 } from "lucide-react";
 import { api, Badge, Button, Card, Field, inputCls, LinkButton, SUPPORT_LABEL, type AccountInfo, type PlatformInfo } from "./ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 function ConnectForm({ p, avatarId, onDone }: { p: PlatformInfo; avatarId: string; onDone: (msg: string, ok: boolean) => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
@@ -63,7 +64,7 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
   return (
     <div className="rounded-xl border border-white/[0.06] bg-black/20 p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <span>{p?.icon}</span>
+        <PlatformIcon platform={a.platform} />
         <span className="text-sm font-semibold">{a.accountName}</span>
         <span className="text-xs text-white/40">{p?.name}</span>
         {a.profileUrl && (
@@ -181,7 +182,7 @@ export function AccountsSection({
             return (
               <div key={p.id} className="rounded-xl border border-white/[0.06] px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span>{p.icon}</span>
+                  <PlatformIcon platform={p.id} />
                   <span className="text-sm font-medium">{p.name}</span>
                   <Badge className={SUPPORT_LABEL[p.support].cls}>{SUPPORT_LABEL[p.support].label}</Badge>
                   <span className="flex-1" />

@@ -186,7 +186,9 @@ avatar-cmd/
 ### Phase 9: 全画面の実データ化・AI 自動化 ✅（v3.1）
 - ダッシュボード / アバター / 自動化 / アクティビティ / SNS運用 / 収益 をモックから DB 実データに置き換え
 - 自動化ルール: worker がスケジュール実行し、Gemini（既定 gemini-3.8-flash、設定で変更可）で投稿文を生成
-  （v3.2 で Claude / OpenAI / Gemini を用途ごとに切り替え可能に）
+  （v3.2 で Claude / OpenAI / Gemini を用途ごとに切り替え可能に。用途: SNS投稿文・長文記事・文字数調整・投稿前チェック・タグ提案。
+  自動投稿は投稿前チェックを通過したものだけ）
+- UI のアイコンを Font Awesome 7 Free に統一（SNS プラットフォームのロゴなど）
 - CI（GitHub Actions）: 型チェック・テスト・Next.js ビルド・Docker ビルド
 
 ### Phase 8: 設定画面・投稿キュー・本番デプロイ ✅（v3.1）

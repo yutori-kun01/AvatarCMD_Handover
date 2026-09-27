@@ -1,10 +1,11 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { ExternalLink, ImagePlus, RefreshCw, ScissorsLineDashed, ShieldCheck, Sparkles, Tags, Trash2, X } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 interface MediaRef {
   name: string;
@@ -13,6 +14,19 @@ interface MediaRef {
   filename: string;
   alt?: string;
 }
+
+interface ReviewResult {
+  verdict: "ok" | "caution" | "ng";
+  summary: string;
+  issues: { severity: "low" | "medium" | "high"; category: string; message: string; excerpt: string }[];
+  model: string;
+}
+
+const VERDICT: Record<ReviewResult["verdict"], { label: string; cls: string }> = {
+  ok: { label: "問題なし", cls: "bg-emerald-500/15 text-emerald-300" },
+  caution: { label: "要確認", cls: "bg-amber-500/15 text-amber-300" },
+  ng: { label: "公開不可", cls: "bg-red-500/15 text-red-300" },
+};
 
 interface PostRow {
   id: string;
@@ -56,6 +70,8 @@ export default function PostsPage() {
   const [topic, setTopic] = useState("");
   const [generating, setGenerating] = useState(false);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [aiBusy, setAiBusy] = useState<"review" | "rewrite" | "tags" | null>(null);
+  const [review, setReview] = useState<(ReviewResult & { text: string }) | null>(null);
 
   const loadPosts = useCallback(async () => {
     try {
@@ -81,6 +97,52 @@ export default function PostsPage() {
   const postable = accounts.filter((a) => a.isActive && byId[a.platform] && byId[a.platform].support !== "manual");
   const selectedPlatforms = [...new Set(accounts.filter((a) => selected.includes(a.id)).map((a) => a.platform))].map((id) => byId[id]).filter(Boolean);
   const needsTitle = selectedPlatforms.some((p) => p.postFields.some((f) => f.key === "title"));
+  // 選択中で一番厳しい文字数制限（長文プラットフォームの大きな上限は対象外）
+  const strictest = selectedPlatforms.filter((p) => p.maxLength && p.maxLength <= 3000).sort((a, b) => a.maxLength! - b.maxLength!)[0];
+  const overLimit = !!strictest && [...text].length > strictest.maxLength!;
+  const firstAccount = accounts.find((a) => selected.includes(a.id));
+
+  async function runReview() {
+    setAiBusy("review");
+    try {
+      const r = await api<ReviewResult>("/api/ai/review", { method: "POST", json: { text, avatarId: firstAccount?.avatarId, platform: firstAccount?.platform } });
+      setReview({ ...r, text });
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setAiBusy(null);
+    }
+  }
+
+  async function runRewrite() {
+    if (!strictest || !firstAccount) return;
+    setAiBusy("rewrite");
+    try {
+      const r = await api<{ text: string; model: string; fitted: boolean }>("/api/ai/rewrite", {
+        method: "POST",
+        json: { avatarId: firstAccount.avatarId, text, maxLength: strictest.maxLength, platform: strictest.id },
+      });
+      setText(r.text);
+      setNotice({ kind: "ok", msg: `${r.model} で${strictest.name}の${strictest.maxLength}文字以内に調整しました${r.fitted ? "" : "（収まらなかった分は末尾を省略）"}` });
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setAiBusy(null);
+    }
+  }
+
+  async function runTags() {
+    setAiBusy("tags");
+    try {
+      const r = await api<{ tags: string[]; model: string }>("/api/ai/tags", { method: "POST", json: { text, platform: firstAccount?.platform } });
+      const current = tags.split(/[,、\s]+/).map((t) => t.replace(/^#/, "").trim()).filter(Boolean);
+      setTags([...new Set([...current, ...r.tags])].join(", "));
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setAiBusy(null);
+    }
+  }
 
   async function upload(files: FileList | null) {
     if (!files?.length) return;
@@ -125,6 +187,7 @@ export default function PostsPage() {
       setMedia([]);
       setOptions({});
       setScheduledAt("");
+      setReview(null);
       loadPosts();
     } catch (e) {
       setNotice({ kind: "error", msg: (e as Error).message });
@@ -225,7 +288,7 @@ export default function PostsPage() {
                             on ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-200" : "border-white/10 text-white/60 hover:text-white"
                           }`}
                         >
-                          {byId[a.platform]?.icon} {a.accountName}
+                          <PlatformIcon platform={a.platform} /> {a.accountName}
                           <span className="ml-1 text-white/30">({a.avatarName})</span>
                         </button>
                       );
@@ -262,9 +325,46 @@ export default function PostsPage() {
                       })}
                   </div>
                 )}
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="ghost" type="button" onClick={runReview} disabled={!!aiBusy || !text.trim()}>
+                    <ShieldCheck className="inline h-3.5 w-3.5" /> {aiBusy === "review" ? "チェック中…" : "AIでチェック"}
+                  </Button>
+                  {overLimit && (
+                    <Button variant="ghost" type="button" onClick={runRewrite} disabled={!!aiBusy}>
+                      <ScissorsLineDashed className="inline h-3.5 w-3.5" /> {aiBusy === "rewrite" ? "調整中…" : `AIで${strictest!.maxLength}文字に調整`}
+                    </Button>
+                  )}
+                </div>
+                {review && (
+                  <div className="space-y-2 rounded-xl border border-white/[0.06] bg-black/20 p-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Badge className={VERDICT[review.verdict].cls}>{VERDICT[review.verdict].label}</Badge>
+                      <span className="flex-1 text-white/70">{review.summary}</span>
+                      <button onClick={() => setReview(null)} className="text-white/40 hover:text-white" title="閉じる">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {review.text !== text && <p className="text-[11px] text-white/35">本文が変更されています。再チェックしてください。</p>}
+                    {review.issues.map((i, n) => (
+                      <div key={n} className="border-l-2 border-white/10 pl-2">
+                        <span className={i.severity === "high" ? "text-red-300" : i.severity === "medium" ? "text-amber-300" : "text-white/50"}>[{i.category}]</span>{" "}
+                        <span className="text-white/70">{i.message}</span>
+                        {i.excerpt && <span className="mt-0.5 block text-white/35">「{i.excerpt}」</span>}
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-white/30">{review.model} によるチェック。最終判断はご自身で行ってください。</p>
+                  </div>
+                )}
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field def={{ key: "link", label: "リンク（任意）", type: "url", placeholder: "https://" }} value={link} onChange={setLink} />
-                  <Field def={{ key: "tags", label: "タグ（カンマ区切り）", placeholder: "AI, 副業" }} value={tags} onChange={setTags} />
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <Field def={{ key: "tags", label: "タグ（カンマ区切り）", placeholder: "AI, 副業" }} value={tags} onChange={setTags} />
+                    </div>
+                    <Button variant="ghost" type="button" onClick={runTags} disabled={!!aiBusy || !text.trim()}>
+                      <Tags className="inline h-3.5 w-3.5" /> {aiBusy === "tags" ? "提案中…" : "AIで提案"}
+                    </Button>
+                  </div>
                 </div>
 
                 <div>

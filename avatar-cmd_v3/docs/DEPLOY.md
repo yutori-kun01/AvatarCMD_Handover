@@ -64,9 +64,19 @@ docker compose logs -f worker     # "[worker] started" が出ていれば OK
    各社の開発者ポータルでアプリを作成し、Client ID / Secret 等を入力して保存。
 3. **アカウント** タブ: アバターを選び、各 SNS の「認証して接続」または「接続情報を入力」から接続。
 4. **システム** タブの「AI」に使う AI の API キー（Claude / OpenAI / Gemini）を入力し、
-   用途ごと（SNS 投稿文 / 長文記事）にプロバイダとモデルを選択（AI 下書き・自動化ルールを使う場合）。
-   「自動」はキーのあるものを Claude → OpenAI → Gemini の順で使います。既定モデルは Claude `claude-opus-5`、
-   OpenAI `gpt-5`、Gemini `gemini-3.8-flash`（モデル欄で変更可）。
+   用途ごとにプロバイダとモデルを選択（AI 下書き・自動化ルールを使う場合）。
+   「自動」はキーのあるものを Claude → OpenAI → Gemini の順で使います。モデル欄が空欄なら下表の推奨モデルを使います。
+
+   | 用途 | 使われる場所 | 推奨（最低限）Claude / OpenAI / Gemini |
+   |---|---|---|
+   | SNS 投稿文 | 投稿の「AIで下書き」・自動化（短文SNS） | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
+   | 長文記事 | 同上（WordPress / Zenn / note / Medium） | `claude-opus-5` / `gpt-5` / `gemini-3.8-flash` |
+   | 文字数調整 | 「AIで◯文字に調整」・生成結果が文字数を超えたとき | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash` |
+   | 投稿前チェック | 「AIでチェック」・自動化の自動投稿モード | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
+   | タグ提案 | タグ欄の「AIで提案」 | `claude-haiku-4-5` / `gpt-5-mini` / `gemini-3.8-flash` |
+
+   自動化ルールの「自動投稿」モードでは、投稿前チェックが「問題なし」のときだけ投稿し、
+   「要確認」「公開不可」やチェック失敗のときは下書き（承認待ち）に回します。
 5. **アバター管理**: 口調・得意トピック・禁止事項などのペルソナを入力（AI 生成に使われます）。
 6. **投稿** ページ: 投稿先を選んで本文・画像を入れ、投稿または予約。「AIで下書き」で本文を生成できます。
 7. **自動化ルール**: 時刻または間隔を決めて、AI 生成 →「下書き（投稿ページで承認）」または「自動投稿」。

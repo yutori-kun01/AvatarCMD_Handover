@@ -32,11 +32,7 @@ export const SETTING_KEYS = {
   geminiModel: "gemini_model",
   anthropicApiKey: "anthropic_api_key",
   openaiApiKey: "openai_api_key",
-  /** 用途ごとの AI 割り当て（provider: anthropic | openai | gemini、未設定 = 自動） */
-  aiPostProvider: "ai_post_provider",
-  aiPostModel: "ai_post_model",
-  aiArticleProvider: "ai_article_provider",
-  aiArticleModel: "ai_article_model",
+  // 用途ごとの AI 割り当ては ai_<用途>_provider / ai_<用途>_model（llm.ts）
   workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;

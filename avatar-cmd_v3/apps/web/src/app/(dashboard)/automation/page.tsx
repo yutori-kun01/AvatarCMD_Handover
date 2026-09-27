@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Play, Trash2 } from "lucide-react";
 import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 interface Rule {
   id: string;
@@ -80,7 +81,7 @@ export default function AutomationPage() {
   const byId = useMemo(() => Object.fromEntries(platforms.map((p) => [p.id, p])), [platforms]);
   const accountName = (id: string) => {
     const a = accounts.find((x) => x.id === id);
-    return a ? `${byId[a.platform]?.icon ?? ""} ${a.accountName}` : "(削除済み)";
+    return a ? `${byId[a.platform]?.name ?? ""} ${a.accountName}` : "(削除済み)";
   };
 
   async function save() {
@@ -197,7 +198,7 @@ export default function AutomationPage() {
                       onClick={() => setDraft({ ...draft, accountIds: on ? draft.accountIds.filter((x) => x !== a.id) : [...draft.accountIds, a.id] })}
                       className={`rounded-lg border px-3 py-1.5 text-xs ${on ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-200" : "border-white/10 text-white/60"}`}
                     >
-                      {byId[a.platform]?.icon} {a.accountName}
+                      <PlatformIcon platform={a.platform} /> {a.accountName}
                     </button>
                   );
                 })}
