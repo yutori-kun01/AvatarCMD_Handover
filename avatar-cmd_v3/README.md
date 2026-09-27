@@ -4,17 +4,66 @@
 
 ---
 
-## クイックスタート（ローカル開発）
+## クイックスタート
+
+### 本番（VPS / Docker Compose）
 
 ```bash
-cd C:\Users\retim\Desktop\OpenClaw\01_開発\avatar-cmd
-
-# 依存パッケージインストール
-pnpm install
-
-# 開発サーバー起動 (port 3333)
-cd apps/web && npx next dev --port 3333
+cd avatar-cmd_v3
+bash scripts/setup-env.sh https://avatar-cmd.example.com   # .env を自動生成（管理者パスワードが表示される）
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build   # Traefik 経由
+# または: docker compose up -d --build                                             # ポート 3333 で公開
 ```
+
+詳しい手順・SNSごとの開発者ポータル設定は **[docs/DEPLOY.md](docs/DEPLOY.md)** を参照。
+
+### ローカル開発
+
+```bash
+cd avatar-cmd_v3
+pnpm install
+bash scripts/setup-env.sh http://localhost:3333   # DATABASE_URL はローカルの PostgreSQL に合わせて編集
+pnpm db:deploy                                    # マイグレーション適用
+pnpm dev                                          # web (http://localhost:3333) + worker を起動
+pnpm test                                         # SNS 連携のリクエスト形状テスト
+```
+
+### 設定の考え方
+
+`.env` に置くのは起動に必要な値（DB・暗号鍵・管理者パスワード・公開URL）だけです。
+**SNS の Client ID / Secret、トークン、アプリパスワード、ログインCookie、Gemini API キーは
+すべてダッシュボードの「設定」画面から入力**し、AES-256-GCM で暗号化して DB に保存されます。
+
+| 画面 | できること |
+|---|---|
+| 設定 > SNS連携アプリ | 各SNSの開発者アプリ情報を登録。登録すべきリダイレクトURIと手順・公式ドキュメントへのリンクを表示 |
+| 設定 > アカウント | アバターごとに SNS アカウントを接続（OAuth / アプリパスワード / トークン / Cookie）、投稿設定 |
+| 設定 > システム | 公開URL、Meta Graph API / LinkedIn API のバージョン、Gemini API キー |
+| 設定 > セキュリティ | 管理者パスワード変更、ログアウト |
+| 投稿 | 投稿先を選んで本文・画像・動画を投稿／予約。AI で下書き生成。送信状況・エラー・再送・下書きの承認 |
+| ダッシュボード | 投稿数・成功率・予約/承認待ち・収益、worker 稼働状況、対応が必要なこと（すべて DB の実データ） |
+| アバター管理 | アバターの作成・編集・一時停止・削除、ペルソナ（AI 生成に使用） |
+| 自動化ルール | 毎日の時刻 or 一定間隔で AI が投稿文を生成し、下書き（承認制）または自動投稿 |
+| アクティビティ / SNS運用 / 収益分析 | 実行ログ、プラットフォーム別の接続・投稿状況、収益の記録と集計 |
+
+### 対応状況（2026年9月時点の公式仕様に準拠）
+
+| SNS | 方式 | 投稿API |
+|---|---|---|
+| X | OAuth 2.0 + PKCE | `POST api.x.com/2/tweets`、メディアは `/2/media/upload`（v2） |
+| Threads | OAuth（長期トークン自動更新） | `graph.threads.net/v1.0` コンテナ → `threads_publish` |
+| Instagram | Instagram ログイン（長期トークン自動更新） | `graph.instagram.com/v26.0` コンテナ → `media_publish` |
+| Facebook ページ | Facebook ログイン | Graph API v26.0 `/{page}/feed` `/photos` `/videos` |
+| YouTube | Google OAuth + PKCE | Data API v3 `videos.insert`（再開可能アップロード） |
+| TikTok | Login Kit v2 | Content Posting API（Direct Post, FILE_UPLOAD） |
+| LinkedIn | OAuth（OpenID Connect） | Posts API `/rest/posts`（LinkedIn-Version ヘッダ） |
+| Reddit | OAuth（永続） | `/api/submit`（要 Responsible Builder Policy 承認） |
+| Bluesky | アプリパスワード | 公式SDK `@atproto/api` |
+| WordPress | アプリケーションパスワード | REST API v2 |
+| Zenn | GitHub 連携リポジトリ | GitHub Contents API で `articles/*.md` を作成 |
+| note | ログインCookie | 非公式・**下書き保存のみ** |
+| Medium | 既存 Integration token | API v1（新規発行終了） |
+| Substack / Amebaブログ / stand.fm | — | 公開APIが無いため自動投稿非対応 |
 
 ---
 
@@ -70,17 +119,15 @@ avatar-cmd/
 │   │       ├── types.ts            # ChromeInstance, BrowserTask, etc.
 │   │       └── index.ts
 │   │
-│   └── integrations/               # 16 SNS Providers + Registry
-│       └── src/
-│           ├── provider.ts         # SnsProvider interface (dual-mode)
-│           ├── registry.ts         # ProviderRegistry (rate limiting)
-│           ├── providers/
-│           │   ├── base.ts         # BaseProvider (auto API→Browser fallback)
-│           │   ├── x.ts            # X (Twitter) — hybrid
-│           │   ├── note.ts         # note.com — browser only
-│           │   └── platforms.ts    # 残り14プラットフォーム
-│           └── index.ts            # createDefaultRegistry()
+│   └── integrations/               # SNS連携（公式API準拠）+ 投稿サービス
+│       ├── src/platforms/*.ts      # 1SNS = 1ファイル（認可URL・トークン交換・更新・投稿）
+│       ├── src/service/            # 暗号化設定ストア・アカウント・OAuth・メディア・投稿キュー
+│       └── test/                   # fetch をモックしたリクエスト形状テスト
 │
+├── apps/worker/                    # 予約投稿キューを処理する常駐プロセス
+├── scripts/setup-env.sh            # .env 自動生成
+├── docker-compose.yml              # db / migrate / web / worker
+├── docker-compose.traefik.yml      # 既存 Traefik 連携用オーバーライド
 ├── package.json                    # Root (pnpm workspace)
 ├── pnpm-workspace.yaml
 ├── turbo.json
@@ -104,17 +151,10 @@ avatar-cmd/
 - Health monitoring + auto-recovery
 - Stealth mode (anti-detection)
 
-### Phase 2: SNS 16プラットフォーム デュアルモード ✅
-
-| Category | Platforms | Auth |
-|----------|-----------|------|
-| **Hybrid (API+Browser)** | X, Threads, Instagram, YouTube, Facebook, LinkedIn, Reddit | OAuth |
-| **API Primary** | Bluesky (AT Protocol), WordPress (REST v2) | App Password / API Key |
-| **Browser Only** | note, TikTok, Zenn, Medium, Substack, Ameba Blog, stand.fm | Session |
-
-- `BaseProvider`: 自動モード選択（API優先 → Browser fallback）
-- `BrowserOperation[]`: Chrome Empireが実行するステップ定義
-- スクレイピングではなくPlaywright操作によるBAN回避
+### Phase 2: SNS 16プラットフォーム連携 ✅（v3.1 で公式API準拠に作り直し）
+- 1SNS=1定義（`packages/integrations/src/platforms`）。対応状況は上の「対応状況」表を参照
+- 旧実装のブラウザ操作フォールバック（セレクタ依存・ToS 上のリスク）は廃止し、公式APIに一本化
+- 公式APIが無い note は Cookie を使った下書き保存まで、Substack / Ameba / stand.fm は非対応と明示
 
 ### Phase 3: ContentService + CampaignService ✅
 - Content lifecycle: draft → scheduled → queued → publishing → published/failed
@@ -143,6 +183,18 @@ avatar-cmd/
 
 ---
 
+### Phase 9: 全画面の実データ化・AI 自動化 ✅（v3.1）
+- ダッシュボード / アバター / 自動化 / アクティビティ / SNS運用 / 収益 をモックから DB 実データに置き換え
+- 自動化ルール: worker がスケジュール実行し、Gemini（既定 gemini-3.8-flash、設定で変更可）で投稿文を生成
+- CI（GitHub Actions）: 型チェック・テスト・Next.js ビルド・Docker ビルド
+
+### Phase 8: 設定画面・投稿キュー・本番デプロイ ✅（v3.1）
+- 管理者ログイン（署名付きCookie）、設定画面から開発者アプリ/アカウント/システム設定を入力（暗号化保存）
+- OAuth（PKCE・state 検証）、トークン自動更新、投稿キュー（worker・指数バックオフ再試行・二重投稿防止）
+- Docker Compose（migrate → web + worker）、`scripts/setup-env.sh`、pnpm-lock.yaml をコミット
+
+---
+
 ## 技術スタック
 
 | Layer | Technology |
@@ -156,65 +208,9 @@ avatar-cmd/
 
 ---
 
-## VPSデプロイ手順
+## デプロイ・環境変数
 
-> 対象VPS: Xserver VPS (AMD EPYC 6-core, 12GB RAM, Ubuntu 22.04, Traefik + Portainer稼働中)
-
-### Step 1: プロジェクト転送
-
-```bash
-# ローカルからVPSへプロジェクトを転送 (rsyncまたはscp)
-rsync -avz --exclude node_modules --exclude .next \
-  /c/Users/retim/Desktop/OpenClaw/01_開発/avatar-cmd/ \
-  user@vps:/opt/avatar-cmd/
-```
-
-### Step 2: Docker Compose で起動
-
-`docker-compose.yml` をプロジェクトルートに作成（後述の docker-compose.yml 参照）。
-
-```bash
-ssh user@vps
-cd /opt/avatar-cmd
-cp .env.example .env
-# .env を編集（DB接続先、APIキー等）
-docker compose up -d
-```
-
-### Step 3: Traefik連携
-
-既存のTraefikネットワークに接続する場合は、docker-compose.yml内の `traefik-net` を既存のネットワーク名に変更。
-
----
-
-## 環境変数 (.env)
-
-```bash
-# --- Database ---
-DATABASE_URL=postgresql://avatar:password@db:5432/avatar_cmd
-REDIS_URL=redis://redis:6379
-
-# --- Security ---
-MASTER_KEY=<your-master-key-here>
-NEXTAUTH_SECRET=<nextauth-secret>
-NEXTAUTH_URL=https://avatar-cmd.your-domain.com
-
-# --- SNS API Keys (暗号化して保存するため、初期設定のみ) ---
-X_CLIENT_ID=
-X_CLIENT_SECRET=
-THREADS_APP_ID=
-YOUTUBE_API_KEY=
-FACEBOOK_APP_ID=
-
-# --- Chrome Empire ---
-CHROME_POOL_SIZE=3
-CHROME_HEADLESS=true
-CHROME_STEALTH=true
-
-# --- Scheduler ---
-SCHEDULER_TICK_MS=30000
-SCHEDULER_MAX_RETRIES=3
-```
+[docs/DEPLOY.md](docs/DEPLOY.md) と [.env.example](.env.example) を参照。
 
 ---
 
@@ -232,9 +228,6 @@ SCHEDULER_MAX_RETRIES=3
 
 ## 今後の拡張ステップ
 
-1. **Prismaマイグレーション**: mock data → PostgreSQL 実データ接続
-2. **Chrome Empire実稼働**: Playwright実インスタンス起動 + VPSでのheadless動作テスト
-3. **OAuth実装**: X / YouTube / Facebook の実OAuth 2.0フロー
-4. **ブラウザセッション**: note / TikTok / Zenn の自動ログイン
-5. **マルチテナント**: Schema分離によるSaaS化
-6. **LLM統合**: Ollama / Claude API 接続 (現在はLLM不使用方針)
+1. **エンゲージメント取得**: 各SNSのインサイトAPIで投稿後の反応（いいね・表示回数）を取得して分析画面に反映
+2. **知識ベース画面**: KnowledgeItem は AI 生成の参考情報として使われるが、登録画面は未実装
+3. **マルチテナント**: Schema分離によるSaaS化

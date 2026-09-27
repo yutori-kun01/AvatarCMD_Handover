@@ -1,106 +1,84 @@
 "use client";
-import { useState, useEffect } from "react";
-import { Sidebar } from "@/components/dashboard/sidebar";
-import { Header } from "@/components/dashboard/header";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { EmptyState, Shell } from "@/components/dashboard/shell";
+import { api, Badge, Card, inputCls, Notice } from "@/components/settings/ui";
 
-interface AnalyticsData {
-  kpis: { label: string; value: number; previousValue: number; change: number; trend: string }[];
-  avatarPerformance: { avatarId: string; name: string; followers: number; engRate: number; revenue: number; topPlatform: string; weeklyPosts: number }[];
-  improvement: { pendingCycles: number; activeSuggestions: number; appliedThisWeek: number; suggestions: { id: string; avatarId: string; type: string; title: string; impact: string; description: string }[] };
+interface Log {
+  id: string;
+  avatarName: string | null;
+  action: string;
+  category: string;
+  level: string;
+  description: string;
+  createdAt: string;
+}
+
+const LEVEL: Record<string, string> = {
+  success: "bg-emerald-500/15 text-emerald-300",
+  info: "bg-cyan-500/15 text-cyan-300",
+  warning: "bg-amber-500/15 text-amber-300",
+  error: "bg-red-500/15 text-red-300",
+};
+const CATEGORY: Record<string, string> = { sns: "投稿", content: "コンテンツ・自動化", security: "接続・セキュリティ", system: "システム", revenue: "収益" };
+
+function ActivityInner() {
+  const params = useSearchParams();
+  const [logs, setLogs] = useState<Log[]>([]);
+  const [level, setLevel] = useState(params.get("level") ?? "");
+  const [category, setCategory] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const q = new URLSearchParams({ ...(level ? { level } : {}), ...(category ? { category } : {}) });
+    const load = () => api<{ logs: Log[] }>(`/api/activity?${q}`).then((d) => setLogs(d.logs)).catch((e) => setErr(e.message));
+    load();
+    const t = setInterval(load, 15_000);
+    return () => clearInterval(t);
+  }, [level, category]);
+
+  return (
+    <Shell title="アクティビティ" description="投稿・失敗・接続・自動化の記録">
+      {err && <Notice kind="error">{err}</Notice>}
+      <div className="mb-4 flex flex-wrap gap-3">
+        <select value={level} onChange={(e) => setLevel(e.target.value)} className={`${inputCls} w-40`}>
+          <option value="" className="bg-[#111]">すべてのレベル</option>
+          <option value="success" className="bg-[#111]">成功</option>
+          <option value="warning" className="bg-[#111]">警告</option>
+          <option value="error" className="bg-[#111]">エラー</option>
+          <option value="info" className="bg-[#111]">情報</option>
+        </select>
+        <select value={category} onChange={(e) => setCategory(e.target.value)} className={`${inputCls} w-52`}>
+          <option value="" className="bg-[#111]">すべてのカテゴリ</option>
+          {Object.entries(CATEGORY).map(([k, v]) => (
+            <option key={k} value={k} className="bg-[#111]">{v}</option>
+          ))}
+        </select>
+      </div>
+      {logs.length === 0 ? (
+        <EmptyState>記録はまだありません</EmptyState>
+      ) : (
+        <Card className="divide-y divide-white/[0.05] p-0">
+          {logs.map((l) => (
+            <div key={l.id} className="flex flex-wrap items-start gap-3 px-5 py-3">
+              <Badge className={LEVEL[l.level] ?? "bg-white/10 text-white/60"}>{CATEGORY[l.category] ?? l.category}</Badge>
+              <div className="min-w-0 flex-1">
+                <div className="break-all text-sm">{l.description}</div>
+                {l.avatarName && <div className="text-xs text-white/40">{l.avatarName}</div>}
+              </div>
+              <span className="text-xs text-white/35">{new Date(l.createdAt).toLocaleString("ja-JP")}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+    </Shell>
+  );
 }
 
 export default function ActivityPage() {
-  const [data, setData] = useState<AnalyticsData | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => { fetch("/api/analytics").then(r => r.json()).then(d => setData(d)); }, []);
-  if (!data) return <div style={{ background: "#0b0c0f", minHeight: "100vh" }} />;
-
-  const impactColor = (i: string) => i === "high" ? "#ef4444" : i === "medium" ? "#f59e0b" : "#22c55e";
-
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#0b0c0f", color: "#fff" }}>
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <Header title="アクティビティ" description="パフォーマンス分析 & 改善サイクル" />
-        <main style={{ flex: 1, padding: "24px", overflow: "auto" }}>
-          {/* KPIs */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
-            {data.kpis.slice(0, 3).map(kpi => (
-              <div key={kpi.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 22 }}>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{kpi.label}</div>
-                <div style={{ fontSize: 28, fontWeight: 700, marginTop: 6 }}>{typeof kpi.value === "number" && kpi.value > 1000 ? kpi.value.toLocaleString() : kpi.value}{kpi.label.includes("率") ? "%" : ""}</div>
-                <div style={{ fontSize: 13, color: kpi.trend === "up" ? "#22c55e" : "#ef4444", marginTop: 4 }}>
-                  {kpi.trend === "up" ? "↑" : "↓"} {kpi.change}% 先週比
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Avatar Performance Table */}
-          <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24, marginBottom: 24 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>アバターパフォーマンス</h3>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                    {["アバター", "フォロワー", "ENG率", "週間投稿", "収益", "メインSNS"].map(h => (
-                      <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 500 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.avatarPerformance.map(a => (
-                    <tr key={a.avatarId} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                      <td style={{ padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: `hsl(${parseInt(a.avatarId) * 60}, 50%, 40%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{a.name[0]}</div>
-                          <span style={{ fontWeight: 600 }}>{a.name}</span>
-                        </div>
-                      </td>
-                      <td style={{ padding: "12px 14px", fontSize: 14 }}>{a.followers.toLocaleString()}</td>
-                      <td style={{ padding: "12px 14px" }}>
-                        <span style={{ fontSize: 14, color: a.engRate > 5 ? "#22c55e" : a.engRate > 3 ? "#22d3ee" : "#f59e0b" }}>{a.engRate}%</span>
-                      </td>
-                      <td style={{ padding: "12px 14px", fontSize: 14 }}>{a.weeklyPosts}</td>
-                      <td style={{ padding: "12px 14px", fontSize: 14 }}>¥{a.revenue.toLocaleString()}</td>
-                      <td style={{ padding: "12px 14px" }}>
-                        <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: "rgba(34,211,238,0.08)", color: "#22d3ee" }}>{a.topPlatform}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Improvement Suggestions */}
-          <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ fontSize: 15, fontWeight: 600 }}>改善提案</h3>
-              <div style={{ display: "flex", gap: 12, fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
-                <span>保留: <span style={{ color: "#f59e0b" }}>{data.improvement.pendingCycles}</span></span>
-                <span>提案: <span style={{ color: "#22d3ee" }}>{data.improvement.activeSuggestions}</span></span>
-                <span>今週適用: <span style={{ color: "#22c55e" }}>{data.improvement.appliedThisWeek}</span></span>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {data.improvement.suggestions.map(s => (
-                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "rgba(255,255,255,0.02)", borderRadius: 10, borderLeft: `3px solid ${impactColor(s.impact)}` }}>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{s.title}</div>
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{s.description}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: `${impactColor(s.impact)}20`, color: impactColor(s.impact) }}>{s.impact}</span>
-                    <button style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "linear-gradient(135deg, #3b82f6, #8b5cf6)", color: "#fff", fontSize: 12, cursor: "pointer" }}>適用</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </main>
-      </div>
-    </div>
+    <Suspense>
+      <ActivityInner />
+    </Suspense>
   );
 }

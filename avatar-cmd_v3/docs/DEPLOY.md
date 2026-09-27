@@ -1,154 +1,116 @@
-# ============================================
-# Avatar CMD v3 — VPSデプロイ手順書
-# ============================================
-# このドキュメントは別会話ウィンドウでも最初にこのファイルを
-# 読むだけで、VPSデプロイ作業を継続できます。
-# ============================================
+# Avatar CMD v3 — デプロイ手順書（VPS / Docker Compose）
 
-## 前提条件
+このファイルだけ読めば、VPS への導入から SNS 連携まで進められるようにしています。
 
-| 項目 | 値 |
-|------|------|
-| VPS | Xserver VPS (AMD EPYC 6-core, 12GB RAM, 336GB空き) |
-| OS | Ubuntu 22.04.5 LTS |
-| 稼働中 | Traefik, Portainer, n8n, OpenClaw, Ghost等 (10コンテナ) |
-| Docker空きRAM | ~8.5GB（現在3.4GB使用中） |
-| Docker空きディスク | ~300GB |
+## 構成
 
-## Avatar CMD リソース見積り
+| コンテナ | 役割 | 目安リソース |
+|---|---|---|
+| `db` | PostgreSQL 16 | 0.5 core / 512MB |
+| `migrate` | 起動時に DB マイグレーションを適用して終了 | — |
+| `web` | ダッシュボード（Next.js）。設定画面・OAuth・メディア公開 | 1.0 core / 768MB |
+| `worker` | 予約投稿キューを処理して各 SNS へ送信 | 0.5 core / 512MB |
 
-| コンテナ | CPU | RAM | ディスク |
-|---------|-----|-----|---------|
-| web (Next.js) | 1.0 core | 512MB | 500MB |
-| db (PostgreSQL 16) | 0.5 core | 512MB | 1-5GB |
-| redis | 0.2 core | 192MB | 100MB |
-| chrome-empire | 3.0 core | 3GB | 2GB |
-| **合計** | **4.7 core** | **~4.2GB** | **~8GB** |
+合計でおよそ 2 core / 1.8GB。`web` と `worker` はアップロードしたメディアをボリューム `media` で共有します。
 
-> 現在のVPSメモリ空き8.5GBに対して4.2GB利用 → **十分余裕あり** ✅
+## 1. 前提
 
----
+- Docker / Docker Compose v2 が入った VPS（例: Xserver VPS, Ubuntu 22.04）
+- 外部から HTTPS でアクセスできるドメイン（OAuth のリダイレクト先・Instagram/Threads の画像取り込みに必須）
+- 既存の Traefik を使う場合は、そのネットワーク名（`docker network ls | grep traefik`）
 
-## デプロイ手順
-
-### 1. プロジェクト転送
+## 2. 取得と .env 生成
 
 ```bash
-# ローカルPCから VPS へ転送
-rsync -avz --exclude node_modules --exclude .next --exclude .git \
-  /c/Users/retim/Desktop/OpenClaw/01_開発/avatar-cmd/ \
-  root@<VPS_IP>:/opt/avatar-cmd/
+git clone <このリポジトリ> /opt/avatar-cmd-src
+cd /opt/avatar-cmd-src/avatar-cmd_v3
+
+# 秘密鍵・DBパスワード・管理者パスワードを自動生成（既存の .env は上書きしない）
+bash scripts/setup-env.sh https://avatar-cmd.example.com
 ```
 
-### 2. VPSでセットアップ
+表示された **管理者パスワード** を控えてください。`.env` の `ENCRYPTION_KEY` は、
+ダッシュボードで入力した認証情報の暗号鍵です。**紛失すると復号できない**ので、`.env` をバックアップしてください。
+
+Traefik のネットワーク名が `traefik-net` 以外なら `.env` に追記します:
 
 ```bash
-ssh root@<VPS_IP>
-cd /opt/avatar-cmd
-
-# 環境変数設定
-cp .env.example .env
-nano .env  # DB_PASSWORD, NEXTAUTH_SECRET, DOMAIN 等を設定
+echo "TRAEFIK_NETWORK=<既存ネットワーク名>" >> .env
 ```
 
-### 3. Traefikネットワーク確認
+## 3. 起動
 
 ```bash
-# 既存のTraefikネットワーク名を確認
-docker network ls | grep traefik
+# Traefik 経由で公開（推奨）
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 
-# docker-compose.yml の traefik-net を既存ネットワーク名に合わせる
-# 例: ネットワーク名が "traefik_default" なら:
-#   traefik-net:
-#     external: true
-#     name: traefik_default
+# Traefik を使わず、ポート 3333 で公開する場合
+docker compose up -d --build
 ```
 
-### 4. ビルド & 起動
+確認:
 
 ```bash
-# ビルド
-docker compose build
-
-# 起動
-docker compose up -d
-
-# ログ確認
-docker compose logs -f web
-
-# ステータス確認
-docker compose ps
+docker compose ps                 # migrate が "exited (0)"、web / worker / db が running
+docker compose logs -f worker     # "[worker] started" が出ていれば OK
 ```
 
-### 5. Prismaマイグレーション
+## 4. ダッシュボードでの初期設定
+
+`https://<ドメイン>/login` に管理者パスワードでログインし、**設定** を開きます。
+
+1. **システム** タブ: 公開URL が実際のURLになっているか確認（違えば「この URL を使う」→保存）。
+2. **SNS連携アプリ** タブ: 使う SNS を開き、表示されている手順とリダイレクトURIに従って
+   各社の開発者ポータルでアプリを作成し、Client ID / Secret 等を入力して保存。
+3. **アカウント** タブ: アバターを選び、各 SNS の「認証して接続」または「接続情報を入力」から接続。
+4. **システム** タブの「AI」に Gemini API キーを入力（AI 下書き・自動化ルールを使う場合）。モデルは既定で `gemini-3.8-flash`。
+5. **アバター管理**: 口調・得意トピック・禁止事項などのペルソナを入力（AI 生成に使われます）。
+6. **投稿** ページ: 投稿先を選んで本文・画像を入れ、投稿または予約。「AIで下書き」で本文を生成できます。
+7. **自動化ルール**: 時刻または間隔を決めて、AI 生成 →「下書き（投稿ページで承認）」または「自動投稿」。
+
+SNS ごとに必要なもの:
+
+| SNS | ダッシュボードに入力するもの | 開発者ポータル側の作業 |
+|---|---|---|
+| X | OAuth 2.0 Client ID / Secret | OAuth 2.0 有効化・Read and write・リダイレクトURI登録。投稿には API クレジット/プランが必要 |
+| Threads | Threads App ID / Secret | Meta アプリに「Threads API」ユースケース追加・リダイレクトURI登録 |
+| Instagram | Instagram App ID / Secret | 「Instagram ログインによる API 設定」追加・リダイレクトURI登録。プロアカウントのみ |
+| Facebook ページ | App ID / Secret | 「Facebook ログイン for Business」・リダイレクトURI登録 |
+| YouTube | OAuth クライアント ID / シークレット | YouTube Data API v3 有効化・同意画面・リダイレクトURI登録。公開投稿には監査が必要 |
+| TikTok | Client Key / Secret | Login Kit + Content Posting API（Direct Post）。監査前は「自分のみ」公開 |
+| LinkedIn | Client ID / Secret | Share on LinkedIn + Sign In with LinkedIn (OpenID Connect)・リダイレクトURI登録 |
+| Reddit | Client ID / Secret（+User-Agent） | web app 作成・Responsible Builder Policy の API アクセス承認 |
+| Bluesky | ハンドル + アプリパスワード | 不要 |
+| WordPress | サイトURL + ユーザー名 + アプリケーションパスワード | 不要 |
+| Zenn | 連携済み GitHub リポジトリ + Fine-grained PAT | Zenn ダッシュボードで GitHub 連携 |
+| note | ログインCookie（`_note_session_v5`） | 不要（非公式・下書き保存まで） |
+| Medium | 発行済み Integration token | 新規発行は終了 |
+| Substack / Amebaブログ / stand.fm | — | 公開APIが無いため自動投稿非対応 |
+
+## 5. 運用
 
 ```bash
-# 初回のみ: DB スキーマ作成
-docker compose exec web npx prisma migrate deploy
-docker compose exec web npx prisma db seed
+# 更新
+git pull && docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+
+# DB バックアップ
+docker compose exec db pg_dump -U avatar avatar_cmd > backup_$(date +%Y%m%d).sql
 ```
 
-### 6. 動作確認
-
-```bash
-# APIエンドポイント確認
-curl http://localhost:3333/api/platforms | jq '.totalPlatforms'
-# → 16
-
-# ダッシュボード確認
-# ブラウザで https://avatar-cmd.<your-domain>/ を開く
-```
-
----
+- API のバージョン（Meta Graph API / LinkedIn-Version）は **設定 > システム** で変更できます。
+- 失敗した投稿は **投稿** ページから再送できます。通信エラー等は自動で最大3回（指数バックオフ）再試行し、
+  認証切れ・設定不備などは即座に「失敗」になります（エラー内容が表示されます）。
+- トークンの自動更新: X / YouTube / Reddit / TikTok / LinkedIn（リフレッシュトークンがある場合）は投稿直前に更新、
+  Threads / Instagram の長期トークンは失効7日前から更新します。Facebook ページのトークンは失効しません。
+  LinkedIn（60日）や note の Cookie は期限が来たら再接続してください。
 
 ## トラブルシューティング
 
-### ビルドエラー
-```bash
-# キャッシュクリアして再ビルド
-docker compose build --no-cache
-```
-
-### メモリ不足
-```bash
-# Chrome Empireのプールサイズを削減
-echo "CHROME_POOL_SIZE=2" >> .env
-docker compose up -d chrome-empire
-```
-
-### DB接続エラー
-```bash
-# DBコンテナの状態確認
-docker compose logs db
-docker compose exec db pg_isready -U avatar
-```
-
-### Traefik証明書
-```bash
-# Traefikのルーティング確認
-docker compose logs traefik 2>&1 | grep avatar-cmd
-```
-
----
-
-## 重要ファイルパス
-
-| ファイル | 説明 |
-|---------|------|
-| `README.md` | プロジェクト全体の構成と機能一覧 |
-| `docker-compose.yml` | 本番用Docker Compose (4サービス) |
-| `Dockerfile` | マルチステージビルド |
-| `.env.example` | 環境変数テンプレート |
-| `packages/core/src/index.ts` | 全コアサービスのエクスポート |
-| `packages/integrations/src/index.ts` | 全SNSプロバイダーのエクスポート |
-| `apps/web/src/components/dashboard/sidebar.tsx` | サイドバーナビゲーション (全7ページ) |
-
----
-
-## 別ウィンドウでの引き継ぎ方法
-
-1. **最初に** `README.md` を読む → プロジェクト全体像を把握
-2. **デプロイする場合** → この `docs/DEPLOY.md` に従う
-3. **開発を続ける場合** → `packages/core/src/index.ts` と `packages/integrations/src/index.ts` を確認
-4. **UIを修正する場合** → `apps/web/src/app/` 配下の各 `page.tsx` を確認
-5. **新しいSNSプロバイダーを追加する場合** → `packages/integrations/src/providers/platforms.ts` にクラスを追加し、`index.ts` のレジストリに登録
+| 症状 | 確認すること |
+|---|---|
+| OAuth で「redirect_uri が一致しない」 | 設定 > システム の公開URLと、開発者ポータルに登録したリダイレクトURIが完全一致しているか |
+| Instagram / Threads の画像投稿が失敗 | `https://<ドメイン>/media/<ファイル>` が外部から見えるか（Traefik・ファイアウォール） |
+| ダッシュボードに「worker が停止しています」 | `docker compose ps` で worker が running か、`docker compose logs worker` にエラーが無いか |
+| 自動化ルールが「Gemini API キーが未設定」で失敗 | 設定 > システム > AI でキーを入力 |
+| 「ENCRYPTION_KEY が未設定」 | `.env` に値があるか、`docker compose up -d` で再作成したか |
+| 保存済み認証情報が読めない | `ENCRYPTION_KEY` を変えていないか（変えた場合は各アカウントを再接続） |

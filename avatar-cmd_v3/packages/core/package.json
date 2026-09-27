@@ -6,7 +6,8 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rimraf dist node_modules"
+    "clean": "rimraf dist node_modules",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@avatar-cmd/db": "workspace:*",

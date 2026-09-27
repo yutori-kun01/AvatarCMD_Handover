@@ -1,143 +1,325 @@
 "use client";
-import { useState } from "react";
-import { Sidebar } from "@/components/dashboard/sidebar";
-import { Header } from "@/components/dashboard/header";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { AVATAR_STATUS, EmptyState, Shell, Stat } from "@/components/dashboard/shell";
+import { api, Badge, Button, Card, Field, Notice } from "@/components/settings/ui";
 
-const avatars = [
-  { id: "1", name: "Haru", role: "ADHD / 内向型", status: "active" as const, color: "#8b5cf6", platforms: ["X", "note", "Threads"], followers: "12.4K", engagement: 4.7, revenue: "¥182K", mood: 72, health: 92,
-    persona: { tone: "共感的・やさしい", topics: ["ADHD", "内向型", "ライフハック"], postFreq: "1日3-5件", bestTime: "19:00-21:00" } },
-  { id: "2", name: "Kai", role: "バイブコーダー", status: "active" as const, color: "#22d3ee", platforms: ["X", "Zenn", "YouTube"], followers: "8.7K", engagement: 5.2, revenue: "¥256K", mood: 85, health: 88,
-    persona: { tone: "カジュアル・テック好き", topics: ["AI", "プログラミング", "ノーコード"], postFreq: "1日2-4件", bestTime: "12:00-14:00" } },
-  { id: "3", name: "Mio", role: "ウェルネスコーチ", status: "learning" as const, color: "#22c55e", platforms: ["Instagram", "TikTok", "note"], followers: "23.1K", engagement: 6.1, revenue: "¥198K", mood: 60, health: 76,
-    persona: { tone: "穏やか・ポジティブ", topics: ["マインドフルネス", "瞑想", "ヨガ"], postFreq: "1日1-2件", bestTime: "6:00-8:00" } },
-  { id: "4", name: "Ren", role: "トレンドハンター", status: "active" as const, color: "#f59e0b", platforms: ["X", "TikTok"], followers: "31.2K", engagement: 3.8, revenue: "¥124K", mood: 90, health: 95,
-    persona: { tone: "スピーディ・刺激的", topics: ["AI", "スタートアップ", "テクノロジー"], postFreq: "1日5-10件", bestTime: "8:00-10:00, 19:00-22:00" } },
-  { id: "5", name: "Sora", role: "知識キュレーター", status: "paused" as const, color: "#ec4899", platforms: ["note", "Substack"], followers: "5.6K", engagement: 7.3, revenue: "¥87K", mood: 45, health: 60,
-    persona: { tone: "知的・分析的", topics: ["哲学", "社会学", "未来予測"], postFreq: "週2-3件", bestTime: "21:00-23:00" } },
-];
+interface Persona {
+  tone?: string;
+  topics?: string[];
+  postFrequency?: string;
+  bestTime?: string;
+  prompt?: string;
+}
+interface Avatar {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  description: string | null;
+  specialization: string | null;
+  targetAudience: string | null;
+  persona: Persona;
+  accounts: { id: string; platform: string; accountName: string; isActive: boolean; lastError: string | null }[];
+  contentCount: number;
+  publishedCount: number;
+  ruleCount: number;
+}
 
-export default function AvatarsPage() {
-  const [selectedId, setSelectedId] = useState<string | null>("1");
-  const selected = avatars.find(a => a.id === selectedId);
+type Form = {
+  name: string;
+  role: string;
+  description: string;
+  specialization: string;
+  targetAudience: string;
+  tone: string;
+  topics: string;
+  postFrequency: string;
+  bestTime: string;
+  prompt: string;
+};
 
-  const statusMap = {
-    active: { label: "稼働中", color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
-    paused: { label: "一時停止", color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
-    learning: { label: "学習中", color: "#3b82f6", bg: "rgba(59,130,246,0.12)" },
+const EMPTY: Form = { name: "", role: "", description: "", specialization: "", targetAudience: "", tone: "", topics: "", postFrequency: "", bestTime: "", prompt: "" };
+
+function toForm(a: Avatar): Form {
+  return {
+    name: a.name,
+    role: a.role === "sns_marketer" ? "" : a.role,
+    description: a.description ?? "",
+    specialization: a.specialization ?? "",
+    targetAudience: a.targetAudience ?? "",
+    tone: a.persona.tone ?? "",
+    topics: (a.persona.topics ?? []).join(", "),
+    postFrequency: a.persona.postFrequency ?? "",
+    bestTime: a.persona.bestTime ?? "",
+    prompt: a.persona.prompt ?? "",
   };
+}
+
+function payload(f: Form) {
+  return {
+    name: f.name,
+    role: f.role,
+    description: f.description,
+    specialization: f.specialization,
+    targetAudience: f.targetAudience,
+    persona: { tone: f.tone, topics: f.topics, postFrequency: f.postFrequency, bestTime: f.bestTime, prompt: f.prompt },
+  };
+}
+
+function AvatarForm({ form, setForm }: { form: Form; setForm: (f: Form) => void }) {
+  const f = (key: keyof Form, label: string, extra: Partial<Parameters<typeof Field>[0]["def"]> = {}) => (
+    <Field def={{ key, label, ...extra }} value={form[key]} onChange={(v) => setForm({ ...form, [key]: v })} />
+  );
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        {f("name", "名前", { required: true })}
+        {f("role", "役割", { placeholder: "例: ADHD当事者の発信者" })}
+        {f("specialization", "専門分野", { placeholder: "例: 集中術・ライフハック" })}
+        {f("targetAudience", "想定読者", { placeholder: "例: 20〜30代の会社員" })}
+      </div>
+      {f("description", "プロフィール", { type: "textarea" })}
+      <h4 className="pt-2 text-xs font-semibold text-white/70">ペルソナ（AI の投稿文生成に使われます）</h4>
+      <div className="grid gap-4 md:grid-cols-2">
+        {f("tone", "口調", { placeholder: "例: やさしく共感的、です・ます調" })}
+        {f("topics", "得意なトピック（カンマ区切り）", { placeholder: "ADHD, 睡眠, 仕事術" })}
+        {f("postFrequency", "投稿頻度の目安", { placeholder: "1日2〜3件" })}
+        {f("bestTime", "よく投稿する時間帯", { placeholder: "19:00-21:00" })}
+      </div>
+      {f("prompt", "守るべきルール・禁止事項", { type: "textarea", placeholder: "例: 医療的な断定はしない。絵文字は1投稿2個まで。" })}
+    </div>
+  );
+}
+
+function AvatarsInner() {
+  const params = useSearchParams();
+  const [avatars, setAvatars] = useState<Avatar[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"view" | "edit" | "new">(params.get("new") ? "new" : "view");
+  const [form, setForm] = useState<Form>(EMPTY);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const d = await api<{ avatars: Avatar[] }>("/api/avatars");
+    setAvatars(d.avatars);
+    setSelectedId((cur) => cur && d.avatars.some((a) => a.id === cur) ? cur : d.avatars[0]?.id ?? null);
+  }, []);
+  useEffect(() => {
+    load().catch((e) => setNotice({ kind: "error", msg: e.message }));
+  }, [load]);
+
+  const selected = avatars.find((a) => a.id === selectedId);
+
+  async function save() {
+    setBusy(true);
+    try {
+      if (mode === "new") {
+        const r = await api<{ avatar: { id: string } }>("/api/avatars", { method: "POST", json: payload(form) });
+        setSelectedId(r.avatar.id);
+        setNotice({ kind: "ok", msg: `「${form.name}」を作成しました` });
+      } else if (selected) {
+        await api(`/api/avatars/${selected.id}`, { method: "PATCH", json: payload(form) });
+        setNotice({ kind: "ok", msg: "保存しました" });
+      }
+      setMode("view");
+      await load();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setStatus(status: string) {
+    if (!selected) return;
+    await api(`/api/avatars/${selected.id}`, { method: "PATCH", json: { status } }).catch((e) => setNotice({ kind: "error", msg: e.message }));
+    load();
+  }
+
+  async function remove() {
+    if (!selected) return;
+    if (!confirm(`「${selected.name}」を削除しますか？接続アカウント・投稿履歴・自動化ルールもすべて削除されます。`)) return;
+    try {
+      await api(`/api/avatars/${selected.id}`, { method: "DELETE" });
+      setNotice({ kind: "ok", msg: "削除しました" });
+      setSelectedId(null);
+      load();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    }
+  }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#0b0c0f", color: "#fff" }}>
-      <Sidebar />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <Header />
-        <main style={{ flex: 1, padding: "24px", overflow: "auto" }}>
-          <div style={{ display: "flex", gap: 24 }}>
-            {/* Avatar List */}
-            <div style={{ width: 260, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-              {avatars.map(a => {
-                const st = statusMap[a.status];
-                return (
-                  <button key={a.id} onClick={() => setSelectedId(a.id)}
-                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: 12, border: selectedId === a.id ? `1px solid ${a.color}40` : "1px solid rgba(255,255,255,0.06)", background: selectedId === a.id ? `${a.color}08` : "rgba(255,255,255,0.02)", cursor: "pointer", textAlign: "left", transition: "all 0.2s", width: "100%", color: "#fff" }}>
-                    <div style={{ width: 40, height: 40, borderRadius: "50%", background: `${a.color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: a.color, flexShrink: 0 }}>{a.name[0]}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontWeight: 600, fontSize: 14 }}>{a.name}</span>
-                        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: st.bg, color: st.color }}>{st.label}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{a.role}</div>
-                    </div>
-                  </button>
-                );
-              })}
-              <button style={{ padding: "14px 16px", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.15)", background: "transparent", cursor: "pointer", color: "rgba(255,255,255,0.3)", fontSize: 13, fontWeight: 500, textAlign: "center" }}>
-                + 新しいアバターを追加
-              </button>
-            </div>
-
-            {/* Avatar Detail */}
-            {selected && (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 20 }}>
-                {/* Profile Header */}
-                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24, display: "flex", alignItems: "center", gap: 20 }}>
-                  <div style={{ width: 64, height: 64, borderRadius: "50%", background: `${selected.color}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, color: selected.color }}>{selected.name[0]}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{selected.name}</h2>
-                      <span style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6, background: statusMap[selected.status].bg, color: statusMap[selected.status].color }}>{statusMap[selected.status].label}</span>
-                    </div>
-                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>{selected.role}</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "rgba(255,255,255,0.6)", fontSize: 13, cursor: "pointer" }}>編集</button>
-                    <button style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: selected.status === "active" ? "rgba(245,158,11,0.15)" : "rgba(34,197,94,0.15)", color: selected.status === "active" ? "#f59e0b" : "#22c55e", fontSize: 13, cursor: "pointer" }}>
-                      {selected.status === "active" ? "一時停止" : "再開"}
-                    </button>
-                  </div>
+    <Shell title="アバター管理" description="アバターのプロフィール・ペルソナ・接続状況" wide>
+      {notice && (
+        <Notice kind={notice.kind} onClose={() => setNotice(null)}>
+          {notice.msg}
+        </Notice>
+      )}
+      <div className="flex flex-col gap-6 md:flex-row">
+        <div className="w-full shrink-0 space-y-2 md:w-64">
+          {avatars.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => {
+                setSelectedId(a.id);
+                setMode("view");
+              }}
+              className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ${
+                a.id === selectedId && mode !== "new" ? "border-violet-400/40 bg-violet-500/10" : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]"
+              }`}
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-500/20 font-bold text-violet-300">{a.name[0]}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold">{a.name}</span>
+                  <Badge className={AVATAR_STATUS[a.status]?.cls ?? ""}>{AVATAR_STATUS[a.status]?.label}</Badge>
                 </div>
+                <div className="truncate text-xs text-white/40">{a.role === "sns_marketer" ? "—" : a.role}</div>
+              </div>
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              setForm(EMPTY);
+              setMode("new");
+            }}
+            className="w-full rounded-xl border border-dashed border-white/15 p-3 text-sm text-white/40 hover:text-white"
+          >
+            + 新しいアバター
+          </button>
+        </div>
 
-                {/* Stats Row */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-                  {[
-                    { label: "フォロワー", value: selected.followers, color: "#22d3ee" },
-                    { label: "ENG率", value: `${selected.engagement}%`, color: "#22c55e" },
-                    { label: "収益", value: selected.revenue, color: "#a78bfa" },
-                    { label: "ムード", value: `${selected.mood}`, color: selected.mood > 70 ? "#22c55e" : "#f59e0b" },
-                    { label: "ヘルス", value: `${selected.health}%`, color: selected.health > 80 ? "#22c55e" : "#f59e0b" },
-                  ].map(s => (
-                    <div key={s.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", textAlign: "center" }}>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
-                      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{s.label}</div>
-                    </div>
-                  ))}
+        <div className="min-w-0 flex-1 space-y-4">
+          {mode !== "view" ? (
+            <Card className="space-y-4">
+              <h3 className="text-sm font-semibold">{mode === "new" ? "新しいアバター" : `${selected?.name} を編集`}</h3>
+              <AvatarForm form={form} setForm={setForm} />
+              <div className="flex gap-2">
+                <Button onClick={save} disabled={busy || !form.name.trim()}>
+                  {busy ? "保存中…" : "保存"}
+                </Button>
+                <Button variant="ghost" onClick={() => setMode("view")}>
+                  キャンセル
+                </Button>
+              </div>
+            </Card>
+          ) : !selected ? (
+            <EmptyState>アバターを選択してください</EmptyState>
+          ) : (
+            <>
+              <Card className="flex flex-wrap items-center gap-4">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-500/20 text-2xl font-bold text-violet-300">{selected.name[0]}</div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold">{selected.name}</h2>
+                    <Badge className={AVATAR_STATUS[selected.status]?.cls ?? ""}>{AVATAR_STATUS[selected.status]?.label}</Badge>
+                  </div>
+                  <p className="text-sm text-white/50">{selected.description || "プロフィール未設定"}</p>
                 </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setForm(toForm(selected));
+                      setMode("edit");
+                    }}
+                  >
+                    編集
+                  </Button>
+                  {selected.status === "PAUSED" ? (
+                    <Button variant="ghost" onClick={() => setStatus("ACTIVE")}>
+                      再開
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" onClick={() => setStatus("PAUSED")}>
+                      一時停止
+                    </Button>
+                  )}
+                  <Button variant="danger" onClick={remove}>
+                    削除
+                  </Button>
+                </div>
+              </Card>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-                  {/* Persona */}
-                  <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24 }}>
-                    <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>ペルソナ</h3>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <Stat label="接続アカウント" value={selected.accounts.length} />
+                <Stat label="投稿済み" value={selected.publishedCount} tone="text-emerald-300" />
+                <Stat label="投稿（全ステータス）" value={selected.contentCount} />
+                <Stat label="自動化ルール" value={selected.ruleCount} />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <Card>
+                  <h3 className="mb-3 text-sm font-semibold">ペルソナ</h3>
+                  <dl className="space-y-2 text-sm">
                     {[
-                      { l: "トーン", v: selected.persona.tone },
-                      { l: "投稿頻度", v: selected.persona.postFreq },
-                      { l: "ベストタイム", v: selected.persona.bestTime },
-                    ].map(p => (
-                      <div key={p.l} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <span style={{ fontSize: 13, color: "rgba(255,255,255,0.4)" }}>{p.l}</span>
-                        <span style={{ fontSize: 13 }}>{p.v}</span>
+                      ["役割", selected.role === "sns_marketer" ? "" : selected.role],
+                      ["専門", selected.specialization],
+                      ["想定読者", selected.targetAudience],
+                      ["口調", selected.persona.tone],
+                      ["投稿頻度", selected.persona.postFrequency],
+                      ["時間帯", selected.persona.bestTime],
+                    ].map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-4 border-b border-white/[0.04] pb-1.5">
+                        <dt className="shrink-0 text-white/40">{k}</dt>
+                        <dd className="text-right">{v || "—"}</dd>
                       </div>
                     ))}
-                    <div style={{ marginTop: 12 }}>
-                      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>トピック</span>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                        {selected.persona.topics.map(t => (
-                          <span key={t} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, background: `${selected.color}12`, color: selected.color, border: `1px solid ${selected.color}30` }}>{t}</span>
-                        ))}
-                      </div>
+                  </dl>
+                  {!!selected.persona.topics?.length && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {selected.persona.topics.map((t) => (
+                        <Badge key={t} className="bg-violet-500/10 text-violet-200">
+                          {t}
+                        </Badge>
+                      ))}
                     </div>
-                  </div>
-
-                  {/* Platforms */}
-                  <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 24 }}>
-                    <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>接続プラットフォーム</h3>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {selected.platforms.map(p => (
-                        <div key={p} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "rgba(255,255,255,0.02)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)" }}>
-                          <span style={{ fontWeight: 500 }}>{p}</span>
-                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(34,197,94,0.1)", color: "#22c55e" }}>接続済み</span>
+                  )}
+                  {selected.persona.prompt && <p className="mt-3 whitespace-pre-wrap text-xs text-white/50">{selected.persona.prompt}</p>}
+                </Card>
+                <Card>
+                  <h3 className="mb-3 text-sm font-semibold">接続アカウント</h3>
+                  {selected.accounts.length === 0 ? (
+                    <p className="text-xs text-white/40">まだ接続されていません。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selected.accounts.map((a) => (
+                        <div key={a.id} className="flex items-center justify-between rounded-lg border border-white/[0.06] px-3 py-2 text-sm">
+                          <span>
+                            {a.accountName} <span className="text-xs text-white/40">{a.platform}</span>
+                          </span>
+                          {!a.isActive ? (
+                            <Badge className="bg-white/10 text-white/50">停止中</Badge>
+                          ) : a.lastError ? (
+                            <Badge className="bg-red-500/15 text-red-300">エラー</Badge>
+                          ) : (
+                            <Badge className="bg-emerald-500/15 text-emerald-300">接続済み</Badge>
+                          )}
                         </div>
                       ))}
-                      <button style={{ padding: "10px 14px", borderRadius: 8, border: "1px dashed rgba(255,255,255,0.15)", background: "transparent", cursor: "pointer", color: "rgba(255,255,255,0.3)", fontSize: 12, textAlign: "center" }}>
-                        + プラットフォームを追加
-                      </button>
                     </div>
-                  </div>
-                </div>
+                  )}
+                  <Link href="/settings?tab=accounts" className="mt-3 inline-block text-xs text-cyan-300">
+                    アカウントを接続・管理 →
+                  </Link>
+                </Card>
               </div>
-            )}
-          </div>
-        </main>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </Shell>
+  );
+}
+
+export default function AvatarsPage() {
+  return (
+    <Suspense>
+      <AvatarsInner />
+    </Suspense>
   );
 }

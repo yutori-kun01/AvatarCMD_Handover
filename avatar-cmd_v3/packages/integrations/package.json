@@ -5,15 +5,23 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@atproto/api": "^0.21.0",
+    "@avatar-cmd/core": "workspace:*",
     "@avatar-cmd/db": "workspace:*",
-    "@avatar-cmd/core": "workspace:*"
+    "@google/genai": "^2.24.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "@types/node": "^22.13.11"
-  }
+    "@types/node": "^22.13.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "type": "module"
 }

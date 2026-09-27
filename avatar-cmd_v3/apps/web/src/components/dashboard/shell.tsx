@@ -1,0 +1,68 @@
+"use client";
+// ダッシュボード各ページ共通のレイアウト
+import { Sidebar } from "./sidebar";
+import { Header } from "./header";
+
+export function Shell({ title, description, children, wide }: { title: string; description?: string; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <div className="flex min-h-screen bg-[#0b0c0f] text-white">
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Header title={title} description={description} />
+        <main className="flex-1 overflow-auto p-6">
+          <div className={`mx-auto ${wide ? "max-w-7xl" : "max-w-5xl"}`}>{children}</div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export function Stat({ label, value, sub, tone = "text-white" }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string }) {
+  return (
+    <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
+      <div className="text-xs text-white/45">{label}</div>
+      <div className={`mt-1 text-2xl font-bold ${tone}`}>{value}</div>
+      {sub && <div className="mt-1 text-[11px] text-white/40">{sub}</div>}
+    </div>
+  );
+}
+
+export function EmptyState({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-white/40">{children}</div>;
+}
+
+/** 簡易棒グラフ（依存なし） */
+export function Bars({ data, format = (v: number) => String(v) }: { data: { label: string; value: number }[]; format?: (v: number) => string }) {
+  const max = Math.max(1, ...data.map((d) => d.value));
+  return (
+    <div className="flex h-40 items-end gap-1">
+      {data.map((d) => (
+        <div key={d.label} className="group relative flex h-full flex-1 flex-col justify-end" title={`${d.label}: ${format(d.value)}`}>
+          <div className="w-full rounded-t bg-gradient-to-t from-[#3b82f6] to-[#8b5cf6] opacity-80 group-hover:opacity-100" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value ? 2 : 0 }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function relTime(d: string | Date | null | undefined): string {
+  if (!d) return "—";
+  const t = new Date(d).getTime();
+  const diff = (Date.now() - t) / 1000;
+  const abs = Math.abs(diff);
+  const fmt = (n: number, u: string) => `${Math.round(n)}${u}${diff >= 0 ? "前" : "後"}`;
+  if (abs < 60) return diff >= 0 ? "たった今" : "まもなく";
+  if (abs < 3600) return fmt(abs / 60, "分");
+  if (abs < 86400) return fmt(abs / 3600, "時間");
+  if (abs < 86400 * 30) return fmt(abs / 86400, "日");
+  return new Date(d).toLocaleDateString("ja-JP");
+}
+
+export const yen = (n: number) => `¥${Math.round(n).toLocaleString("ja-JP")}`;
+
+export const AVATAR_STATUS: Record<string, { label: string; cls: string }> = {
+  ACTIVE: { label: "稼働中", cls: "bg-emerald-500/15 text-emerald-300" },
+  PAUSED: { label: "一時停止", cls: "bg-amber-500/15 text-amber-300" },
+  LEARNING: { label: "学習中", cls: "bg-blue-500/15 text-blue-300" },
+  ERROR: { label: "エラー", cls: "bg-red-500/15 text-red-300" },
+};

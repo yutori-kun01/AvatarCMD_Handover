@@ -27,5 +27,5 @@ Thumbs.db
 docker-data/
 
 # Lock files (large)
+# pnpm-lock.yaml はビルドの再現性（--frozen-lockfile）に必要なのでコミットする
 package-lock.json
-pnpm-lock.yaml

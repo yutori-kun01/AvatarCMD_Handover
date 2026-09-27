@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
@@ -8,13 +8,13 @@ import {
   Users,
   Activity,
   TrendingUp,
-  Share2,
   Settings,
   MessageSquare,
   Brain,
   Zap,
   ChevronLeft,
   ChevronRight,
+  Send,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -24,13 +24,12 @@ const navItems: {
   href: string
   badge?: string
 }[] = [
-  { icon: LayoutDashboard, label: "ダッシュボード", href: "/" },
-  { icon: Users, label: "アバター管理", href: "/avatars", badge: "5" },
+  { icon: LayoutDashboard, label: "ダッシュボード", href: "/dashboard" },
+  { icon: Send, label: "投稿", href: "/posts" },
+  { icon: Users, label: "アバター管理", href: "/avatars" },
   { icon: Activity, label: "アクティビティ", href: "/activity" },
   { icon: MessageSquare, label: "SNS運用", href: "/sns" },
   { icon: TrendingUp, label: "収益分析", href: "/revenue" },
-  { icon: Share2, label: "コラボ連携", href: "/collab" },
-  { icon: Brain, label: "知識ベース", href: "/knowledge" },
   { icon: Zap, label: "自動化ルール", href: "/automation" },
 ]
 
@@ -44,6 +43,18 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
   const collapsed = controlledCollapsed ?? internalCollapsed
   const toggle = onToggle ?? (() => setInternalCollapsed(!internalCollapsed))
   const pathname = usePathname()
+  const [status, setStatus] = useState<{ workerAlive: boolean; queued: number; failed24h: number; drafts: number } | null>(null)
+
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then(setStatus)
+        .catch(() => setStatus(null))
+    load()
+    const t = setInterval(load, 30_000)
+    return () => clearInterval(t)
+  }, [])
 
   return (
     <aside
@@ -96,20 +107,29 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
         })}
       </nav>
 
-      {/* System Status */}
-      {!collapsed && (
-        <div className="mx-3 mb-3 rounded-lg bg-white/[0.03] border border-white/[0.08] p-3">
-          <div className="flex items-center gap-2 text-xs text-white/40">
-            <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>全システム正常稼働中</span>
+      {/* System Status（/api/status の実データ） */}
+      {!collapsed && status && (
+        <div className="mx-3 mb-3 space-y-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 text-[11px]">
+          <div className="flex items-center gap-2 text-white/50">
+            <div className={cn("h-2 w-2 rounded-full", status.workerAlive ? "bg-emerald-400 animate-pulse" : "bg-red-500")} />
+            <span>{status.workerAlive ? "worker 稼働中" : "worker 停止中"}</span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-[10px] text-white/30">
-            <span>API使用量</span>
-            <span>68%</span>
+          <div className="flex justify-between text-white/35">
+            <span>送信待ち</span>
+            <span>{status.queued}件</span>
           </div>
-          <div className="mt-1 h-1 w-full rounded-full bg-white/[0.06]">
-            <div className="h-1 w-[68%] rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500" />
-          </div>
+          {status.drafts > 0 && (
+            <Link href="/posts" className="flex justify-between text-amber-300/80 no-underline">
+              <span>承認待ち</span>
+              <span>{status.drafts}件</span>
+            </Link>
+          )}
+          {status.failed24h > 0 && (
+            <Link href="/posts" className="flex justify-between text-red-300/80 no-underline">
+              <span>24時間の失敗</span>
+              <span>{status.failed24h}件</span>
+            </Link>
+          )}
         </div>
       )}
 

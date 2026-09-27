@@ -1,6 +1,3 @@
-import { PrismaClient } from "@prisma/client";
-// 実際の利用時には依存注入等でPrismaインスタンスを渡すか、グローバルから取得
-const prisma = new PrismaClient();
 
 // シンプルなインメモリキューのダミー実装
 // ※ 本番環境では BullMQ + Redis, Temporal あるいは Prisma ベースのキューを推奨
