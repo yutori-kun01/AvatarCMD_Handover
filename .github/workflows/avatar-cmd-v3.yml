@@ -52,6 +52,8 @@ jobs:
           done
       - name: Test
         run: pnpm test
+        env:
+          AVATAR_CMD_DB_TESTS: "1"   # 実 DB を使うテスト（CI の使い捨て Postgres でのみ有効）
       - name: Build (Next.js)
         run: pnpm --filter @avatar-cmd/web build
 

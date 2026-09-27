@@ -5,7 +5,7 @@ import { randomBytes } from "crypto";
 import { prisma } from "@avatar-cmd/db";
 import { getPlatform } from "../platforms";
 import { base64url, ConfigError, createPkce } from "../http";
-import { getPlatformApp, getSystemConfig } from "./store";
+import { getSystemConfig, resolvePlatformApp } from "./store";
 import { saveConnectedAccount } from "./accounts";
 
 export function redirectUriFor(appUrl: string, platform: string): string {
@@ -18,7 +18,8 @@ export async function startOAuth(platform: string, avatarId: string): Promise<st
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const system = await getSystemConfig();
-  const app = await getPlatformApp(platform);
+  // アバター専用の開発者アプリがあればそちらで認可する
+  const { app } = await resolvePlatformApp(platform, avatarId);
   const redirectUri = redirectUriFor(system.appUrl, platform);
   const state = base64url(randomBytes(24));
   const pkce = def.oauth.pkce ? createPkce() : undefined;
@@ -38,7 +39,7 @@ export async function finishOAuth(platform: string, state: string, code: string)
   if (row.expiresAt < new Date()) throw new ConfigError("認可の有効期限が切れました。もう一度やり直してください");
 
   const def = getPlatform(platform)!;
-  const app = await getPlatformApp(platform);
+  const { app, scope } = await resolvePlatformApp(platform, row.avatarId);
   const system = await getSystemConfig();
   const accounts = await def.oauth!.exchangeCode(app, {
     code,
@@ -47,14 +48,14 @@ export async function finishOAuth(platform: string, state: string, code: string)
     system,
   });
   const saved = [];
-  for (const acc of accounts) saved.push(await saveConnectedAccount(row.avatarId, platform, acc));
+  for (const acc of accounts) saved.push(await saveConnectedAccount(row.avatarId, platform, acc, scope));
   await prisma.activityLog.create({
     data: {
       avatarId: row.avatarId,
       action: "account_connected",
       category: "security",
       level: "success",
-      description: `${def.name} を接続しました: ${accounts.map((a) => a.accountName).join(", ")}`,
+      description: `${def.name} を接続しました: ${accounts.map((a) => a.accountName).join(", ")}${scope === "avatar" ? "（アバター専用アプリ）" : ""}`,
     },
   });
   return saved;
@@ -66,8 +67,9 @@ export async function connectWithCredentials(platform: string, avatarId: string,
   if (!def?.connect) throw new ConfigError(`${platform} はこの方法で接続できません`);
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
-  const acc = await def.connect(await getPlatformApp(platform), input, await getSystemConfig());
-  const saved = await saveConnectedAccount(avatarId, platform, acc);
+  const { app, scope } = await resolvePlatformApp(platform, avatarId);
+  const acc = await def.connect(app, input, await getSystemConfig());
+  const saved = await saveConnectedAccount(avatarId, platform, acc, scope);
   await prisma.activityLog.create({
     data: {
       avatarId,

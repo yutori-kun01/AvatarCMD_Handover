@@ -7,6 +7,7 @@ import { prisma } from "@avatar-cmd/db";
 import { CredentialVault } from "@avatar-cmd/core/src/security/credential-vault";
 import { DEFAULT_SYSTEM_CONFIG, type SystemConfig } from "../types";
 import { getPlatform } from "../platforms";
+import { ConfigError } from "../http";
 
 let vault: CredentialVault | null = null;
 export function getVault(): CredentialVault {
@@ -79,14 +80,10 @@ export async function getPlatformApp(platform: string): Promise<Record<string, s
   return row ? decryptJson<Record<string, string>>(row.config) : {};
 }
 
-/**
- * 保存。password 型の項目が空欄なら既存値を残す（画面に秘密を戻さないため）。
- * 値に "-" だけを入れると削除。
- */
-export async function savePlatformApp(platform: string, input: Record<string, string>): Promise<void> {
+/** 入力値と既存値から保存する値を作る。password 型が空欄なら既存値を残し、"-" は削除 */
+function mergeAppInput(platform: string, current: Record<string, string>, input: Record<string, string>): Record<string, string> {
   const def = getPlatform(platform);
   if (!def) throw new Error(`unknown platform: ${platform}`);
-  const current = await getPlatformApp(platform);
   const next: Record<string, string> = {};
   for (const f of def.appFields) {
     const v = (input[f.key] ?? "").trim();
@@ -94,6 +91,15 @@ export async function savePlatformApp(platform: string, input: Record<string, st
     if (!v && f.type === "password" && current[f.key]) next[f.key] = current[f.key];
     else if (v) next[f.key] = v;
   }
+  return next;
+}
+
+/**
+ * 保存。password 型の項目が空欄なら既存値を残す（画面に秘密を戻さないため）。
+ * 値に "-" だけを入れると削除。
+ */
+export async function savePlatformApp(platform: string, input: Record<string, string>): Promise<void> {
+  const next = mergeAppInput(platform, await getPlatformApp(platform), input);
   if (!Object.keys(next).length) {
     await prisma.platformApp.deleteMany({ where: { platform } });
     return;
@@ -102,10 +108,8 @@ export async function savePlatformApp(platform: string, input: Record<string, st
   await prisma.platformApp.upsert({ where: { platform }, update: { config }, create: { platform, config } });
 }
 
-/** 画面表示用。秘密の値は伏せ字にする */
-export async function describePlatformApp(platform: string) {
+function describeApp(platform: string, app: Record<string, string>) {
   const def = getPlatform(platform);
-  const app = await getPlatformApp(platform);
   const values: Record<string, string> = {};
   const configured: Record<string, boolean> = {};
   for (const f of def?.appFields ?? []) {
@@ -114,6 +118,69 @@ export async function describePlatformApp(platform: string) {
   }
   const complete = (def?.appFields ?? []).filter((f) => f.required).every((f) => !!app[f.key]);
   return { values, configured, complete };
+}
+
+/** 画面表示用。秘密の値は伏せ字にする */
+export async function describePlatformApp(platform: string) {
+  return describeApp(platform, await getPlatformApp(platform));
+}
+
+// --- アバター専用の開発者アプリ（共通設定を上書き） ---------------------------
+// アバターごとに別の開発者アプリ（X / Meta など）を使いたい場合に登録する。
+// 登録されていればそのアバターの接続・トークン更新はこちらを使う。
+
+export type AppScope = "shared" | "avatar";
+
+export async function getAvatarPlatformApp(avatarId: string, platform: string): Promise<Record<string, string> | null> {
+  const row = await prisma.avatarPlatformApp.findUnique({ where: { avatarId_platform: { avatarId, platform } } });
+  return row ? decryptJson<Record<string, string>>(row.config) : null;
+}
+
+/** アバター専用アプリを保存。必須項目がそろわない場合はエラー（中途半端な上書きで共通アプリが使えなくなるのを防ぐ） */
+export async function saveAvatarPlatformApp(avatarId: string, platform: string, input: Record<string, string>): Promise<void> {
+  const def = getPlatform(platform);
+  if (!def || !def.appFields.length) throw new ConfigError(`${platform} はアプリ登録が不要です`);
+  const next = mergeAppInput(platform, (await getAvatarPlatformApp(avatarId, platform)) ?? {}, input);
+  const missing = def.appFields.filter((f) => f.required && !next[f.key]).map((f) => f.label);
+  if (missing.length) throw new ConfigError(`必須項目が未入力です: ${missing.join("、")}`);
+  const config = encryptJson(next);
+  await prisma.avatarPlatformApp.upsert({
+    where: { avatarId_platform: { avatarId, platform } },
+    update: { config },
+    create: { avatarId, platform, config },
+  });
+}
+
+export async function deleteAvatarPlatformApp(avatarId: string, platform: string): Promise<void> {
+  await prisma.avatarPlatformApp.deleteMany({ where: { avatarId, platform } });
+}
+
+export async function describeAvatarPlatformApp(avatarId: string, platform: string) {
+  const app = await getAvatarPlatformApp(avatarId, platform);
+  return app ? describeApp(platform, app) : null;
+}
+
+/** 画面表示用: 全アバターの専用アプリの登録状況 */
+export async function listAvatarPlatformApps() {
+  const rows = await prisma.avatarPlatformApp.findMany({ orderBy: [{ avatarId: "asc" }, { platform: "asc" }] });
+  return rows.map((r) => ({ avatarId: r.avatarId, platform: r.platform, ...describeApp(r.platform, decryptJson<Record<string, string>>(r.config)), updatedAt: r.updatedAt }));
+}
+
+/** 新しく接続するときに使うアプリ: アバター専用があればそれ、無ければ共通 */
+export async function resolvePlatformApp(platform: string, avatarId: string): Promise<{ app: Record<string, string>; scope: AppScope }> {
+  const own = await getAvatarPlatformApp(avatarId, platform);
+  if (own) return { app: own, scope: "avatar" };
+  return { app: await getPlatformApp(platform), scope: "shared" };
+}
+
+/** 接続済みアカウントのトークン更新に使うアプリ: 接続時と同じアプリ */
+export async function appForAccount(acc: { avatarId: string; platform: string; appScope: string }): Promise<Record<string, string>> {
+  if (acc.appScope === "avatar") {
+    const own = await getAvatarPlatformApp(acc.avatarId, acc.platform);
+    if (!own) throw new ConfigError("このアカウントはアバター専用アプリで接続されていますが、そのアプリ設定が削除されています。再接続してください");
+    return own;
+  }
+  return getPlatformApp(acc.platform);
 }
 
 export function mask(value: string) {

@@ -119,6 +119,7 @@ model Avatar {
   user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   identity        AvatarIdentity?
   snsAccounts     SnsAccount[]
+  platformApps    AvatarPlatformApp[]
   contents        Content[]
   campaigns       Campaign[]
   revenues        Revenue[]
@@ -211,6 +212,9 @@ model SnsAccount {
   followingCount Int?     @map("following_count")
   healthScore   Int       @default(100) @map("health_score")
   lastError     String?   @map("last_error")
+  // v3.3 — 接続に使った開発者アプリ: shared = 共通（設定 > SNS連携アプリ）/ avatar = アバター専用
+  // トークンの更新は、発行したのと同じアプリで行う必要があるため記録する
+  appScope      String    @default("shared") @map("app_scope")
 
   avatar        Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   contents      Content[]
@@ -597,6 +601,21 @@ model PlatformApp {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("platform_apps")
+}
+
+// ==============================================
+// 18b. Avatar Platform App (v3.3) — アバター専用の開発者アプリ（共通設定を上書き）
+// ==============================================
+
+model AvatarPlatformApp {
+  avatarId  String   @map("avatar_id")
+  platform  String
+  config    String   @db.Text // CredentialVault で暗号化した JSON（Client ID / Secret 等）
+  avatar    Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@id([avatarId, platform])
+  @@map("avatar_platform_apps")
 }
 
 // ==============================================

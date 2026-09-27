@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { PLATFORM_LIST } from "@avatar-cmd/integrations";
 import {
-  describeAi, describePlatformApp, ensureDefaultAvatar, getSystemConfig, listAccounts, redirectUriFor,
+  describeAi, describePlatformApp, ensureDefaultAvatar, getSystemConfig, listAccounts, listAvatarPlatformApps, redirectUriFor,
 } from "@avatar-cmd/integrations/server";
 import { prisma } from "@avatar-cmd/db";
 import { route } from "@/lib/api";
@@ -39,6 +39,7 @@ export const GET = route(async () => {
     platforms,
     avatars,
     accounts: await listAccounts(),
+    avatarApps: await listAvatarPlatformApps(),
     encryptionReady: !!process.env.ENCRYPTION_KEY,
   });
 });
