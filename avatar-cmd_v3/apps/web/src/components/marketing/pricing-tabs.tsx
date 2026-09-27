@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
+import { faBolt, faCheck, faStar } from "@fortawesome/free-solid-svg-icons"
 
 interface Plan {
   badge: string
@@ -29,7 +31,7 @@ export function PricingTabs({
   const tabs = [
     { id: "openclaw" as const, label: "OpenClaw" },
     { id: "claw-empire" as const, label: "Claw-Empire" },
-    { id: "avatar-cmd" as const, label: "⚡ Avatar CMD" },
+    { id: "avatar-cmd" as const, label: "Avatar CMD", icon: faBolt },
   ]
 
   const plans =
@@ -53,6 +55,7 @@ export function PricingTabs({
                   : "text-white/50 hover:text-white"
               }`}
             >
+              {"icon" in tab && tab.icon && <FontAwesomeIcon icon={tab.icon} className="mr-1.5" />}
               {tab.label}
             </button>
           ))}
@@ -63,7 +66,7 @@ export function PricingTabs({
         <div className="text-center mb-10 p-8 bg-gradient-to-r from-amber-500/[0.06] to-purple-500/[0.06] border border-amber-500/15 rounded-3xl relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-amber-500 via-purple-500 to-blue-500" />
           <div className="inline-block px-3.5 py-1 bg-amber-500/15 border border-amber-500/30 rounded-full text-[0.7rem] font-bold text-amber-400 tracking-wider mb-3">
-            ⚡ PREMIUM PACKAGE
+            <FontAwesomeIcon icon={faBolt} className="mr-1" /> PREMIUM PACKAGE
           </div>
           <h3 className="text-xl font-bold bg-gradient-to-r from-amber-400 via-amber-500 to-purple-500 bg-clip-text text-transparent mb-2">
             Avatar CMD 搭載 AI パーソナルPC
@@ -111,13 +114,13 @@ export function PricingTabs({
             <ul className="space-y-3 mb-7 text-sm text-white/60">
               {plan.features.map((f) => (
                 <li key={f} className="flex gap-2.5">
-                  <span className="text-blue-400 font-bold shrink-0">✓</span>
+                  <FontAwesomeIcon icon={faCheck} className="mt-1 shrink-0 text-blue-400" />
                   {f}
                 </li>
               ))}
               {plan.premiumFeatures?.map((f) => (
                 <li key={f} className="flex gap-2.5">
-                  <span className="text-amber-400 font-bold shrink-0">★</span>
+                  <FontAwesomeIcon icon={faStar} className="mt-1 shrink-0 text-amber-400" />
                   {f}
                 </li>
               ))}

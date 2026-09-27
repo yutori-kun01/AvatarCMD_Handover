@@ -1,5 +1,5 @@
 // ================================================
-// 自動化ルール — 「AIで投稿文を生成 → 下書き or 自動投稿」を定期実行する
+// 自動化ルール — 「AIで投稿文を生成 → 下書き or（投稿前チェックを通過したら）自動投稿」を定期実行する
 // ================================================
 // AutomationRule の JSON 形式:
 //   triggerConfig: { type: "daily", times: ["09:00","19:00"], timezone: "Asia/Tokyo" }
@@ -10,7 +10,7 @@
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
-import { generatePostText } from "./ai";
+import { generatePostText, reviewPost } from "./ai";
 import { createPosts, errorMessage } from "./publish";
 
 export type TriggerConfig =
@@ -109,27 +109,54 @@ export async function runRule(ruleId: string): Promise<number> {
   const byPlatform = new Map<string, typeof accounts>();
   for (const a of accounts) byPlatform.set(a.platform, [...(byPlatform.get(a.platform) ?? []), a]);
 
-  let created = 0;
+  let queued = 0;
+  let drafted = 0;
+  const held: string[] = [];
   for (const [platform, accs] of byPlatform) {
     const { text, model } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt });
+    let review: { verdict: string; summary: string; model?: string; error?: string } | undefined;
     if (action.mode === "auto") {
-      created += (await createPosts({ accountIds: accs.map((a) => a.id), text, title: topic })).length;
-    } else {
-      for (const a of accs) {
-        await prisma.content.create({
-          data: {
-            avatarId: a.avatarId,
-            platform,
-            snsAccountId: a.id,
-            content: text,
-            status: "DRAFT",
-            category: "automation",
-            metadata: { title: topic, media: [], options: {}, automationId: rule.id, model } as object,
-          },
-        });
-        created++;
+      // 自動投稿の前に「投稿前チェック」を通す。ok 以外、またはチェック自体の失敗は下書きに回す（安全側）
+      try {
+        const r = await reviewPost({ text, avatarId: rule.avatarId, platform });
+        review = { verdict: r.verdict, summary: r.summary, model: r.model };
+      } catch (e) {
+        review = { verdict: "error", summary: "", error: errorMessage(e) };
       }
+      if (review.verdict === "ok") {
+        queued += (await createPosts({ accountIds: accs.map((a) => a.id), text, title: topic })).length;
+        continue;
+      }
+      held.push(`${getPlatform(platform)?.name ?? platform}: ${review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict}`);
     }
+    for (const a of accs) {
+      await prisma.content.create({
+        data: {
+          avatarId: a.avatarId,
+          platform,
+          snsAccountId: a.id,
+          content: text,
+          status: "DRAFT",
+          category: "automation",
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, model, ...(review ? { review } : {}) } as object,
+        },
+      });
+      drafted++;
+    }
+  }
+  const created = queued + drafted;
+
+  if (held.length) {
+    await prisma.activityLog.create({
+      data: {
+        avatarId: rule.avatarId,
+        action: "automation_review_held",
+        category: "content",
+        level: "warning",
+        description: `自動化「${rule.name}」: 投稿前チェックで保留し、下書きに回しました — ${held.join(" / ")}`,
+        metadata: { ruleId: rule.id },
+      },
+    });
   }
 
   await prisma.activityLog.create({
@@ -138,7 +165,7 @@ export async function runRule(ruleId: string): Promise<number> {
       action: "automation_completed",
       category: "content",
       level: "success",
-      description: `自動化「${rule.name}」: トピック「${topic}」で${created}件を${action.mode === "auto" ? "投稿キューに追加" : "下書き作成（承認待ち）"}しました`,
+      description: `自動化「${rule.name}」: トピック「${topic}」で${[queued && `${queued}件を投稿キューに追加`, drafted && `${drafted}件を下書き作成（承認待ち）`].filter(Boolean).join("、") || "0件"}しました`,
       metadata: { ruleId: rule.id, platforms: [...byPlatform.keys()].map((p) => getPlatform(p)?.name ?? p) },
     },
   });

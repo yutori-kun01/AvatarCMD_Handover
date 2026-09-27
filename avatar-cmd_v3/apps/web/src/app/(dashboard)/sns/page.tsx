@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Shell, Stat } from "@/components/dashboard/shell";
 import { api, Badge, Card, DocLinks, Notice, SUPPORT_LABEL, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 export default function SnsPage() {
   const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
@@ -41,7 +42,7 @@ export default function SnsPage() {
           return (
             <Card key={p.id} className={p.support === "manual" ? "opacity-60" : ""}>
               <div className="flex items-center gap-2">
-                <span className="text-lg">{p.icon}</span>
+                <PlatformIcon platform={p.id} className="text-lg" />
                 <span className="flex-1 font-semibold">{p.name}</span>
                 <Badge className={SUPPORT_LABEL[p.support].cls}>{SUPPORT_LABEL[p.support].label}</Badge>
               </div>

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nextRunAfter, validateAction, validateTrigger } from "../src/service/automation";
-import { buildPrompts, readPersona } from "../src/service/ai";
+import { buildPrompts, readPersona, taskForPlatform } from "../src/service/ai";
 
 test("daily: Asia/Tokyo の 09:00 / 19:00 の次回時刻", () => {
   const t = validateTrigger({ type: "daily", times: ["19:00", "09:00"], timezone: "Asia/Tokyo" });
@@ -44,4 +44,11 @@ test("プロンプト: ペルソナ・文字数制限が入る", () => {
   const long = buildPrompts({ name: "K", role: "", description: null, specialization: null, targetAudience: null }, {}, { topic: "t", platform: "zenn" }, []);
   assert.equal(long.limit, undefined);
   assert.match(long.user, /Markdown/);
+});
+
+test("AI の用途: 長文プラットフォームは記事、それ以外は SNS 投稿", () => {
+  assert.equal(taskForPlatform("x"), "post");
+  assert.equal(taskForPlatform(undefined), "post");
+  assert.equal(taskForPlatform("zenn"), "article");
+  assert.equal(taskForPlatform("wordpress"), "article");
 });

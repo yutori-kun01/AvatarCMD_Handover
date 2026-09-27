@@ -6,10 +6,11 @@ import { Header } from "@/components/dashboard/header";
 import { api, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 import { AppsSection } from "@/components/settings/apps-section";
 import { AccountsSection } from "@/components/settings/accounts-section";
-import { SecuritySection, SystemSection, type SystemInfo } from "@/components/settings/system-section";
+import { SecuritySection, SystemSection, type AiInfo, type SystemInfo } from "@/components/settings/system-section";
 
 interface Data {
   system: SystemInfo;
+  ai: AiInfo;
   platforms: PlatformInfo[];
   avatars: { id: string; name: string }[];
   accounts: AccountInfo[];
@@ -88,7 +89,7 @@ function SettingsInner() {
               <AccountsSection platforms={data.platforms} accounts={data.accounts} avatars={data.avatars} onChanged={onChanged} />
             )}
             {data && tab === "apps" && <AppsSection platforms={data.platforms} onChanged={onChanged} />}
-            {data && tab === "system" && <SystemSection system={data.system} onChanged={onChanged} />}
+            {data && tab === "system" && <SystemSection system={data.system} ai={data.ai} onChanged={onChanged} />}
             {data && tab === "security" && <SecuritySection encryptionReady={data.encryptionReady} onChanged={onChanged} />}
           </div>
         </main>

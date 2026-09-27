@@ -24,7 +24,7 @@ export const GET = route(async () => {
       text: r.content,
       status: r.status,
       postUrl: r.postUrl,
-      note: ((r.metadata as any)?.result?.note as string) ?? null,
+      note: ((r.metadata as any)?.result?.note as string) ?? (r.status === "DRAFT" ? reviewNote((r.metadata as any)?.review) : undefined) ?? null,
       scheduledAt: r.scheduledPost?.scheduledAt ?? null,
       publishedAt: r.publishedAt,
       attempts: r.scheduledPost?.attempts ?? 0,
@@ -60,3 +60,10 @@ export const POST = route(async (req: Request) => {
   });
   return NextResponse.json({ ok: true, count: created.length });
 });
+
+/** 自動化の投稿前チェックで下書きに回された理由 */
+function reviewNote(review: { verdict?: string; summary?: string; error?: string } | undefined): string | undefined {
+  if (!review || review.verdict === "ok") return undefined;
+  if (review.error) return `投稿前チェックに失敗したため保留: ${review.error.slice(0, 120)}`;
+  return `投稿前チェックで保留（${review.verdict === "ng" ? "公開不可" : "要確認"}）: ${review.summary ?? ""}`;
+}

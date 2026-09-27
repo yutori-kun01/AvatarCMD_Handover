@@ -1,17 +1,20 @@
 // ================================================
-// AI 投稿文生成（Google Gemini API / 公式SDK @google/genai）
+// AI 投稿文生成・文字数調整・投稿前チェック・タグ提案 — 用途ごとに Claude / OpenAI / Gemini を使い分ける
 // ================================================
-// APIキーとモデルはダッシュボードの「設定 > システム」で入力する。
-// 既定モデル: gemini-3.8-flash（gemini-2.5-flash は 2026-10-16 に提供終了）
-// キー未設定のときはモック文章で投稿しないよう、明示的にエラーにする。
+// API キーと用途ごとのプロバイダ・モデルはダッシュボードの「設定 > システム > AI」で入力する。
+// プロバイダ呼び出しは ./llm.ts。キー未設定のときはモック文章で投稿しないよう、明示的にエラーにする。
 
-import { GoogleGenAI } from "@google/genai";
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
-import { getSetting, SETTING_KEYS } from "./store";
+import { completeJson, completeText, type AiTask } from "./llm";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/** 長文記事として書かせるプラットフォーム */
+const LONG_FORM_PLATFORMS = ["wordpress", "zenn", "note", "medium"];
+
+export function taskForPlatform(platform?: string): AiTask {
+  return LONG_FORM_PLATFORMS.includes(platform ?? "") ? "article" : "post";
+}
 
 export interface Persona {
   tone?: string;
@@ -33,10 +36,6 @@ export function readPersona(communication: unknown): Persona {
   };
 }
 
-export async function geminiModel(): Promise<string> {
-  return (await getSetting(SETTING_KEYS.geminiModel)) || DEFAULT_GEMINI_MODEL;
-}
-
 export interface GenerateInput {
   avatarId: string;
   topic: string;
@@ -53,7 +52,7 @@ export function buildPrompts(
 ) {
   const def = input.platform ? getPlatform(input.platform) : undefined;
   const limit = def?.maxLength && def.maxLength <= 3000 ? def.maxLength : undefined;
-  const longForm = ["wordpress", "zenn", "note", "medium"].includes(input.platform ?? "");
+  const longForm = taskForPlatform(input.platform) === "article";
 
   const system = [
     `あなたはSNSで発信するアバター「${avatar.name}」です。`,
@@ -82,10 +81,8 @@ export function buildPrompts(
   return { system, user, limit };
 }
 
-export async function generatePostText(input: GenerateInput): Promise<{ text: string; model: string }> {
-  const apiKey = (await getSetting(SETTING_KEYS.geminiApiKey)) || process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new ConfigError("Gemini API キーが未設定です（設定 > システム > AI）");
-  const avatar = await prisma.avatar.findUnique({ where: { id: input.avatarId } });
+async function loadAvatarContext(avatarId: string) {
+  const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const knowledge = await prisma.knowledgeItem.findMany({
     where: { avatarId: avatar.id, isActive: true },
@@ -93,15 +90,111 @@ export async function generatePostText(input: GenerateInput): Promise<{ text: st
     take: 5,
     select: { title: true, summary: true },
   });
-  const { system, user, limit } = buildPrompts(avatar, readPersona(avatar.communication), input, knowledge);
-  const model = await geminiModel();
+  return { avatar, persona: readPersona(avatar.communication), knowledge };
+}
 
-  // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
-  const baseUrl = process.env.GEMINI_BASE_URL;
-  const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
-  const res = await ai.models.generateContent({ model, contents: user, config: { systemInstruction: system, temperature: 0.8 } });
-  let text = (res.text ?? "").trim();
-  if (!text) throw new Error(`Gemini (${model}) から本文が返りませんでした`);
-  if (limit && [...text].length > limit) text = [...text].slice(0, limit - 1).join("") + "…";
-  return { text, model };
+const count = (s: string) => [...s].length;
+const truncate = (s: string, limit: number) => (count(s) > limit ? [...s].slice(0, limit - 1).join("") + "…" : s);
+
+export async function generatePostText(input: GenerateInput): Promise<{ text: string; model: string; provider: string }> {
+  const { avatar, persona, knowledge } = await loadAvatarContext(input.avatarId);
+  const { system, user, limit } = buildPrompts(avatar, persona, input, knowledge);
+  const res = await completeText({ task: taskForPlatform(input.platform), system, user });
+  let text = res.text;
+  if (limit && count(text) > limit) {
+    // 文字数オーバーは「文字数調整」用途のモデルで短くし、それでも超える分だけ切り詰める
+    try {
+      text = (await rewriteToFit({ avatarId: input.avatarId, text, maxLength: limit, platform: input.platform })).text;
+    } catch (e) {
+      console.warn("[ai] 文字数調整に失敗したため切り詰めます:", (e as Error).message);
+    }
+    text = truncate(text, limit);
+  }
+  return { ...res, text };
+}
+
+// --- 文字数調整 ---------------------------------------------------------------
+
+export async function rewriteToFit(input: { avatarId: string; text: string; maxLength: number; platform?: string }) {
+  const { avatar, persona, knowledge } = await loadAvatarContext(input.avatarId);
+  const { system } = buildPrompts(avatar, persona, { topic: "" }, knowledge);
+  const def = input.platform ? getPlatform(input.platform) : undefined;
+  const user = [
+    `次の${def ? `${def.name}向けの` : ""}投稿を、口調・主張・URL・ハッシュタグを保ったまま${input.maxLength}文字以内に書き直してください。`,
+    `現在 ${count(input.text)} 文字です。書き直した本文だけを出力してください。`,
+    "",
+    input.text,
+  ].join("\n");
+  const res = await completeText({ task: "rewrite", system, user });
+  return { ...res, text: truncate(res.text, input.maxLength), fitted: count(res.text) <= input.maxLength };
+}
+
+// --- 投稿前チェック -------------------------------------------------------------
+
+export type ReviewVerdict = "ok" | "caution" | "ng";
+export interface ReviewResult {
+  verdict: ReviewVerdict;
+  summary: string;
+  issues: { severity: "low" | "medium" | "high"; category: string; message: string; excerpt: string }[];
+}
+
+const REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["ok", "caution", "ng"] },
+    summary: { type: "string" },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          severity: { type: "string", enum: ["low", "medium", "high"] },
+          category: { type: "string" },
+          message: { type: "string" },
+          excerpt: { type: "string" },
+        },
+        required: ["severity", "category", "message", "excerpt"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["verdict", "summary", "issues"],
+  additionalProperties: false,
+};
+
+export async function reviewPost(input: { text: string; avatarId?: string; platform?: string }): Promise<ReviewResult & { model: string }> {
+  const rules = input.avatarId ? readPersona((await prisma.avatar.findUnique({ where: { id: input.avatarId } }))?.communication).prompt : undefined;
+  const def = input.platform ? getPlatform(input.platform) : undefined;
+  const system = [
+    "あなたは SNS 運用チームの公開前レビュー担当です。投稿を公開してよいか判定します。",
+    "確認する観点: 事実誤り・根拠のない断定、誇大・景品表示法/薬機法に触れうる表現、差別・誹謗中傷・炎上しうる表現、個人情報や機密の露出、アバターのルール違反、プラットフォーム規約違反。",
+    rules && `アバターのルール:\n${rules}`,
+    "verdict: 問題なし=ok、直した方がよい点がある=caution、公開すべきでない=ng。",
+    "issues には具体的な問題だけを入れ、excerpt には該当箇所を本文から引用してください（無ければ空文字）。好みや文体の指摘は入れないでください。summary は日本語で1文。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const user = `${def ? `投稿先: ${def.name}\n` : ""}--- 投稿本文 ---\n${input.text}`;
+  const { data, model } = await completeJson<ReviewResult>({ task: "review", system, user, json: { name: "review", schema: REVIEW_SCHEMA } });
+  const verdict: ReviewVerdict = ["ok", "caution", "ng"].includes(data.verdict) ? data.verdict : "caution";
+  return { verdict, summary: data.summary ?? "", issues: Array.isArray(data.issues) ? data.issues : [], model };
+}
+
+// --- タグ提案 -------------------------------------------------------------------
+
+const TAGS_SCHEMA = {
+  type: "object",
+  properties: { tags: { type: "array", items: { type: "string" } } },
+  required: ["tags"],
+  additionalProperties: false,
+};
+
+export async function suggestTags(input: { text: string; platform?: string; max?: number }): Promise<{ tags: string[]; model: string }> {
+  const max = Math.min(Math.max(input.max ?? 5, 1), 10);
+  const def = input.platform ? getPlatform(input.platform) : undefined;
+  const system = `あなたは SNS のタグ付け担当です。本文の内容に合い、実際に検索・フォローされやすいタグを最大${max}個提案します。# は付けず、タグ本体だけを返してください。`;
+  const user = `${def ? `投稿先: ${def.name}\n` : ""}--- 本文 ---\n${input.text}`;
+  const { data, model } = await completeJson<{ tags: string[] }>({ task: "tags", system, user, json: { name: "tags", schema: TAGS_SCHEMA } });
+  const tags = [...new Set((data.tags ?? []).map((t) => String(t).replace(/^#+/, "").trim()).filter(Boolean))].slice(0, max);
+  return { tags, model };
 }

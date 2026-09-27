@@ -9,10 +9,12 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "@atproto/api": "^0.21.0",
     "@avatar-cmd/core": "workspace:*",
     "@avatar-cmd/db": "workspace:*",
-    "@google/genai": "^2.24.0"
+    "@google/genai": "^2.24.0",
+    "openai": "^7.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.11",

@@ -1,6 +1,8 @@
 import Link from "next/link"
 import type { Metadata } from "next"
 import { PricingTabs } from "@/components/marketing/pricing-tabs"
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
+import { faBolt, faCoins, faDesktop, faHandshake } from "@fortawesome/free-solid-svg-icons"
 
 export const metadata: Metadata = {
   title: "Avatar CMD | AIアバター搭載PCセットアップ",
@@ -8,10 +10,10 @@ export const metadata: Metadata = {
 }
 
 const features = [
-  { icon: "🖥️", title: "選べるハードウェア", desc: "Mac mini M4 / GMKtec ミニPC / お手持ちのPCへのリモート導入。予算と用途に応じて最適な環境を選択。" },
-  { icon: "💰", title: "コスパ重視の料金設計", desc: "リモートプランなら ¥49,800〜。GMKtecミニPC込みでも ¥118,000〜。無駄を省いた価格で本格AIを導入。" },
-  { icon: "⚡", title: "Avatar CMD 搭載", desc: "OpenClaw + AIアバター(AI Monsters)による自律SNS運用。ダッシュボードから全てを管理・モニタリング。" },
-  { icon: "🤝", title: "7日間ハイパーケア付き", desc: "導入後7日間、プロンプト調整・エラー対処・追加設定を伴走サポート。自走できる状態まで導きます。" },
+  { icon: faDesktop, title: "選べるハードウェア", desc: "Mac mini M4 / GMKtec ミニPC / お手持ちのPCへのリモート導入。予算と用途に応じて最適な環境を選択。" },
+  { icon: faCoins, title: "コスパ重視の料金設計", desc: "リモートプランなら ¥49,800〜。GMKtecミニPC込みでも ¥118,000〜。無駄を省いた価格で本格AIを導入。" },
+  { icon: faBolt, title: "Avatar CMD 搭載", desc: "OpenClaw + AIアバター(AI Monsters)による自律SNS運用。ダッシュボードから全てを管理・モニタリング。" },
+  { icon: faHandshake, title: "7日間ハイパーケア付き", desc: "導入後7日間、プロンプト調整・エラー対処・追加設定を伴走サポート。自走できる状態まで導きます。" },
 ]
 
 const openclawPlans = [
@@ -56,7 +58,7 @@ export default function LandingPage() {
         <div className="absolute top-[-200px] left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-[radial-gradient(ellipse_at_50%_0%,rgba(79,124,255,0.12)_0%,transparent_60%)] blur-[60px] pointer-events-none" />
         <div className="relative z-10 max-w-[1200px] mx-auto px-6">
           <div className="inline-block px-4 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-full text-sm text-blue-400 mb-6">
-            ⚡ AIアバター搭載PC セットアップ代行
+            <FontAwesomeIcon icon={faBolt} className="mr-1.5" />AIアバター搭載PC セットアップ代行
           </div>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-tight mb-5">
             AIエージェント、<br />
@@ -91,7 +93,7 @@ export default function LandingPage() {
           <div className="grid md:grid-cols-2 gap-5">
             {features.map((f) => (
               <div key={f.title} className="p-8 bg-white/[0.03] border border-white/[0.08] rounded-2xl hover:border-white/[0.15] hover:bg-white/[0.05] hover:-translate-y-0.5 transition-all">
-                <div className="text-2xl mb-5">{f.icon}</div>
+                <div className="text-2xl mb-5 text-blue-400"><FontAwesomeIcon icon={f.icon} fixedWidth /></div>
                 <h3 className="text-lg font-semibold mb-2">{f.title}</h3>
                 <p className="text-sm text-white/60 leading-relaxed">{f.desc}</p>
               </div>

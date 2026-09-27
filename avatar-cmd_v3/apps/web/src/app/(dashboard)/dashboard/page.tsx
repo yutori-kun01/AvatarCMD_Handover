@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 import { AVATAR_STATUS as STATUS_LABEL, Bars, EmptyState, relTime, Shell, Stat, yen } from "@/components/dashboard/shell";
 import { api, Badge, Card, Notice } from "@/components/settings/ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 interface Overview {
   kpis: {
@@ -105,7 +106,7 @@ export default function DashboardPage() {
                   {d.platforms.map((p) => (
                     <div key={p.platform} className="flex items-center justify-between text-xs">
                       <span>
-                        {p.icon} {p.name}
+                        <PlatformIcon platform={p.platform} /> {p.name}
                       </span>
                       <span className="text-white/60">{p.count}件</span>
                     </div>
@@ -171,7 +172,7 @@ export default function DashboardPage() {
                       ) : (
                         a.accounts.map((x, i) => (
                           <Badge key={i} className={x.ok ? "bg-white/5 text-white/60" : "bg-red-500/15 text-red-300"}>
-                            {x.icon} {x.accountName}
+                            <PlatformIcon platform={x.platform} /> {x.accountName}
                           </Badge>
                         ))
                       )}

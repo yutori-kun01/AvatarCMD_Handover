@@ -63,7 +63,20 @@ docker compose logs -f worker     # "[worker] started" が出ていれば OK
 2. **SNS連携アプリ** タブ: 使う SNS を開き、表示されている手順とリダイレクトURIに従って
    各社の開発者ポータルでアプリを作成し、Client ID / Secret 等を入力して保存。
 3. **アカウント** タブ: アバターを選び、各 SNS の「認証して接続」または「接続情報を入力」から接続。
-4. **システム** タブの「AI」に Gemini API キーを入力（AI 下書き・自動化ルールを使う場合）。モデルは既定で `gemini-3.8-flash`。
+4. **システム** タブの「AI」に使う AI の API キー（Claude / OpenAI / Gemini）を入力し、
+   用途ごとにプロバイダとモデルを選択（AI 下書き・自動化ルールを使う場合）。
+   「自動」はキーのあるものを Claude → OpenAI → Gemini の順で使います。モデル欄が空欄なら下表の推奨モデルを使います。
+
+   | 用途 | 使われる場所 | 推奨（最低限）Claude / OpenAI / Gemini |
+   |---|---|---|
+   | SNS 投稿文 | 投稿の「AIで下書き」・自動化（短文SNS） | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
+   | 長文記事 | 同上（WordPress / Zenn / note / Medium） | `claude-opus-5` / `gpt-5` / `gemini-3.8-flash` |
+   | 文字数調整 | 「AIで◯文字に調整」・生成結果が文字数を超えたとき | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash` |
+   | 投稿前チェック | 「AIでチェック」・自動化の自動投稿モード | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
+   | タグ提案 | タグ欄の「AIで提案」 | `claude-haiku-4-5` / `gpt-5-mini` / `gemini-3.8-flash` |
+
+   自動化ルールの「自動投稿」モードでは、投稿前チェックが「問題なし」のときだけ投稿し、
+   「要確認」「公開不可」やチェック失敗のときは下書き（承認待ち）に回します。
 5. **アバター管理**: 口調・得意トピック・禁止事項などのペルソナを入力（AI 生成に使われます）。
 6. **投稿** ページ: 投稿先を選んで本文・画像を入れ、投稿または予約。「AIで下書き」で本文を生成できます。
 7. **自動化ルール**: 時刻または間隔を決めて、AI 生成 →「下書き（投稿ページで承認）」または「自動投稿」。
@@ -111,6 +124,6 @@ docker compose exec db pg_dump -U avatar avatar_cmd > backup_$(date +%Y%m%d).sql
 | OAuth で「redirect_uri が一致しない」 | 設定 > システム の公開URLと、開発者ポータルに登録したリダイレクトURIが完全一致しているか |
 | Instagram / Threads の画像投稿が失敗 | `https://<ドメイン>/media/<ファイル>` が外部から見えるか（Traefik・ファイアウォール） |
 | ダッシュボードに「worker が停止しています」 | `docker compose ps` で worker が running か、`docker compose logs worker` にエラーが無いか |
-| 自動化ルールが「Gemini API キーが未設定」で失敗 | 設定 > システム > AI でキーを入力 |
+| 自動化ルールが「AI の API キーが未設定」で失敗 | 設定 > システム > AI で、その用途に割り当てたプロバイダのキーを入力 |
 | 「ENCRYPTION_KEY が未設定」 | `.env` に値があるか、`docker compose up -d` で再作成したか |
 | 保存済み認証情報が読めない | `ENCRYPTION_KEY` を変えていないか（変えた場合は各アカウントを再接続） |

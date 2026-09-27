@@ -7,5 +7,6 @@ export * from "./service/oauth";
 export * from "./service/media";
 export * from "./service/publish";
 export * from "./service/ai";
+export * from "./service/llm";
 export * from "./service/automation";
 export * from "./service/stats";

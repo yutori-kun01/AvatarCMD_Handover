@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, Badge, Button, Card, CopyText, DocLinks, Field, SUPPORT_LABEL, type PlatformInfo } from "./ui";
+import { PlatformIcon } from "@/components/platform-icon";
 
 function AppForm({ p, onSaved }: { p: PlatformInfo; onSaved: (msg: string, ok: boolean) => void }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -57,7 +58,7 @@ export function AppsSection({ platforms, onChanged }: { platforms: PlatformInfo[
           <Card key={p.id} className="p-0">
             <button className="flex w-full items-center gap-3 px-5 py-4 text-left" onClick={() => setOpen(isOpen ? null : p.id)}>
               {isOpen ? <ChevronDown className="h-4 w-4 text-white/40" /> : <ChevronRight className="h-4 w-4 text-white/40" />}
-              <span className="text-lg">{p.icon}</span>
+              <PlatformIcon platform={p.id} className="text-lg" />
               <span className="flex-1 text-sm font-semibold">{p.name}</span>
               <Badge className={SUPPORT_LABEL[p.support].cls}>{SUPPORT_LABEL[p.support].label}</Badge>
               {needsApp ? (

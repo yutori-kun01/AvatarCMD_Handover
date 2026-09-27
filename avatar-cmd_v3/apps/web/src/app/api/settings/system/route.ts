@@ -1,12 +1,17 @@
-// システム設定（公開URL・APIバージョン・AIキー）
+// システム設定（公開URL・APIバージョン・AIキー・用途ごとの AI 割り当て）
 import { NextResponse } from "next/server";
-import { setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { AI_PROVIDERS, isAiProvider, isAiTask, saveAiTask, setSetting, SETTING_KEYS, type AiProvider, type AiTask } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";
 
 export const runtime = "nodejs";
 
 export const PUT = route(async (req: Request) => {
-  const b = (await req.json()) as Record<string, string | undefined>;
+  const b = (await req.json()) as Record<string, string | undefined> & {
+    /** プロバイダごとの API キー。空欄 = 変更しない、"-" = 削除 */
+    aiKeys?: Record<string, string | undefined>;
+    /** 用途ごとの割り当て。provider: "auto" | anthropic | openai | gemini */
+    aiTasks?: Record<string, { provider?: string; model?: string }>;
+  };
   if (b.appUrl !== undefined) {
     const v = b.appUrl.trim().replace(/\/+$/, "");
     if (v && !/^https?:\/\/[^/]+/.test(v)) return NextResponse.json({ error: "公開URLは http(s):// から始めてください" }, { status: 400 });
@@ -22,13 +27,20 @@ export const PUT = route(async (req: Request) => {
     if (v && !/^\d{6}$/.test(v)) return NextResponse.json({ error: "LinkedIn-Version は YYYYMM の形式で入力してください" }, { status: 400 });
     await setSetting(SETTING_KEYS.linkedinVersion, v || null);
   }
-  if (b.geminiModel !== undefined) {
-    const v = b.geminiModel.trim();
-    if (v && !/^[a-z0-9.\-]+$/i.test(v)) return NextResponse.json({ error: "モデル名が不正です" }, { status: 400 });
-    await setSetting(SETTING_KEYS.geminiModel, v || null);
+  const tasks: [AiTask, AiProvider | "auto", string][] = [];
+  for (const [task, cfg] of Object.entries(b.aiTasks ?? {})) {
+    if (!isAiTask(task)) continue;
+    const provider = cfg.provider?.trim() || "auto";
+    if (provider !== "auto" && !isAiProvider(provider)) return NextResponse.json({ error: `AI プロバイダが不正です: ${provider}` }, { status: 400 });
+    const model = cfg.model?.trim() ?? "";
+    if (model && !/^[a-z0-9._\-]+$/i.test(model)) return NextResponse.json({ error: `モデル名が不正です: ${model}` }, { status: 400 });
+    tasks.push([task, provider as AiProvider | "auto", model]);
   }
-  if (b.geminiApiKey !== undefined && b.geminiApiKey.trim() !== "") {
-    await setSetting(SETTING_KEYS.geminiApiKey, b.geminiApiKey.trim() === "-" ? null : b.geminiApiKey.trim());
+  for (const [provider, raw] of Object.entries(b.aiKeys ?? {})) {
+    const v = raw?.trim();
+    if (!isAiProvider(provider) || !v) continue;
+    await setSetting(AI_PROVIDERS[provider].keySetting, v === "-" ? null : v);
   }
+  for (const [task, provider, model] of tasks) await saveAiTask(task, provider, model);
   return NextResponse.json({ ok: true });
 });
