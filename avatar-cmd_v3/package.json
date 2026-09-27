@@ -1,18 +1,22 @@
 {
   "name": "avatar-cmd",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "packageManager": "pnpm@10.28.2",
   "scripts": {
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --filter=@avatar-cmd/web --filter=@avatar-cmd/worker",
     "dev:web": "turbo run dev --filter=@avatar-cmd/web",
     "build": "turbo run build",
     "lint": "turbo run lint",
-    "db:generate": "turbo run db:generate --filter=@avatar-cmd/db",
-    "db:push": "turbo run db:push --filter=@avatar-cmd/db",
-    "db:migrate": "turbo run db:migrate --filter=@avatar-cmd/db",
-    "db:studio": "turbo run db:studio --filter=@avatar-cmd/db",
-    "clean": "turbo run clean && rimraf node_modules"
+    "db:generate": "pnpm --filter @avatar-cmd/db db:generate",
+    "db:push": "pnpm --filter @avatar-cmd/db db:push",
+    "db:studio": "pnpm --filter @avatar-cmd/db db:studio",
+    "clean": "turbo run clean && rimraf node_modules",
+    "db:deploy": "pnpm --filter @avatar-cmd/db db:deploy",
+    "test": "pnpm --filter @avatar-cmd/integrations test",
+    "typecheck": "turbo run typecheck",
+    "setup": "bash scripts/setup-env.sh",
+    "db:migrate": "pnpm --filter @avatar-cmd/db db:migrate"
   },
   "devDependencies": {
     "turbo": "^2.3.0",

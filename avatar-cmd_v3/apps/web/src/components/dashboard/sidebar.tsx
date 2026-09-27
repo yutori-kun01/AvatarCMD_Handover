@@ -15,6 +15,7 @@ import {
   Zap,
   ChevronLeft,
   ChevronRight,
+  Send,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -24,7 +25,8 @@ const navItems: {
   href: string
   badge?: string
 }[] = [
-  { icon: LayoutDashboard, label: "ダッシュボード", href: "/" },
+  { icon: LayoutDashboard, label: "ダッシュボード", href: "/dashboard" },
+  { icon: Send, label: "投稿", href: "/posts" },
   { icon: Users, label: "アバター管理", href: "/avatars", badge: "5" },
   { icon: Activity, label: "アクティビティ", href: "/activity" },
   { icon: MessageSquare, label: "SNS運用", href: "/sns" },

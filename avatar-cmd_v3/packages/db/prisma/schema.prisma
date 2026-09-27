@@ -198,6 +198,12 @@ model SnsAccount {
   // Session / Chrome (Encrypted)
   sessionData   Json?     @map("session_data")
 
+  // v3.1 — 接続情報一式（トークン・Cookie・アプリパスワード等）を
+  // CredentialVault で暗号化した JSON 文字列。平文で保存しない。
+  credentials   String?   @db.Text
+  // 秘密でない投稿設定（Facebookページ、既定のsubreddit、公開範囲など）
+  settings      Json      @default("{}")
+
   // Status
   isActive      Boolean   @default(true) @map("is_active")
   lastSyncAt    DateTime? @map("last_sync_at")
@@ -207,11 +213,12 @@ model SnsAccount {
   lastError     String?   @map("last_error")
 
   avatar        Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  contents      Content[]
 
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  @@unique([avatarId, platform, accountName])
+  @@unique([avatarId, platform, accountId])
   @@map("sns_accounts")
 }
 
@@ -270,6 +277,7 @@ model Content {
   content            String        @db.Text
   category           String        @default("viral")
   platform           String        @default("x")
+  snsAccountId       String?       @map("sns_account_id") // 投稿先アカウント (v3.1)
   status             ContentStatus @default(DRAFT)
   metadata           Json          @default("{}")
 
@@ -291,6 +299,7 @@ model Content {
   engagement         Json          @default("{}") // { likes, retweets, comments, views, clicks }
 
   scheduledPost      ScheduledPost?
+  snsAccount         SnsAccount?   @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
   avatar             Avatar        @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   campaign           Campaign?     @relation(fields: [campaignId], references: [id])
 
@@ -321,6 +330,7 @@ model ScheduledPost {
   scheduledAt DateTime @map("scheduled_at")
   status      String   @default("pending") // pending, processing, published, failed
   attempts    Int      @default(0)
+  nextAttemptAt DateTime? @map("next_attempt_at")
   lastError   String?  @map("last_error")
   publishedAt DateTime? @map("published_at")
 
@@ -329,6 +339,7 @@ model ScheduledPost {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@index([status, scheduledAt])
   @@map("scheduled_posts")
 }
 
@@ -557,4 +568,47 @@ model Collaboration {
   partner   Avatar @relation("CollabPartner", fields: [partnerId], references: [id])
 
   @@map("collaborations")
+}
+
+// ==============================================
+// 17. System Settings (v3.1) — ダッシュボードから設定する値
+// ==============================================
+// secret=true の値は CredentialVault で暗号化して value に保存する。
+
+model AppSetting {
+  key       String   @id
+  value     String   @db.Text
+  secret    Boolean  @default(false)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+// ==============================================
+// 18. Platform App (v3.1) — 各SNSの開発者アプリ登録情報
+// ==============================================
+// Client ID / Secret 等を暗号化 JSON で保存する（1プラットフォーム1件）。
+
+model PlatformApp {
+  platform  String   @id
+  config    String   @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_apps")
+}
+
+// ==============================================
+// 19. OAuth State (v3.1) — 認可フロー中の一時データ
+// ==============================================
+
+model OAuthState {
+  state        String   @id
+  platform     String
+  avatarId     String   @map("avatar_id")
+  codeVerifier String?  @map("code_verifier")
+  redirectUri  String   @map("redirect_uri")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("oauth_states")
 }

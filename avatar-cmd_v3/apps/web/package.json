@@ -1,13 +1,14 @@
 {
   "name": "@avatar-cmd/web",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev --port 3333",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "clean": "rimraf .next node_modules"
+    "clean": "rimraf .next node_modules",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@avatar-cmd/core": "workspace:*",
@@ -33,7 +34,8 @@
     "react-dom": "^19.0.0",
     "recharts": "^2.15.0",
     "tailwind-merge": "^2.5.5",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "@avatar-cmd/integrations": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

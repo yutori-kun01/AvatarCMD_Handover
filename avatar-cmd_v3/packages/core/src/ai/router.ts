@@ -1,4 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
+import { prisma } from "@avatar-cmd/db";
+import { CredentialVault } from "../security/credential-vault";
+
+/** Gemini APIキー: 環境変数 → ダッシュボードの設定（暗号化保存）の順に探す */
+async function resolveGeminiKey(): Promise<string | undefined> {
+  if (process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: "gemini_api_key" } });
+    if (!row) return undefined;
+    return row.secret ? new CredentialVault().decrypt(row.value) : row.value;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface GeneratePostOptions {
   soulContext: string;
@@ -11,9 +25,9 @@ export async function generatePostContent(options: GeneratePostOptions): Promise
   console.log("[LLMRouter] Requesting AI Generation using Google Gemini...");
   console.log(`[LLMRouter] Context Length: ${soulContext.length} chars`);
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = await resolveGeminiKey();
   if (!apiKey) {
-    console.warn("[LLMRouter] GEMINI_API_KEY is not set. Falling back to mock generation.");
+    console.warn("[LLMRouter] Gemini APIキーが未設定です（設定 > AI）。モック生成にフォールバックします。");
     return fallbackMockGeneration(soulContext, topic);
   }
 

@@ -6,6 +6,8 @@ import { Bell, Search, Plus, ArrowLeft } from "lucide-react"
 
 const pageTitles: Record<string, { title: string; description: string }> = {
   "/": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
+  "/dashboard": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
+  "/posts": { title: "投稿", description: "SNSへの投稿・予約・送信状況" },
   "/avatars": { title: "アバター管理", description: "全アバターの詳細設定と状態管理" },
   "/activity": { title: "アクティビティ", description: "パフォーマンス分析 & 改善サイクル" },
   "/sns": { title: "SNS運用", description: "プラットフォーム & コンテンツ管理" },
@@ -30,9 +32,9 @@ export function Header({ title, description }: HeaderProps) {
   return (
     <header className="flex h-16 items-center justify-between border-b border-white/[0.08] bg-[#0a0a12]/80 backdrop-blur-xl px-6">
       <div className="flex items-center gap-3">
-        {pathname !== "/" && (
+        {pathname !== "/dashboard" && (
           <Link
-            href="/"
+            href="/dashboard"
             className="rounded-lg p-1.5 text-white/30 transition-colors hover:bg-white/[0.05] hover:text-white/70 no-underline"
           >
             <ArrowLeft className="h-4 w-4" />

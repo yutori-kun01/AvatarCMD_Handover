@@ -1,46 +1,20 @@
 # ============================================
-# Avatar CMD v3 — Docker Compose (Production)
+# Avatar CMD v3 — Docker Compose
 # ============================================
-# VPS: Ubuntu 22.04, Traefik + Portainer 稼働中
+# 起動:  bash scripts/setup-env.sh https://avatar-cmd.example.com   # 初回のみ .env 生成
+#        docker compose up -d --build
+# Traefik 経由で公開する場合（既存の Traefik ネットワークに接続）:
+#        docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 # ============================================
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://avatar:${DB_PASSWORD:?DB_PASSWORD を .env に設定してください}@db:5432/avatar_cmd?schema=public
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY を .env に設定してください}
+  SESSION_SECRET: ${SESSION_SECRET:-}
+  APP_URL: ${APP_URL:-http://localhost:3333}
+  MEDIA_DIR: /app/data/media
 
 services:
-  # ─── Web Dashboard ───
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: avatar-cmd-web
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-      - NEXTAUTH_URL=${NEXTAUTH_URL}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-    ports:
-      - "3333:3000"
-    networks:
-      - internal
-      - traefik-net
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    labels:
-      # ── Traefik Labels ──
-      - "traefik.enable=true"
-      - "traefik.http.routers.avatar-cmd.rule=Host(`avatar-cmd.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.avatar-cmd.entrypoints=websecure"
-      - "traefik.http.routers.avatar-cmd.tls.certresolver=letsencrypt"
-      - "traefik.http.services.avatar-cmd.loadbalancer.server.port=3000"
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-
   # ─── PostgreSQL ───
   db:
     image: postgres:16-alpine
@@ -49,82 +23,75 @@ services:
     environment:
       POSTGRES_DB: avatar_cmd
       POSTGRES_USER: avatar
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - db-data:/var/lib/postgresql/data
-    networks:
-      - internal
+    networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U avatar -d avatar_cmd"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
     deploy:
       resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
+        limits: { memory: 512M, cpus: "0.5" }
 
-  # ─── Redis (Queue + Cache) ───
-  redis:
-    image: redis:7-alpine
-    container_name: avatar-cmd-redis
-    restart: unless-stopped
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis-data:/data
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 192M
-          cpus: '0.2'
-
-  # ─── Chrome Empire (Playwright) ───
-  chrome-empire:
-    image: mcr.microsoft.com/playwright:v1.49.1-jammy
-    container_name: avatar-cmd-chrome
-    restart: unless-stopped
-    working_dir: /app
-    command: ["node", "packages/chrome-empire/dist/worker.js"]
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL}
-      - CHROME_POOL_SIZE=${CHROME_POOL_SIZE:-3}
-      - CHROME_HEADLESS=true
-    volumes:
-      - chrome-sessions:/app/data/sessions
-      - chrome-profiles:/app/data/profiles
-    networks:
-      - internal
-      - chrome-net
-    shm_size: '2gb'
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: '3.0'
+  # ─── DB マイグレーション（起動時に1回実行して終了） ───
+  migrate:
+    build: { context: ., target: worker }
+    image: avatar-cmd-worker
+    container_name: avatar-cmd-migrate
+    environment: *app-env
+    command: ["packages/db/node_modules/.bin/prisma", "migrate", "deploy", "--schema", "packages/db/prisma/schema.prisma"]
+    networks: [internal]
     depends_on:
-      redis:
-        condition: service_healthy
+      db: { condition: service_healthy }
+    restart: "no"
+
+  # ─── Web ダッシュボード ───
+  web:
+    build: { context: ., target: web }
+    image: avatar-cmd-web
+    container_name: avatar-cmd-web
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD を .env に設定してください}
+      GHOST_URL: ${GHOST_URL:-}
+      GHOST_CONTENT_API_KEY: ${GHOST_CONTENT_API_KEY:-}
+    ports:
+      - "${WEB_PORT:-3333}:3000"
+    volumes:
+      - media:/app/data/media
+    networks: [internal]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { memory: 768M, cpus: "1.0" }
+
+  # ─── Worker（予約投稿を各SNSへ送信） ───
+  worker:
+    image: avatar-cmd-worker
+    container_name: avatar-cmd-worker
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      SCHEDULER_TICK_MS: ${SCHEDULER_TICK_MS:-15000}
+      SCHEDULER_MAX_RETRIES: ${SCHEDULER_MAX_RETRIES:-3}
+    volumes:
+      - media:/app/data/media
+    networks: [internal]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
 
 networks:
   internal:
     driver: bridge
-  chrome-net:
-    driver: bridge
-    internal: true  # 外部アクセス遮断
-  traefik-net:
-    external: true  # 既存Traefikネットワーク
 
 volumes:
   db-data:
-  redis-data:
-  chrome-sessions:
-  chrome-profiles:
+  media:
