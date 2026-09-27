@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Play, Trash2 } from "lucide-react";
+import { BarChart3, Play, Trash2 } from "lucide-react";
 import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -19,6 +19,70 @@ interface Rule {
   lastExecutedAt: string | null;
   nextRunAt: string | null;
   lastError: string | null;
+  performance: Performance | null;
+}
+
+type Verdict = "continue" | "improve" | "stop" | "insufficient";
+interface Performance {
+  verdict: Verdict;
+  focus: "hook" | "topic" | "format" | "timing" | "length" | "none" | null;
+  confidence: number | null;
+  engine: string;
+  stats: {
+    posts: number;
+    baselinePosts: number;
+    basis: "rate" | "count";
+    ratio: number | null;
+    baseline: "other" | "trend";
+    byTopic: { topic: string; posts: number; median: number | null }[];
+    byHour: { hour: number; posts: number; median: number | null }[];
+  } | null;
+  createdAt: string;
+}
+
+const VERDICT: Record<Verdict, { label: string; cls: string }> = {
+  continue: { label: "継続", cls: "bg-emerald-500/15 text-emerald-300" },
+  improve: { label: "改善", cls: "bg-amber-500/15 text-amber-300" },
+  stop: { label: "停止を検討", cls: "bg-red-500/15 text-red-300" },
+  insufficient: { label: "データ不足", cls: "bg-white/10 text-white/50" },
+};
+const FOCUS: Record<string, string> = {
+  hook: "書き出し（最初の一文）",
+  topic: "トピック選び",
+  format: "形式（箇条書き・質問・体験談など）",
+  timing: "投稿時間帯",
+  length: "長さ",
+  none: "特になし",
+};
+
+function PerformanceBlock({ p }: { p: Performance }) {
+  const s = p.stats;
+  const fmt = (x: number | null) => (x === null ? "—" : s?.basis === "rate" ? `${(x * 100).toFixed(1)}%` : x.toFixed(1));
+  const topics = [...(s?.byTopic ?? [])].filter((t) => t.median !== null).sort((a, b) => (b.median ?? 0) - (a.median ?? 0));
+  return (
+    <div className="mt-3 space-y-1 rounded-lg border border-white/[0.06] bg-black/20 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge className={VERDICT[p.verdict].cls}>{VERDICT[p.verdict].label}</Badge>
+        {p.focus && p.focus !== "none" && <span className="text-white/70">改善ポイント: {FOCUS[p.focus]}</span>}
+        <span className="flex-1" />
+        <span className="text-[11px] text-white/35">
+          {p.engine === "jev" ? `Jev 判定${p.confidence !== null ? `（確信度 ${Math.round(p.confidence * 100)}%）` : ""}` : "ルール判定"}・{relTime(p.createdAt)}
+        </span>
+      </div>
+      {s && (
+        <div className="text-white/50">
+          {s.baseline === "trend" ? "このルールの前半と比べた後半" : `同じアバターの他の投稿（${s.baselinePosts}件）と比べて`}：
+          {s.ratio === null ? " 比較できる投稿が足りません" : ` ${s.ratio >= 1 ? "+" : ""}${Math.round((s.ratio - 1) * 100)}%`}（指標あり {s.posts} 件・
+          {s.basis === "rate" ? "反応率" : "反応数"}で比較）
+        </div>
+      )}
+      {topics.length > 1 && (
+        <div className="text-white/40">
+          トピック別: {topics.map((t) => `${t.topic} ${fmt(t.median)}（${t.posts}件）`).join(" / ")}
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface Draft {
@@ -256,6 +320,7 @@ export default function AutomationPage() {
                     <span>次回 {r.isActive && r.nextRunAt ? new Date(r.nextRunAt).toLocaleString("ja-JP") : "—"}</span>
                   </div>
                   {r.lastError && <p className="mt-2 break-all text-xs text-red-300">直近のエラー: {r.lastError}</p>}
+                  {r.performance && <PerformanceBlock p={r.performance} />}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -271,6 +336,13 @@ export default function AutomationPage() {
                     onClick={() => act(r.id, () => api(`/api/automations/${r.id}/run`, { method: "POST" }), "実行しました（投稿ページで結果を確認できます）")}
                   >
                     <Play className="inline h-3 w-3" /> {busy === r.id ? "実行中…" : "今すぐ実行"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={busy === `perf:${r.id}`}
+                    onClick={() => act(`perf:${r.id}`, () => api(`/api/automations/${r.id}/performance`, { method: "POST" }), "反応を分析しました")}
+                  >
+                    <BarChart3 className="inline h-3 w-3" /> {busy === `perf:${r.id}` ? "分析中…" : "改善か継続かを分析"}
                   </Button>
                   <Button variant="ghost" onClick={() => setDraft(toDraft(r))}>
                     編集

@@ -189,6 +189,9 @@ avatar-cmd/
   （v3.2 で Claude / OpenAI / Gemini を用途ごとに切り替え可能に。用途: SNS投稿文・長文記事・文字数調整・投稿前チェック・タグ提案。
   自動投稿は投稿前チェックを通過したものだけ）
 - UI のアイコンを Font Awesome 7 Free に統一（SNS プラットフォームのロゴなど）
+- 判定レイヤー（TypeSafe Jev）: 投稿の可否・引用候補・改善か継続かを確率付きで判定（キー未設定なら従来の流れ）。
+  X / Threads の投稿の反応を自動取得し、自動化ルールごとに改善か継続かを提案。X のタイムラインから引用投稿の下書きを作成（承認制）。
+  詳細は [docs/JEV_DECISION_LAYER.md](docs/JEV_DECISION_LAYER.md)
 - CI（GitHub Actions）: 型チェック・テスト・Next.js ビルド・Docker ビルド
 
 ### Phase 8: 設定画面・投稿キュー・本番デプロイ ✅（v3.1）

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@avatar-cmd/db";
+import { discardContent } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";
 
 export const runtime = "nodejs";
@@ -15,13 +16,9 @@ export const PATCH = route(async (req: Request, { params }: { params: Promise<{ 
   return NextResponse.json({ ok: true });
 });
 
-// 未送信（下書き・予約中・失敗）の投稿のみ削除できる
+// 未送信（下書き・予約中・失敗）の投稿のみ削除できる。下書きの削除は判定ログに「却下」として残す
 export const DELETE = route(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const c = await prisma.content.findUniqueOrThrow({ where: { id } });
-  if (c.status === "PUBLISHED" || c.status === "PUBLISHING") {
-    return NextResponse.json({ error: "送信済み・送信中の投稿は削除できません（各SNS側で削除してください）" }, { status: 400 });
-  }
-  await prisma.content.delete({ where: { id } });
+  await discardContent(id);
   return NextResponse.json({ ok: true });
 });

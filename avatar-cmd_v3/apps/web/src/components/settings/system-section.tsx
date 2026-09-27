@@ -38,7 +38,17 @@ export interface AiInfo {
   ready: boolean;
 }
 
-export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; ai: AiInfo; onChanged: (msg: string, ok: boolean) => void }) {
+export interface JevInfo {
+  apiKey: string;
+  fromEnv: boolean;
+  model: string;
+  defaultModel: string;
+  mode: "off" | "shadow" | "gate";
+  /** 直近30日の判定件数・エラー件数・人の判断が付いた件数・一致件数 */
+  stats: { total: number; errors: number; reviewed: number; agreed: number };
+}
+
+export function SystemSection({ system, ai, jev, onChanged }: { system: SystemInfo; ai: AiInfo; jev: JevInfo; onChanged: (msg: string, ok: boolean) => void }) {
   const [v, setV] = useState({
     appUrl: system.appUrl,
     metaGraphVersion: system.metaGraphVersion,
@@ -49,6 +59,7 @@ export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; a
   const [aiTasks, setAiTasks] = useState<Record<string, { provider: string; model: string }>>(() =>
     Object.fromEntries(ai.tasks.map((t) => [t.id, { provider: t.provider, model: t.model }]))
   );
+  const [jevForm, setJevForm] = useState({ apiKey: "", model: jev.model, mode: jev.mode as string });
   const providerName = (id: string | null) => ai.providers.find((p) => p.id === id)?.name ?? id ?? "";
   const [busy, setBusy] = useState(false);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -56,8 +67,9 @@ export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; a
   async function save() {
     setBusy(true);
     try {
-      await api("/api/settings/system", { method: "PUT", json: { ...v, aiKeys, aiTasks } });
+      await api("/api/settings/system", { method: "PUT", json: { ...v, aiKeys, aiTasks, jev: jevForm } });
       setAiKeys(emptyKeys());
+      setJevForm({ ...jevForm, apiKey: "" });
       onChanged("システム設定を保存しました", true);
     } catch (e) {
       onChanged((e as Error).message, false);
@@ -171,6 +183,51 @@ export function SystemSection({ system, ai, onChanged }: { system: SystemInfo; a
             );
           })}
         </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <h3 className="text-sm font-semibold">判定（TypeSafe Jev）</h3>
+        <p className="text-xs text-white/50">
+          投稿の可否・引用候補の方向性・改善か継続か、といった「判断」を確率付きで行います（文章の生成には使いません）。
+          キーが未設定、またはモードが「使わない」のときは、これまでどおりの流れ（AI の投稿前チェック・コードのルール）で動きます。
+        </p>
+        <div className="grid gap-4 md:grid-cols-3">
+          <Field
+            def={{
+              key: "jevKey",
+              label: "TypeSafe API キー",
+              type: "password",
+              help: jev.apiKey ? `保存済み: ${jev.apiKey}（変更する場合のみ入力 / 削除は「-」）` : jev.fromEnv ? ".env の TYPESAFE_API_KEY を使用中" : "typesafe.ai で発行",
+            }}
+            value={jevForm.apiKey}
+            configured={!!jev.apiKey || jev.fromEnv}
+            onChange={(x) => setJevForm({ ...jevForm, apiKey: x })}
+          />
+          <Field
+            def={{ key: "jevModel", label: "モデル（空欄で既定）", placeholder: jev.defaultModel, help: "本番は具体的なバージョンに固定（jev-latest は変化を受け入れる場合のみ）" }}
+            value={jevForm.model}
+            onChange={(x) => setJevForm({ ...jevForm, model: x })}
+          />
+          <Field
+            def={{
+              key: "jevMode",
+              label: "モード",
+              type: "select",
+              options: [
+                { value: "shadow", label: "記録のみ（shadow・推奨の初期設定）" },
+                { value: "gate", label: "判定を反映（gate）" },
+                { value: "off", label: "使わない" },
+              ],
+              help: "記録のみ: 判定を残すだけで処理は変えない。人の判断との一致率を見てから「反映」に切り替えてください",
+            }}
+            value={jevForm.mode}
+            onChange={(x) => setJevForm({ ...jevForm, mode: x })}
+          />
+        </div>
+        <p className="text-[11px] text-white/40">
+          直近30日: 判定 {jev.stats.total} 件（エラー {jev.stats.errors} 件）／ 人の判断と比較できた投稿判定 {jev.stats.reviewed} 件
+          {jev.stats.reviewed > 0 && `（一致 ${jev.stats.agreed} 件・${Math.round((jev.stats.agreed / jev.stats.reviewed) * 100)}%）`}
+        </p>
       </Card>
 
       <Button onClick={save} disabled={busy}>

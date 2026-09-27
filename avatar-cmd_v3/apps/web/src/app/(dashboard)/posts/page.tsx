@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, RefreshCw, ScissorsLineDashed, ShieldCheck, Sparkles, Tags, Trash2, X } from "lucide-react";
+import { ExternalLink, ImagePlus, Quote, RefreshCw, ScissorsLineDashed, ShieldCheck, Sparkles, Tags, Trash2, X } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
@@ -20,7 +20,22 @@ interface ReviewResult {
   summary: string;
   issues: { severity: "low" | "medium" | "high"; category: string; message: string; excerpt: string }[];
   model: string;
+  /** Jev（TypeSafe）の判定。未設定なら null */
+  jev: {
+    action: "publish" | "review" | "hold";
+    confidence?: number;
+    personaFit: number;
+    salesPressure: number;
+    duplicateRisk: number;
+    brandRisk: number;
+    publish: boolean;
+    reason: string;
+    model: string;
+  } | null;
 }
+
+const LEVEL3 = ["低", "中", "高"];
+const lv = (x: number) => LEVEL3[Math.max(0, Math.min(2, Math.round(x)))];
 
 const VERDICT: Record<ReviewResult["verdict"], { label: string; cls: string }> = {
   ok: { label: "問題なし", cls: "bg-emerald-500/15 text-emerald-300" },
@@ -41,6 +56,124 @@ interface PostRow {
   attempts: number;
   lastError: string | null;
   createdAt: string;
+  category: string;
+  quote: { url: string | null; authorUsername: string | null; text: string } | null;
+  metrics: { views: number | null; likes: number | null; replies: number | null; reposts: number | null; quotes: number | null; engagements: number | null; error: string | null } | null;
+}
+
+interface QuoteCandidateRow {
+  id: string;
+  authorUsername: string | null;
+  text: string;
+  url: string | null;
+  status: string;
+  reason: string | null;
+  angle: string | null;
+  createdAt: string;
+}
+
+const CANDIDATE_STATUS: Record<string, { label: string; cls: string }> = {
+  pending: { label: "判定待ち", cls: "bg-white/10 text-white/50" },
+  skipped: { label: "見送り", cls: "bg-white/5 text-white/40" },
+  drafted: { label: "下書き作成", cls: "bg-cyan-500/15 text-cyan-300" },
+  approved: { label: "承認", cls: "bg-emerald-500/15 text-emerald-300" },
+  rejected: { label: "却下", cls: "bg-red-500/15 text-red-300" },
+};
+
+function QuoteScanCard({ accounts, onDrafted }: { accounts: AccountInfo[]; onDrafted: (msg: string, ok: boolean) => void }) {
+  const xs = accounts.filter((a) => a.platform === "x" && a.isActive);
+  const [accountId, setAccountId] = useState(xs[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<QuoteCandidateRow[]>([]);
+  const acc = xs.find((a) => a.id === accountId);
+
+  const load = useCallback(async () => {
+    if (!acc) return;
+    try {
+      setRows((await api<{ candidates: QuoteCandidateRow[] }>(`/api/quotes?avatarId=${acc.avatarId}`)).candidates);
+    } catch {
+      /* 一覧の失敗は無視 */
+    }
+  }, [acc]);
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+  useEffect(() => {
+    if (!accountId && xs[0]) setAccountId(xs[0].id);
+  }, [xs, accountId]);
+
+  async function scan() {
+    setBusy(true);
+    try {
+      const r = await api<{ fetched: number; new: number; judged: number; drafted: number; errors: string[] }>("/api/quotes/scan", { method: "POST", json: { accountId } });
+      onDrafted(
+        `タイムライン ${r.fetched} 件（新規 ${r.new} 件）から ${r.judged} 件を判定し、引用案を ${r.drafted} 件下書きにしました${r.errors.length ? `（失敗 ${r.errors.length} 件: ${r.errors[0]}）` : ""}`,
+        !r.errors.length || r.drafted > 0
+      );
+      setOpen(true);
+      load();
+    } catch (e) {
+      onDrafted((e as Error).message, false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!xs.length) return null;
+  return (
+    <Card className="space-y-3">
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
+        <Quote className="h-4 w-4 text-white/50" /> 引用投稿（X のタイムラインから）
+      </h3>
+      <p className="text-xs text-white/50">
+        フォロー中の投稿から、アバターと方向性が同じ投稿を選び、肯定しつつ知見・体験を添えた引用案を下書きにします（投稿は承認制）。
+        タイムラインの読み取りは1件 $0.001（このアカウント自身の開発者アプリで接続した場合）。
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="block min-w-[200px] flex-1">
+          <span className="mb-1 block text-xs text-white/60">X アカウント</span>
+          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputCls}>
+            {xs.map((a) => (
+              <option key={a.id} value={a.id} className="bg-[#111]">
+                {a.accountName}（{a.avatarName}）
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button variant="ghost" onClick={scan} disabled={busy || !accountId}>
+          {busy ? "探索中…（1〜2分かかることがあります）" : "引用候補を探す"}
+        </Button>
+        <button onClick={() => setOpen(!open)} className="text-xs text-white/50 hover:text-white">
+          {open ? "候補一覧を閉じる" : "最近の候補を見る"}
+        </button>
+      </div>
+      {open && (
+        <div className="max-h-80 space-y-2 overflow-auto">
+          {rows.length === 0 ? (
+            <p className="text-xs text-white/40">まだ候補はありません。</p>
+          ) : (
+            rows.map((c) => (
+              <div key={c.id} className="rounded-lg border border-white/[0.06] bg-black/20 p-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <Badge className={CANDIDATE_STATUS[c.status]?.cls ?? "bg-white/10 text-white/50"}>{CANDIDATE_STATUS[c.status]?.label ?? c.status}</Badge>
+                  <span className="text-white/60">{c.authorUsername ? `@${c.authorUsername}` : ""}</span>
+                  <span className="flex-1" />
+                  {c.url && (
+                    <a href={c.url} target="_blank" rel="noreferrer" className="text-white/40 hover:text-white">
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+                <p className="mt-1 line-clamp-2 text-white/60">{c.text}</p>
+                {c.reason && <p className="mt-1 text-[11px] text-white/35">{c.reason}</p>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </Card>
+  );
 }
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -297,6 +430,14 @@ export default function PostsPage() {
                 )}
               </Card>
 
+              <QuoteScanCard
+                accounts={accounts}
+                onDrafted={(msg, ok) => {
+                  setNotice({ kind: ok ? "ok" : "error", msg });
+                  loadPosts();
+                }}
+              />
+
               <Card className="space-y-4">
                 <div className="flex items-end gap-2">
                   <div className="flex-1">
@@ -352,7 +493,20 @@ export default function PostsPage() {
                         {i.excerpt && <span className="mt-0.5 block text-white/35">「{i.excerpt}」</span>}
                       </div>
                     ))}
-                    <p className="text-[11px] text-white/30">{review.model} によるチェック。最終判断はご自身で行ってください。</p>
+                    {review.jev && (
+                      <div className="rounded-lg border border-violet-400/20 bg-violet-500/[0.05] p-2 text-[11px] text-white/60">
+                        <span className={review.jev.publish ? "text-emerald-300" : "text-amber-300"}>Jev: {review.jev.reason}</span>
+                        <span className="ml-2 text-white/40">
+                          判定 {review.jev.action}
+                          {review.jev.confidence !== undefined && `（${Math.round(review.jev.confidence * 100)}%）`}・口調の一致 {lv(review.jev.personaFit)}・宣伝色 {lv(review.jev.salesPressure)}・重複{" "}
+                          {Math.round(review.jev.duplicateRisk * 100)}%・ブランドリスク {lv(review.jev.brandRisk)}
+                        </span>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-white/30">
+                      {review.model}
+                      {review.jev ? ` ／ ${review.jev.model}` : ""} によるチェック。最終判断はご自身で行ってください。
+                    </p>
                   </div>
                 )}
                 <div className="grid gap-4 md:grid-cols-2">
@@ -451,6 +605,24 @@ export default function PostsPage() {
                         />
                       ) : (
                         <p className={`mt-2 whitespace-pre-wrap text-xs text-white/70 ${p.status === "DRAFT" ? "" : "line-clamp-2"}`}>{p.text}</p>
+                      )}
+                      {p.quote && (
+                        <div className="mt-2 rounded-lg border-l-2 border-white/15 bg-white/[0.02] px-2 py-1 text-[11px] text-white/45">
+                          <span className="text-white/60">引用元 {p.quote.authorUsername ? `@${p.quote.authorUsername}` : ""}</span>
+                          {p.quote.url && (
+                            <a href={p.quote.url} target="_blank" rel="noreferrer" className="ml-1 inline-flex text-white/40 hover:text-white">
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                          <span className="mt-0.5 line-clamp-2 block">{p.quote.text}</span>
+                        </div>
+                      )}
+                      {p.metrics && (
+                        <p className="mt-1 text-[11px] text-white/40">
+                          {p.metrics.error && p.metrics.engagements === null
+                            ? `反応: 取得できません（${p.metrics.error}）`
+                            : `表示 ${p.metrics.views ?? "—"}・いいね ${p.metrics.likes ?? 0}・返信 ${p.metrics.replies ?? 0}・リポスト ${p.metrics.reposts ?? 0}・引用 ${p.metrics.quotes ?? 0}`}
+                        </p>
                       )}
                       {p.note && <p className="mt-1 text-[11px] text-amber-300/80">{p.note}</p>}
                       {p.lastError && p.status !== "PUBLISHED" && <p className="mt-1 break-all text-[11px] text-red-300">{p.lastError}</p>}

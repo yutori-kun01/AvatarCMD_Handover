@@ -1,6 +1,6 @@
 // システム設定（公開URL・APIバージョン・AIキー・用途ごとの AI 割り当て）
 import { NextResponse } from "next/server";
-import { AI_PROVIDERS, isAiProvider, isAiTask, saveAiTask, setSetting, SETTING_KEYS, type AiProvider, type AiTask } from "@avatar-cmd/integrations/server";
+import { AI_PROVIDERS, isAiProvider, isAiTask, JEV_MODES, saveAiTask, setSetting, SETTING_KEYS, type AiProvider, type AiTask } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";
 
 export const runtime = "nodejs";
@@ -11,6 +11,8 @@ export const PUT = route(async (req: Request) => {
     aiKeys?: Record<string, string | undefined>;
     /** 用途ごとの割り当て。provider: "auto" | anthropic | openai | gemini */
     aiTasks?: Record<string, { provider?: string; model?: string }>;
+    /** TypeSafe Jev 判定レイヤー。apiKey: 空欄 = 変更しない、"-" = 削除 */
+    jev?: { apiKey?: string; model?: string; mode?: string };
   };
   if (b.appUrl !== undefined) {
     const v = b.appUrl.trim().replace(/\/+$/, "");
@@ -35,6 +37,16 @@ export const PUT = route(async (req: Request) => {
     const model = cfg.model?.trim() ?? "";
     if (model && !/^[a-z0-9._\-]+$/i.test(model)) return NextResponse.json({ error: `モデル名が不正です: ${model}` }, { status: 400 });
     tasks.push([task, provider as AiProvider | "auto", model]);
+  }
+  if (b.jev) {
+    const mode = b.jev.mode?.trim();
+    if (mode && !JEV_MODES.includes(mode as never)) return NextResponse.json({ error: `判定モードが不正です: ${mode}` }, { status: 400 });
+    const model = b.jev.model?.trim();
+    if (model && !/^[a-z0-9._\-]+$/i.test(model)) return NextResponse.json({ error: `Jev のモデル名が不正です: ${model}` }, { status: 400 });
+    if (mode !== undefined) await setSetting(SETTING_KEYS.jevMode, mode || null);
+    if (model !== undefined) await setSetting(SETTING_KEYS.jevModel, model || null);
+    const key = b.jev.apiKey?.trim();
+    if (key) await setSetting(SETTING_KEYS.jevApiKey, key === "-" ? null : key);
   }
   for (const [provider, raw] of Object.entries(b.aiKeys ?? {})) {
     const v = raw?.trim();

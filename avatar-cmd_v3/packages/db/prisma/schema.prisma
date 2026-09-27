@@ -120,6 +120,8 @@ model Avatar {
   identity        AvatarIdentity?
   snsAccounts     SnsAccount[]
   platformApps    AvatarPlatformApp[]
+  decisionEvents  DecisionEvent[]
+  quoteCandidates QuoteCandidate[]
   contents        Content[]
   campaigns       Campaign[]
   revenues        Revenue[]
@@ -301,6 +303,8 @@ model Content {
 
   // Engagement
   engagement         Json          @default("{}") // { likes, retweets, comments, views, clicks }
+  // v3.4 — 指標（engagement）を最後に取得した時刻。取得できない理由は engagement.error に入る
+  metricsUpdatedAt   DateTime?     @map("metrics_updated_at")
 
   scheduledPost      ScheduledPost?
   snsAccount         SnsAccount?   @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
@@ -310,6 +314,7 @@ model Content {
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
+  @@index([status, publishedAt])
   @@map("contents")
 }
 
@@ -616,6 +621,67 @@ model AvatarPlatformApp {
 
   @@id([avatarId, platform])
   @@map("avatar_platform_apps")
+}
+
+// ==============================================
+// 18c. Decision Event (v3.4) — Jev（TypeSafe）等の判定ログ
+// ==============================================
+// 判定の精度を人の判断と比べて検証するため、判定結果と「人が最終的にどうしたか」を残す。
+// state には判定に渡した入力の要約（秘密情報は入れない）を保存する。
+
+model DecisionEvent {
+  id             String   @id @default(uuid())
+  avatarId       String?  @map("avatar_id")
+  decisionType   String   @map("decision_type") // post_gate / quote_candidate / performance
+  subjectId      String?  @map("subject_id")    // contentId / quoteCandidateId / automationRuleId
+  engine         String   // jev / llm / rule
+  model          String?
+  mode           String   // shadow / gate / advisory
+  state          Json     @default("{}")
+  answers        Json     @default("{}")
+  selectedAction String?  @map("selected_action")
+  confidence     Float?
+  applied        Boolean  @default(false) // 判定結果を実際の処理に反映したか
+  humanAction    String?  @map("human_action") // 人の最終判断（承認・却下など）
+  latencyMs      Int?     @map("latency_ms")
+  usage          Json?
+  error          String?
+  avatar         Avatar?  @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([decisionType, createdAt])
+  @@index([subjectId])
+  @@map("decision_events")
+}
+
+// ==============================================
+// 18d. Quote Candidate (v3.4) — タイムラインから見つけた引用候補
+// ==============================================
+
+model QuoteCandidate {
+  id             String   @id @default(uuid())
+  avatarId       String   @map("avatar_id")
+  snsAccountId   String   @map("sns_account_id")
+  platform       String
+  externalPostId String   @map("external_post_id")
+  authorId       String?  @map("author_id")
+  authorUsername String?  @map("author_username")
+  text           String   @db.Text
+  url            String?
+  postedAt       DateTime? @map("posted_at")
+  metrics        Json     @default("{}")
+  // skipped（ルール/判定で除外）/ drafted（引用文を下書き化）/ rejected（人が却下）/ published
+  status         String   @default("pending")
+  reason         String?
+  angle          String?  // knowledge / experience
+  contentId      String?  @map("content_id")
+  avatar         Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([avatarId, platform, externalPostId])
+  @@index([avatarId, status])
+  @@map("quote_candidates")
 }
 
 // ==============================================

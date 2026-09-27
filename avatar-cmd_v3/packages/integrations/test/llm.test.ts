@@ -1,22 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mockFetch } from "./helpers";
+import { claudeSse, mockFetch } from "./helpers";
 import { AI_PROVIDERS, AI_TASKS, callProvider, type AiProvider } from "../src/service/llm";
 
 const SCHEMA = { type: "object", properties: { tags: { type: "array", items: { type: "string" } } }, required: ["tags"], additionalProperties: false };
-
-/** Messages API のストリーミング応答（SSE） */
-function claudeSse(model: string, text: string, stopReason = "end_turn") {
-  const ev = (type: string, data: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
-  return [
-    ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } }),
-    ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
-    ev("content_block_delta", { index: 0, delta: { type: "text_delta", text } }),
-    ev("content_block_stop", { index: 0 }),
-    ev("message_delta", { delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 5 } }),
-    ev("message_stop", {}),
-  ].join("");
-}
 
 test("用途ごとに全プロバイダの推奨モデルがある", () => {
   for (const [id, t] of Object.entries(AI_TASKS)) {

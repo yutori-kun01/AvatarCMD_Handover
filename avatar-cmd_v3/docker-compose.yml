@@ -18,6 +18,8 @@ x-app-env: &app-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}   # 任意: 判定レイヤー（Jev）
+  JEV_MODEL: ${JEV_MODEL:-}
 
 services:
   # ─── PostgreSQL ───

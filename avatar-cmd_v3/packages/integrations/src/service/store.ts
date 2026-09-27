@@ -34,6 +34,10 @@ export const SETTING_KEYS = {
   anthropicApiKey: "anthropic_api_key",
   openaiApiKey: "openai_api_key",
   // 用途ごとの AI 割り当ては ai_<用途>_provider / ai_<用途>_model（llm.ts）
+  /** TypeSafe（Jev）判定レイヤー（decision.ts） */
+  jevApiKey: "jev_api_key",
+  jevModel: "jev_model",
+  jevMode: "jev_mode",
   workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;
@@ -42,6 +46,7 @@ const SECRET_KEYS = new Set<string>([
   SETTING_KEYS.geminiApiKey,
   SETTING_KEYS.anthropicApiKey,
   SETTING_KEYS.openaiApiKey,
+  SETTING_KEYS.jevApiKey,
   SETTING_KEYS.adminPasswordHash,
 ]);
 

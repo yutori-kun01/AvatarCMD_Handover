@@ -14,6 +14,7 @@
     "@avatar-cmd/core": "workspace:*",
     "@avatar-cmd/db": "workspace:*",
     "@google/genai": "^2.24.0",
+    "@typesafe-ai/sdk": "0.6.0",
     "openai": "^7.23.0"
   },
   "devDependencies": {

@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { PLATFORM_LIST } from "@avatar-cmd/integrations";
 import {
-  describeAi, describePlatformApp, ensureDefaultAvatar, getSystemConfig, listAccounts, listAvatarPlatformApps, redirectUriFor,
+  describeAi, describeJev, describePlatformApp, ensureDefaultAvatar, getSystemConfig, listAccounts, listAvatarPlatformApps, redirectUriFor,
 } from "@avatar-cmd/integrations/server";
 import { prisma } from "@avatar-cmd/db";
 import { route } from "@/lib/api";
@@ -36,6 +36,7 @@ export const GET = route(async () => {
   return NextResponse.json({
     system: { ...system, appUrlFromEnv: process.env.APP_URL ?? null },
     ai: await describeAi(),
+    jev: await describeJev(),
     platforms,
     avatars,
     accounts: await listAccounts(),
