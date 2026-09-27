@@ -3,17 +3,19 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
-import { api, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { api, Notice, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "@/components/settings/ui";
 import { AppsSection } from "@/components/settings/apps-section";
 import { AccountsSection } from "@/components/settings/accounts-section";
-import { SecuritySection, SystemSection, type AiInfo, type SystemInfo } from "@/components/settings/system-section";
+import { SecuritySection, SystemSection, type AiInfo, type JevInfo, type SystemInfo } from "@/components/settings/system-section";
 
 interface Data {
   system: SystemInfo;
   ai: AiInfo;
+  jev: JevInfo;
   platforms: PlatformInfo[];
   avatars: { id: string; name: string }[];
   accounts: AccountInfo[];
+  avatarApps: AvatarAppInfo[];
   encryptionReady: boolean;
 }
 
@@ -86,10 +88,10 @@ function SettingsInner() {
             {loadError && <Notice kind="error">設定を読み込めませんでした: {loadError}</Notice>}
             {!data && !loadError && <p className="text-sm text-white/40">読み込み中…</p>}
             {data && tab === "accounts" && (
-              <AccountsSection platforms={data.platforms} accounts={data.accounts} avatars={data.avatars} onChanged={onChanged} />
+              <AccountsSection platforms={data.platforms} accounts={data.accounts} avatars={data.avatars} avatarApps={data.avatarApps} onChanged={onChanged} />
             )}
             {data && tab === "apps" && <AppsSection platforms={data.platforms} onChanged={onChanged} />}
-            {data && tab === "system" && <SystemSection system={data.system} ai={data.ai} onChanged={onChanged} />}
+            {data && tab === "system" && <SystemSection system={data.system} ai={data.ai} jev={data.jev} onChanged={onChanged} />}
             {data && tab === "security" && <SecuritySection encryptionReady={data.encryptionReady} onChanged={onChanged} />}
           </div>
         </main>

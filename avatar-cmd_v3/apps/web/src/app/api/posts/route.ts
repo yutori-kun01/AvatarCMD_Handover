@@ -24,7 +24,10 @@ export const GET = route(async () => {
       text: r.content,
       status: r.status,
       postUrl: r.postUrl,
-      note: ((r.metadata as any)?.result?.note as string) ?? (r.status === "DRAFT" ? reviewNote((r.metadata as any)?.review) : undefined) ?? null,
+      note: ((r.metadata as any)?.result?.note as string) ?? (r.status === "DRAFT" ? draftNote(r.metadata as any) : undefined) ?? null,
+      category: r.category,
+      quote: (r.metadata as any)?.quote ? { url: (r.metadata as any).quote.url ?? null, authorUsername: (r.metadata as any).quote.authorUsername ?? null, text: (r.metadata as any).quote.text ?? "" } : null,
+      metrics: metricsOf(r.engagement),
       scheduledAt: r.scheduledPost?.scheduledAt ?? null,
       publishedAt: r.publishedAt,
       attempts: r.scheduledPost?.attempts ?? 0,
@@ -60,6 +63,23 @@ export const POST = route(async (req: Request) => {
   });
   return NextResponse.json({ ok: true, count: created.length });
 });
+
+/** 下書きになった理由（投稿前チェック・Jev の判定・引用の判定） */
+function draftNote(meta: any): string | undefined {
+  const parts = [reviewNote(meta?.review)];
+  if (meta?.jev && meta.jev.publish === false) parts.push(`${meta.jev.reason}${meta.jev.mode === "shadow" ? "（記録のみ）" : ""}`);
+  if (meta?.quoteJudgement) parts.push(`引用判定（${meta.quoteJudgement.engine === "jev" ? "Jev" : "AI"}）: ${meta.quoteJudgement.reason ?? ""}`);
+  const s = parts.filter(Boolean).join(" ／ ");
+  return s || undefined;
+}
+
+/** 投稿の反応（取得済みなら） */
+function metricsOf(e: unknown) {
+  const m = (e ?? {}) as Record<string, unknown>;
+  const n = (k: string) => (typeof m[k] === "number" ? (m[k] as number) : null);
+  if (!m.fetchedAt && !m.error) return null;
+  return { views: n("views"), likes: n("likes"), replies: n("replies"), reposts: n("reposts"), quotes: n("quotes"), engagements: n("engagements"), error: typeof m.error === "string" ? m.error : null };
+}
 
 /** 自動化の投稿前チェックで下書きに回された理由 */
 function reviewNote(review: { verdict?: string; summary?: string; error?: string } | undefined): string | undefined {

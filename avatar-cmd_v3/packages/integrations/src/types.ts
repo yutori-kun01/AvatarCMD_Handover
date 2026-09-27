@@ -80,6 +80,32 @@ export interface MediaFile {
   load(): Promise<Uint8Array>;
 }
 
+/** 投稿の反応（取得できたものだけ入る） */
+export interface PostMetrics {
+  views?: number;
+  likes?: number;
+  replies?: number;
+  reposts?: number;
+  quotes?: number;
+  shares?: number;
+  bookmarks?: number;
+}
+
+/** タイムライン上の他者の投稿（引用候補の元） */
+export interface TimelinePost {
+  id: string;
+  text: string;
+  url: string;
+  authorId?: string;
+  authorUsername?: string;
+  authorName?: string;
+  createdAt?: string;
+  lang?: string;
+  metrics?: PostMetrics;
+  /** リポスト・返信・引用など、元投稿そのものでないもの */
+  kind: "original" | "repost" | "reply" | "quote";
+}
+
 export interface PostInput {
   text: string;
   title?: string;
@@ -88,6 +114,8 @@ export interface PostInput {
   tags?: string[];
   /** プラットフォーム固有の投稿オプション（postFields の値） */
   options: Record<string, string>;
+  /** 引用投稿: 引用元の投稿 ID（X: quote_tweet_id / Threads: quote_post_id） */
+  quotePostId?: string;
 }
 
 export interface PublishContext {
@@ -150,4 +178,10 @@ export interface PlatformDefinition {
   /** トークン更新が必要なら新しい credentials を返す。不要なら null */
   refresh?(app: Record<string, string>, credentials: Credentials, system: SystemConfig): Promise<Credentials | null>;
   publish?(ctx: PublishContext, post: PostInput): Promise<PublishResult>;
+  /** 自分の投稿の反応を取得する。取得できない投稿はエラー理由を返す */
+  fetchMetrics?(ctx: PublishContext, posts: { postId: string; publishedAt: Date }[]): Promise<Record<string, PostMetrics | { error: string }>>;
+  /** 自分のホームタイムライン（フォロー中の投稿）を新しい順に取得する */
+  fetchTimeline?(ctx: PublishContext, opts: { maxResults: number; sinceId?: string }): Promise<TimelinePost[]>;
+  /** 引用投稿に対応しているか */
+  supportsQuote?: boolean;
 }

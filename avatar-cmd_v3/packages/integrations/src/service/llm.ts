@@ -47,7 +47,7 @@ export const AUTO_ORDER: AiProvider[] = ["anthropic", "openai", "gemini"];
 // recommended: その用途で「これ以上は下げない」最低限の推奨モデル（モデル欄が空欄のときの既定）。
 // upgrade:     品質を上げたいときの候補（設定画面にヒントとして表示）。
 
-export type AiTask = "post" | "article" | "rewrite" | "review" | "tags";
+export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote";
 
 export interface AiTaskDef {
   label: string;
@@ -81,6 +81,13 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
   review: {
     label: "投稿前チェック",
     help: "事実誤り・誇大表現・炎上リスク・個人情報をチェック。自動投稿では問題があれば下書きに回す",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 16000,
+  },
+  quote: {
+    label: "引用投稿",
+    help: "タイムラインの投稿を引用し、肯定しつつアバターの知見・体験を添える文章。Jev 未設定時は引用してよいかの判定にも使う",
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
     maxTokens: 16000,

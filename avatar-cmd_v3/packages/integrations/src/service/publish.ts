@@ -16,6 +16,8 @@ export interface ContentMetadata {
   media?: MediaRef[];
   options?: Record<string, string>;
   result?: { note?: string };
+  /** 引用投稿の引用元 */
+  quote?: { postId: string; url?: string; authorUsername?: string; text?: string; candidateId?: string };
 }
 
 export interface CreatePostInput {
@@ -27,6 +29,10 @@ export interface CreatePostInput {
   media?: MediaRef[];
   options?: Record<string, Record<string, string>>; // platform → 投稿オプション
   scheduledAt?: Date;
+  /** 分類（manual / automation / quote）。集計に使う */
+  category?: string;
+  /** metadata に追加で残す値（自動化ルールID・生成モデル・引用元など） */
+  extraMetadata?: Partial<ContentMetadata> & Record<string, unknown>;
 }
 
 /** 投稿を作成して予約キューに入れる（アカウントごとに1件） */
@@ -39,6 +45,7 @@ export async function createPosts(input: CreatePostInput) {
     if (!def?.publish) throw new ConfigError(`${def?.name ?? acc.platform} は自動投稿に対応していません`);
     validateMedia(def.name, def.media, input.media ?? []);
     const metadata: ContentMetadata = {
+      ...(input.extraMetadata ?? {}),
       title: input.title,
       link: input.link,
       tags: input.tags,
@@ -52,7 +59,7 @@ export async function createPosts(input: CreatePostInput) {
         snsAccountId: acc.id,
         content: input.text,
         status: "SCHEDULED",
-        category: "manual",
+        category: input.category ?? "manual",
         metadata: metadata as object,
         scheduledPost: { create: { scheduledAt: input.scheduledAt ?? new Date(), status: "pending" } },
       },
@@ -91,7 +98,9 @@ export async function publishContent(contentId: string) {
     tags: meta.tags,
     media: (meta.media ?? []).map((m) => toMediaFile(m, system)),
     options: meta.options ?? {},
+    quotePostId: meta.quote?.postId,
   };
+  if (post.quotePostId && !def.supportsQuote) throw new ConfigError(`${def.name} は引用投稿に対応していません`);
 
   await prisma.content.update({ where: { id: contentId }, data: { status: "PUBLISHING" } });
   const result = await def.publish(

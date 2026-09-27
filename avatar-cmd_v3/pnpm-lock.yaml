@@ -211,6 +211,9 @@ importers:
       '@google/genai':
         specifier: ^2.24.0
         version: 2.24.0
+      '@typesafe-ai/sdk':
+        specifier: 0.6.0
+        version: 0.6.0
       openai:
         specifier: ^7.23.0
         version: 7.23.0(ws@8.22.0)(zod@3.25.76)
@@ -1277,6 +1280,10 @@ packages:
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
+
+  '@typesafe-ai/sdk@0.6.0':
+    resolution: {integrity: sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw==}
+    engines: {node: '>=20'}
 
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
@@ -3095,6 +3102,8 @@ snapshots:
       csstype: 3.2.3
 
   '@types/retry@0.12.0': {}
+
+  '@typesafe-ai/sdk@0.6.0': {}
 
   agent-base@7.1.4: {}
 

@@ -8,13 +8,18 @@
 //   - 更新:     GET  https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token
 //   - 投稿:     POST /v1.0/{user-id}/threads（コンテナ作成）→ POST /v1.0/{user-id}/threads_publish
 //   - テキスト上限 500 文字 / カルーセル最大 20 件
+//   - 引用:     コンテナ作成時に quote_post_id
+//   - インサイト: GET /v1.0/{media-id}/insights?metric=views,likes,replies,reposts,quotes,shares（threads_manage_insights）
+//               ※ Meta の条件（フォロワー100人以上など）を満たさないと取得できない。取得できない理由は記録してスキップする
 
-import type { MediaFile, PlatformDefinition } from "../types";
-import { ConfigError, DAY, expiresWithin, olderThan, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
+import type { MediaFile, PlatformDefinition, PostMetrics } from "../types";
+import { ApiError, ConfigError, DAY, expiresWithin, olderThan, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
 
 const GRAPH = "https://graph.threads.net";
 const V = "v1.0";
-const SCOPES = ["threads_basic", "threads_content_publish"];
+// threads_manage_insights は投稿の反応（インサイト）取得用。追加前に接続したアカウントは再接続が必要
+const SCOPES = ["threads_basic", "threads_content_publish", "threads_manage_insights"];
+const METRICS = ["views", "likes", "replies", "reposts", "quotes", "shares"] as const;
 
 async function createContainer(uid: string, token: string, params: Record<string, string>): Promise<string> {
   const d = await requestJson("threads", `${GRAPH}/${V}/${uid}/threads`, {
@@ -62,7 +67,8 @@ export const threads: PlatformDefinition = {
   ],
   notes: [
     "Meta for Developers でアプリを作成し、ユースケース「Threads API にアクセス」を追加してください。",
-    "権限 threads_basic / threads_content_publish を追加し、リダイレクトコールバックURLに下記URIを登録します。",
+    "権限 threads_basic / threads_content_publish / threads_manage_insights（反応の取得）を追加し、リダイレクトコールバックURLに下記URIを登録します。",
+    "投稿の反応（インサイト）はフォロワー100人以上など Meta の条件を満たすと取得できます。満たさない間は取得をスキップします。",
     "アプリが開発モードの間は、Threads テスターに追加したアカウントのみ接続できます。",
     "画像・動画は公開URLから取り込まれるため、公開URL（システム設定）が外部から到達可能である必要があります。",
   ],
@@ -120,12 +126,13 @@ export const threads: PlatformDefinition = {
     const uid = (ctx.credentials.userId as string) || ctx.account.accountId;
     if (!token) throw new ConfigError("Threads: アカウントを再接続してください");
     const text = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
+    const quote: Record<string, string> = post.quotePostId ? { quote_post_id: post.quotePostId } : {};
 
     let creationId: string;
     if (post.media.length === 0) {
-      creationId = await createContainer(uid, token, { media_type: "TEXT", text });
+      creationId = await createContainer(uid, token, { media_type: "TEXT", text, ...quote });
     } else if (post.media.length === 1) {
-      creationId = await createContainer(uid, token, { ...mediaParams(post.media[0]), text });
+      creationId = await createContainer(uid, token, { ...mediaParams(post.media[0]), text, ...quote });
       await waitReady(creationId, token);
     } else {
       const children: string[] = [];
@@ -134,7 +141,7 @@ export const threads: PlatformDefinition = {
         await waitReady(id, token);
         children.push(id);
       }
-      creationId = await createContainer(uid, token, { media_type: "CAROUSEL", children: children.join(","), text });
+      creationId = await createContainer(uid, token, { media_type: "CAROUSEL", children: children.join(","), text, ...quote });
       await waitReady(creationId, token);
     }
 
@@ -145,4 +152,35 @@ export const threads: PlatformDefinition = {
     const info = await requestJson("threads", withQuery(`${GRAPH}/${V}/${pub.id}`, { fields: "permalink", access_token: token })).catch(() => ({}));
     return { postId: String(pub.id), url: (info as any).permalink };
   },
+  supportsQuote: true,
+  async fetchMetrics(ctx, posts) {
+    const token = ctx.credentials.accessToken;
+    if (!token) throw new ConfigError("Threads: アカウントを再接続してください");
+    const out: Record<string, PostMetrics | { error: string }> = {};
+    for (const p of posts) {
+      try {
+        const d = await requestJson("threads", withQuery(`${GRAPH}/${V}/${p.postId}/insights`, { metric: METRICS.join(","), access_token: token }));
+        const m: PostMetrics = {};
+        for (const row of (d.data ?? []) as { name: string; values?: { value: number }[]; total_value?: { value: number } }[]) {
+          const v = row.total_value?.value ?? row.values?.[0]?.value;
+          if (typeof v === "number" && (METRICS as readonly string[]).includes(row.name)) m[row.name as keyof PostMetrics] = v;
+        }
+        out[p.postId] = m;
+      } catch (e) {
+        out[p.postId] = { error: insightError(e) };
+      }
+    }
+    return out;
+  },
 };
+
+/** インサイトが取れない理由を利用者向けの文にする */
+function insightError(e: unknown): string {
+  if (!(e instanceof ApiError)) return e instanceof Error ? e.message : String(e);
+  const body = e.body.toLowerCase();
+  if (body.includes("threads_manage_insights") || body.includes("permission") || e.status === 403) {
+    return "インサイト権限がありません（threads_manage_insights を追加して再接続してください）";
+  }
+  if (body.includes("follower") || body.includes("100")) return "フォロワー100人以上になるまでインサイトは取得できません";
+  return `Threads API ${e.status}: ${e.body.slice(0, 200)}`;
+}

@@ -9,13 +9,41 @@
 //              POST /2/media/upload/initialize → /{id}/append → /{id}/finalize（動画・GIF: 分割）
 //              GET  /2/media/upload?command=STATUS&media_id=（処理待ち）
 //   - スコープ: tweet.read tweet.write users.read media.write offline.access
+//   - 引用:   POST /2/tweets { quote_tweet_id }
+//   - 自分の投稿の反応: GET /2/users/{id}/tweets?tweet.fields=public_metrics
+//   - ホームタイムライン: GET /2/users/{id}/timelines/reverse_chronological
+//   料金（従量課金）: 上の2つは「Owned Reads」で 1件 $0.001（認証ユーザー＝開発者アプリの所有者のとき）。
+//   それ以外のアプリで認証した場合は通常の読み取り（1件 $0.005）。→ アバター専用アプリの利用を推奨
 
-import type { MediaFile, PlatformDefinition } from "../types";
-import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes } from "../http";
+import type { MediaFile, PlatformDefinition, PostMetrics, PublishContext, TimelinePost } from "../types";
+import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
 
 const API = "https://api.x.com";
 const SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"];
 const CHUNK = 2 * 1024 * 1024; // append 1回あたりのバイト数（base64化前）
+
+function bearer(ctx: PublishContext): Record<string, string> {
+  const token = ctx.credentials.accessToken;
+  if (!token) throw new ConfigError("X: アカウントを再接続してください（アクセストークンなし）");
+  return { Authorization: `Bearer ${token}` };
+}
+
+function readError(e: unknown): never {
+  if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジットが不足しています (${e.body.slice(0, 200)})`);
+  throw e;
+}
+
+function toMetrics(m: Record<string, number> | undefined): PostMetrics {
+  if (!m) return {};
+  return {
+    views: m.impression_count,
+    likes: m.like_count,
+    replies: m.reply_count,
+    reposts: m.retweet_count,
+    quotes: m.quote_count,
+    bookmarks: m.bookmark_count,
+  };
+}
 
 function tokenHeaders(app: Record<string, string>): Record<string, string> {
   return app.clientSecret ? { Authorization: basicAuth(app.clientId, app.clientSecret) } : {};
@@ -92,7 +120,33 @@ export const x: PlatformDefinition = {
     { key: "clientSecret", label: "OAuth 2.0 Client Secret", type: "password", help: "Confidential client（Web App）の場合に入力。Public client なら空欄" },
   ],
   accountFields: [],
-  settingFields: [],
+  settingFields: [
+    {
+      key: "quoteScanHours",
+      label: "引用候補の自動探索（ホームタイムライン）",
+      type: "select",
+      default: "off",
+      options: [
+        { value: "off", label: "しない（手動のみ）" },
+        { value: "12", label: "12時間ごと" },
+        { value: "24", label: "24時間ごと" },
+      ],
+      help: "フォロー中の投稿から、方向性が同じ投稿の引用案を下書きに作ります（投稿は必ず承認制）",
+    },
+    {
+      key: "quoteScanPosts",
+      label: "1回に読むタイムライン件数",
+      type: "select",
+      default: "30",
+      options: [
+        { value: "20", label: "20件" },
+        { value: "30", label: "30件" },
+        { value: "50", label: "50件" },
+        { value: "100", label: "100件" },
+      ],
+      help: "Owned Reads なら1件 $0.001（30件で約 $0.03）。このアカウントで作った開発者アプリ（アバター専用アプリ）で接続したときの料金です",
+    },
+  ],
   postFields: [],
   media: { image: true, video: true, maxCount: 4 },
   docs: [
@@ -155,6 +209,7 @@ export const x: PlatformDefinition = {
 
     const body: Record<string, unknown> = { text: post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text };
     if (mediaIds.length) body.media = { media_ids: mediaIds };
+    if (post.quotePostId) body.quote_tweet_id = post.quotePostId;
     const d = await requestJson("x", `${API}/2/tweets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -165,5 +220,68 @@ export const x: PlatformDefinition = {
     });
     const username = (ctx.credentials.username as string) || ctx.account.accountName.replace(/^@/, "");
     return { postId: d.data.id, url: `https://x.com/${username}/status/${d.data.id}` };
+  },
+  supportsQuote: true,
+  async fetchMetrics(ctx, posts) {
+    if (!posts.length) return {};
+    const uid = ctx.account.accountId;
+    const want = new Set(posts.map((p) => p.postId));
+    const oldest = Math.min(...posts.map((p) => p.publishedAt.getTime()));
+    const found: Record<string, PostMetrics | { error: string }> = {};
+    let token: string | undefined;
+    // 自分の投稿を新しい順に最大3ページ（300件）。対象がすべて見つかれば打ち切る（課金を抑える）
+    for (let page = 0; page < 3 && want.size; page++) {
+      const d = await requestJson(
+        "x",
+        withQuery(`${API}/2/users/${uid}/tweets`, {
+          max_results: "100",
+          "tweet.fields": "public_metrics,created_at",
+          start_time: new Date(oldest - 60_000).toISOString(),
+          pagination_token: token,
+        }),
+        { headers: bearer(ctx) }
+      ).catch(readError);
+      for (const t of (d.data ?? []) as { id: string; public_metrics?: Record<string, number> }[]) {
+        if (!want.has(t.id)) continue;
+        found[t.id] = toMetrics(t.public_metrics);
+        want.delete(t.id);
+      }
+      token = d.meta?.next_token;
+      if (!token) break;
+    }
+    for (const id of want) found[id] = { error: "自分の投稿一覧に見つかりません（削除済みの可能性）" };
+    return found;
+  },
+  async fetchTimeline(ctx, opts) {
+    const uid = ctx.account.accountId;
+    const d = await requestJson(
+      "x",
+      withQuery(`${API}/2/users/${uid}/timelines/reverse_chronological`, {
+        max_results: String(Math.min(Math.max(opts.maxResults, 1), 100)),
+        exclude: "replies",
+        since_id: opts.sinceId,
+        "tweet.fields": "created_at,public_metrics,author_id,lang,referenced_tweets",
+        expansions: "author_id",
+        "user.fields": "username,name",
+      }),
+      { headers: bearer(ctx) }
+    ).catch(readError);
+    const users = new Map<string, { username: string; name: string }>(((d.includes?.users ?? []) as { id: string; username: string; name: string }[]).map((u) => [u.id, u]));
+    return ((d.data ?? []) as { id: string; text: string; author_id?: string; created_at?: string; lang?: string; public_metrics?: Record<string, number>; referenced_tweets?: { type: string }[] }[]).map((t): TimelinePost => {
+      const u = t.author_id ? users.get(t.author_id) : undefined;
+      const ref = t.referenced_tweets?.[0]?.type;
+      return {
+        id: t.id,
+        text: t.text,
+        url: `https://x.com/${u?.username ?? "i/web"}/status/${t.id}`,
+        authorId: t.author_id,
+        authorUsername: u?.username,
+        authorName: u?.name,
+        createdAt: t.created_at,
+        lang: t.lang,
+        metrics: toMetrics(t.public_metrics),
+        kind: ref === "retweeted" ? "repost" : ref === "replied_to" ? "reply" : ref === "quoted" ? "quote" : "original",
+      };
+    });
   },
 };

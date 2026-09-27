@@ -12,6 +12,8 @@ import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
 import { generatePostText, reviewPost } from "./ai";
 import { createPosts, errorMessage } from "./publish";
+import { markApplied, recordHumanAction } from "./decision";
+import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -114,6 +116,9 @@ export async function runRule(ruleId: string): Promise<number> {
   const held: string[] = [];
   for (const [platform, accs] of byPlatform) {
     const { text, model } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt });
+    // Jev の判定（キーが無ければ null → 既存の流れのみ）。shadow は記録だけ、gate は自動投稿の可否に反映
+    const jev = await judgePost({ avatarId: rule.avatarId, platform, text, topic });
+    const jevMeta = jev ? { action: jev.action, confidence: jev.confidence, mode: jev.mode, model: jev.model, ...postGatePolicy(jev) } : undefined;
     let review: { verdict: string; summary: string; model?: string; error?: string } | undefined;
     if (action.mode === "auto") {
       // 自動投稿の前に「投稿前チェック」を通す。ok 以外、またはチェック自体の失敗は下書きに回す（安全側）
@@ -123,14 +128,25 @@ export async function runRule(ruleId: string): Promise<number> {
       } catch (e) {
         review = { verdict: "error", summary: "", error: errorMessage(e) };
       }
-      if (review.verdict === "ok") {
-        queued += (await createPosts({ accountIds: accs.map((a) => a.id), text, title: topic })).length;
+      const gateBlocks = jev?.mode === "gate" && !jevMeta!.publish;
+      if (jev?.mode === "gate") await markApplied(jev.eventId);
+      if (review.verdict === "ok" && !gateBlocks) {
+        const posted = await createPosts({
+          accountIds: accs.map((a) => a.id),
+          text,
+          title: topic,
+          category: "automation",
+          extraMetadata: { automationId: rule.id, model, review, ...(jevMeta ? { jev: jevMeta } : {}) },
+        });
+        if (jev && posted[0]) await linkDecision(jev.eventId, posted[0].id);
+        queued += posted.length;
         continue;
       }
-      held.push(`${getPlatform(platform)?.name ?? platform}: ${review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict}`);
+      const why = review.verdict !== "ok" ? (review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict) : jevMeta!.reason;
+      held.push(`${getPlatform(platform)?.name ?? platform}: ${why}`);
     }
-    for (const a of accs) {
-      await prisma.content.create({
+    for (const [i, a] of accs.entries()) {
+      const c = await prisma.content.create({
         data: {
           avatarId: a.avatarId,
           platform,
@@ -138,9 +154,10 @@ export async function runRule(ruleId: string): Promise<number> {
           content: text,
           status: "DRAFT",
           category: "automation",
-          metadata: { title: topic, media: [], options: {}, automationId: rule.id, model, ...(review ? { review } : {}) } as object,
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, model, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
         },
       });
+      if (jev && i === 0) await linkDecision(jev.eventId, c.id);
       drafted++;
     }
   }
@@ -225,4 +242,33 @@ export async function approveDraft(contentId: string, text?: string, scheduledAt
       scheduledPost: { create: { scheduledAt: scheduledAt ?? new Date(), status: "pending" } },
     },
   });
+  // 判定（Jev 等）と人の判断を突き合わせるために記録。本文を直して承認した場合は区別する
+  const edited = !!text?.trim() && text !== c.content;
+  await recordHumanAction(contentId, edited ? "approved_edited" : "approved");
+  await recordQuoteHumanAction(contentId, edited ? "approved_edited" : "approved");
+}
+
+/** 引用案の承認・却下を引用候補とその判定ログに反映する */
+async function recordQuoteHumanAction(contentId: string, action: "approved" | "approved_edited" | "rejected") {
+  const cands = await prisma.quoteCandidate.findMany({ where: { contentId }, select: { id: true } });
+  for (const c of cands) {
+    await recordHumanAction(c.id, action);
+    await prisma.quoteCandidate.update({
+      where: { id: c.id },
+      data: action === "rejected" ? { status: "rejected", contentId: null } : { status: "approved" },
+    });
+  }
+}
+
+/** 未送信の投稿を削除する。下書きの削除は「人が却下した」として判定ログに記録する */
+export async function discardContent(contentId: string) {
+  const c = await prisma.content.findUniqueOrThrow({ where: { id: contentId } });
+  if (c.status === "PUBLISHED" || c.status === "PUBLISHING") {
+    throw new ConfigError("送信済み・送信中の投稿は削除できません（各SNS側で削除してください）");
+  }
+  if (c.status === "DRAFT") {
+    await recordHumanAction(contentId, "rejected");
+    await recordQuoteHumanAction(contentId, "rejected");
+  }
+  await prisma.content.delete({ where: { id: contentId } });
 }

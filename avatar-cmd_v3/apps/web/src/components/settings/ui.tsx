@@ -45,6 +45,17 @@ export interface AccountInfo {
   lastError: string | null;
   settings: Record<string, unknown>;
   connected: boolean;
+  /** 接続に使った開発者アプリ: shared = 共通 / avatar = アバター専用 */
+  appScope: "shared" | "avatar";
+}
+
+/** アバター専用の開発者アプリ（共通の SNS連携アプリ設定を上書き） */
+export interface AvatarAppInfo {
+  avatarId: string;
+  platform: string;
+  values: Record<string, string>;
+  configured: Record<string, boolean>;
+  complete: boolean;
 }
 
 export const SUPPORT_LABEL: Record<PlatformInfo["support"], { label: string; cls: string }> = {
