@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, RefreshCw, Trash2, X } from "lucide-react";
+import { ExternalLink, ImagePlus, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
@@ -26,9 +26,11 @@ interface PostRow {
   publishedAt: string | null;
   attempts: number;
   lastError: string | null;
+  createdAt: string;
 }
 
 const STATUS: Record<string, { label: string; cls: string }> = {
+  DRAFT: { label: "承認待ち", cls: "bg-amber-500/15 text-amber-300" },
   SCHEDULED: { label: "予約中", cls: "bg-cyan-500/15 text-cyan-300" },
   PUBLISHING: { label: "送信中", cls: "bg-violet-500/15 text-violet-300" },
   PUBLISHED: { label: "投稿済み", cls: "bg-emerald-500/15 text-emerald-300" },
@@ -51,6 +53,9 @@ export default function PostsPage() {
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [topic, setTopic] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
 
   const loadPosts = useCallback(async () => {
     try {
@@ -128,6 +133,45 @@ export default function PostsPage() {
     }
   }
 
+  async function generate() {
+    const first = accounts.find((a) => selected.includes(a.id));
+    if (!first) return setNotice({ kind: "error", msg: "先に投稿先を選択してください（アバターのペルソナで生成します）" });
+    setGenerating(true);
+    try {
+      const r = await api<{ text: string; model: string }>("/api/ai/generate", {
+        method: "POST",
+        json: { avatarId: first.avatarId, topic, platform: first.platform },
+      });
+      setText(r.text);
+      if (!title) setTitle(topic);
+      setNotice({ kind: "ok", msg: `${r.model} で生成しました。内容を確認してから投稿してください` });
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function approve(id: string, newText?: string) {
+    try {
+      await api(`/api/posts/${id}/approve`, { method: "POST", json: { text: newText } });
+      setEditing(null);
+      setNotice({ kind: "ok", msg: "承認して送信キューに追加しました" });
+      loadPosts();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    }
+  }
+  async function saveDraft(id: string, newText: string) {
+    try {
+      await api(`/api/posts/${id}`, { method: "PATCH", json: { text: newText } });
+      setEditing(null);
+      loadPosts();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    }
+  }
+
   async function retry(id: string) {
     try {
       await api(`/api/posts/${id}/retry`, { method: "POST" });
@@ -191,6 +235,14 @@ export default function PostsPage() {
               </Card>
 
               <Card className="space-y-4">
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Field def={{ key: "topic", label: "AIで下書き（トピック）", placeholder: "例: 朝のルーティン" }} value={topic} onChange={setTopic} />
+                  </div>
+                  <Button variant="ghost" onClick={generate} disabled={generating || !topic.trim() || !selected.length}>
+                    <Sparkles className="inline h-3.5 w-3.5" /> {generating ? "生成中…" : "生成"}
+                  </Button>
+                </div>
                 {needsTitle && <Field def={{ key: "title", label: "タイトル（記事・動画・Reddit 用）" }} value={title} onChange={setTitle} />}
                 <label className="block">
                   <span className="mb-1 block text-xs text-white/60">本文（Markdown 可: WordPress / note / Zenn / Medium）</span>
@@ -287,10 +339,19 @@ export default function PostsPage() {
                         <span className="text-white/40">{p.accountName}</span>
                         <span className="flex-1" />
                         <span className="text-white/30">
-                          {new Date(p.publishedAt ?? p.scheduledAt ?? Date.now()).toLocaleString("ja-JP")}
+                          {new Date(p.publishedAt ?? p.scheduledAt ?? p.createdAt).toLocaleString("ja-JP")}
                         </span>
                       </div>
-                      <p className="mt-2 line-clamp-2 whitespace-pre-wrap text-xs text-white/70">{p.text}</p>
+                      {editing?.id === p.id ? (
+                        <textarea
+                          value={editing.text}
+                          onChange={(e) => setEditing({ id: p.id, text: e.target.value })}
+                          rows={6}
+                          className={`${inputCls} mt-2 text-xs`}
+                        />
+                      ) : (
+                        <p className={`mt-2 whitespace-pre-wrap text-xs text-white/70 ${p.status === "DRAFT" ? "" : "line-clamp-2"}`}>{p.text}</p>
+                      )}
                       {p.note && <p className="mt-1 text-[11px] text-amber-300/80">{p.note}</p>}
                       {p.lastError && p.status !== "PUBLISHED" && <p className="mt-1 break-all text-[11px] text-red-300">{p.lastError}</p>}
                       <div className="mt-2 flex gap-3 text-xs">
@@ -299,12 +360,35 @@ export default function PostsPage() {
                             開く <ExternalLink className="h-3 w-3" />
                           </a>
                         )}
+                        {p.status === "DRAFT" &&
+                          (editing?.id === p.id ? (
+                            <>
+                              <button onClick={() => approve(p.id, editing.text)} className="text-emerald-300">
+                                保存して承認
+                              </button>
+                              <button onClick={() => saveDraft(p.id, editing.text)} className="text-cyan-300">
+                                保存
+                              </button>
+                              <button onClick={() => setEditing(null)} className="text-white/50">
+                                キャンセル
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button onClick={() => approve(p.id)} className="text-emerald-300">
+                                承認して投稿
+                              </button>
+                              <button onClick={() => setEditing({ id: p.id, text: p.text })} className="text-cyan-300">
+                                編集
+                              </button>
+                            </>
+                          ))}
                         {p.status === "FAILED" && (
                           <button onClick={() => retry(p.id)} className="text-cyan-300">
                             再送
                           </button>
                         )}
-                        {(p.status === "FAILED" || p.status === "SCHEDULED") && (
+                        {(p.status === "FAILED" || p.status === "SCHEDULED" || p.status === "DRAFT") && (
                           <button onClick={() => remove(p.id)} className="inline-flex items-center gap-1 text-red-300">
                             <Trash2 className="h-3 w-3" /> 削除
                           </button>

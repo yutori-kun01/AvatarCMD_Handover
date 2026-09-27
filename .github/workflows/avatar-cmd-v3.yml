@@ -1,0 +1,78 @@
+name: avatar-cmd v3
+
+on:
+  push:
+    branches: [main]
+    paths: ["avatar-cmd_v3/**", ".github/workflows/avatar-cmd-v3.yml"]
+  pull_request:
+    paths: ["avatar-cmd_v3/**", ".github/workflows/avatar-cmd-v3.yml"]
+
+defaults:
+  run:
+    working-directory: avatar-cmd_v3
+
+jobs:
+  check:
+    name: typecheck / test / build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: avatar_cmd
+          POSTGRES_USER: avatar
+          POSTGRES_PASSWORD: ci-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U avatar -d avatar_cmd"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://avatar:ci-password@localhost:5432/avatar_cmd?schema=public
+      ENCRYPTION_KEY: ci-only-encryption-key-0123456789abcdef
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: avatar-cmd_v3/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: avatar-cmd_v3/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma generate & migrate
+        run: |
+          pnpm --filter @avatar-cmd/db exec prisma generate
+          pnpm --filter @avatar-cmd/db exec prisma migrate deploy
+      - name: Typecheck
+        run: |
+          for d in packages/db packages/core packages/chrome-empire packages/integrations apps/worker apps/web; do
+            echo "::group::$d"; (cd "$d" && npx tsc --noEmit -p .); echo "::endgroup::"
+          done
+      - name: Test
+        run: pnpm test
+      - name: Build (Next.js)
+        run: pnpm --filter @avatar-cmd/web build
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: avatar-cmd_v3
+          target: worker
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: avatar-cmd_v3
+          target: web
+          push: false
+          cache-from: type=gha

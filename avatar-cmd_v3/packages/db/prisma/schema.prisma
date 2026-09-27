@@ -445,6 +445,7 @@ model AutomationRule {
   // Stats
   executionCount Int    @default(0) @map("execution_count")
   lastExecutedAt DateTime? @map("last_executed_at")
+  nextRunAt      DateTime? @map("next_run_at") // v3.1: worker が実行する次回時刻
   lastError      String?  @map("last_error")
 
   avatar       Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
@@ -452,6 +453,7 @@ model AutomationRule {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  @@index([isActive, nextRunAt])
   @@map("automation_rules")
 }
 

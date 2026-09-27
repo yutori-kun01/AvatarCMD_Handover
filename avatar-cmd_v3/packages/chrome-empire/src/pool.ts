@@ -372,7 +372,8 @@ export class ChromeEmpire {
 
   private async saveSessionState(instance: ChromeInstance): Promise<void> {
     try {
-      const statePath = this.getStorageStatePath(instance.profile);
+      // 初回は保存先ファイルが無いので、存在確認付きの getStorageStatePath ではなく固定パスに書く
+      const statePath = `${instance.profile.storageDir}/session-state.json`;
       const state = await instance.context.storageState();
       const { writeFileSync } = require("fs") as typeof import("fs");
       writeFileSync(statePath, JSON.stringify(state), "utf-8");

@@ -39,7 +39,7 @@ export async function generatePostContent(options: GeneratePostOptions): Promise
     const prompt = `以下のトピックについて、SNS（X / Twitterなど）で発信する投稿を1件作成してください。\n\nトピック: ${topic}`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-3.8-flash", // gemini-2.5-flash は 2026-10-16 に提供終了
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,

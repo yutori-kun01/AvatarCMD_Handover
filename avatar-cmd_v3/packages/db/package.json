@@ -11,12 +11,14 @@
     "db:studio": "node --env-file-if-exists=../../.env ./node_modules/prisma/build/index.js studio",
     "db:seed": "tsx --env-file-if-exists=../../.env src/seed.ts",
     "clean": "rimraf node_modules .prisma",
-    "db:deploy": "node --env-file-if-exists=../../.env ./node_modules/prisma/build/index.js migrate deploy"
+    "db:deploy": "node --env-file-if-exists=../../.env ./node_modules/prisma/build/index.js migrate deploy",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1"
   },
   "devDependencies": {
+    "@types/node": "^22.20.4",
     "prisma": "^6.4.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.3"

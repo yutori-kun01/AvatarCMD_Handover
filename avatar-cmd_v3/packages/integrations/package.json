@@ -11,12 +11,13 @@
   "dependencies": {
     "@atproto/api": "^0.21.0",
     "@avatar-cmd/core": "workspace:*",
-    "@avatar-cmd/db": "workspace:*"
+    "@avatar-cmd/db": "workspace:*",
+    "@google/genai": "^2.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.11",
-    "typescript": "^5.7.3",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3"
   },
   "exports": {
     ".": "./src/index.ts",

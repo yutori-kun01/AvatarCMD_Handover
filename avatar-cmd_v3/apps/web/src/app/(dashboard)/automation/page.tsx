@@ -1,95 +1,291 @@
 "use client";
-import { useState } from "react";
-import { Sidebar } from "@/components/dashboard/sidebar";
-import { Header } from "@/components/dashboard/header";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { Play, Trash2 } from "lucide-react";
+import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
+import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 
-const automationRules = [
-  { id: "r1", name: "ゴールデンタイム自動投稿", description: "19-21時に予約済みコンテンツを自動投稿", trigger: "schedule", frequency: "daily", avatarIds: ["1", "2", "4"], platforms: ["x", "note"], enabled: true, lastRun: "10分前", successRate: 98.5 },
-  { id: "r2", name: "トレンドキーワード収集", description: "X/TikTokのトレンドを1時間ごとにスキャン", trigger: "interval", frequency: "hourly", avatarIds: ["4"], platforms: ["x", "tiktok"], enabled: true, lastRun: "24分前", successRate: 99.2 },
-  { id: "r3", name: "エンゲージメント自動返信", description: "条件に合うリプライに自動でいいね・返信", trigger: "event", frequency: "realtime", avatarIds: ["1", "3"], platforms: ["x", "instagram"], enabled: true, lastRun: "3分前", successRate: 94.8 },
-  { id: "r4", name: "メトリクス定期収集", description: "全アバターの各SNSメトリクスを6時間ごと収集", trigger: "interval", frequency: "6hours", avatarIds: ["1", "2", "3", "4", "5"], platforms: ["x", "note", "zenn", "instagram", "youtube"], enabled: true, lastRun: "2時間前", successRate: 100 },
-  { id: "r5", name: "改善サイクル自動実行", description: "毎週月曜にImprovementEngineを実行し提案生成", trigger: "schedule", frequency: "weekly", avatarIds: ["1", "2", "3", "4", "5"], platforms: [], enabled: true, lastRun: "3日前", successRate: 100 },
-  { id: "r6", name: "セッション自動更新", description: "Browser-onlyプラットフォームのセッション期限前に自動再ログイン", trigger: "threshold", frequency: "as_needed", avatarIds: ["1", "3", "5"], platforms: ["note", "tiktok", "zenn"], enabled: true, lastRun: "1日前", successRate: 95.0 },
-  { id: "r7", name: "A/Bテスト結果分析", description: "48時間後にバリアント比較して勝者を判定", trigger: "event", frequency: "on_complete", avatarIds: ["1", "2"], platforms: ["x"], enabled: false, lastRun: "5日前", successRate: 100 },
-];
+interface Rule {
+  id: string;
+  avatarId: string;
+  avatarName: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  trigger: { type: "daily"; times: string[]; timezone?: string } | { type: "interval"; hours: number };
+  action: { accountIds: string[]; topics: string[]; mode: "draft" | "auto"; extraPrompt?: string };
+  executionCount: number;
+  lastExecutedAt: string | null;
+  nextRunAt: string | null;
+  lastError: string | null;
+}
 
-const avatarNames: Record<string, string> = { "1": "Haru", "2": "Kai", "3": "Mio", "4": "Ren", "5": "Sora" };
+interface Draft {
+  id?: string;
+  avatarId: string;
+  name: string;
+  triggerType: "daily" | "interval";
+  times: string;
+  hours: string;
+  accountIds: string[];
+  topics: string;
+  mode: "draft" | "auto";
+  extraPrompt: string;
+}
+
+function toDraft(r: Rule): Draft {
+  return {
+    id: r.id,
+    avatarId: r.avatarId,
+    name: r.name,
+    triggerType: r.trigger.type,
+    times: r.trigger.type === "daily" ? r.trigger.times.join(", ") : "09:00",
+    hours: r.trigger.type === "interval" ? String(r.trigger.hours) : "6",
+    accountIds: r.action.accountIds,
+    topics: r.action.topics.join("\n"),
+    mode: r.action.mode,
+    extraPrompt: r.action.extraPrompt ?? "",
+  };
+}
+
+function scheduleLabel(t: Rule["trigger"]) {
+  return t.type === "daily" ? `毎日 ${t.times.join(" / ")}（${t.timezone ?? "Asia/Tokyo"}）` : `${t.hours}時間ごと`;
+}
 
 export default function AutomationPage() {
-  const [rules, setRules] = useState(automationRules);
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [avatars, setAvatars] = useState<{ id: string; name: string }[]>([]);
+  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
+  const [geminiReady, setGeminiReady] = useState(true);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
 
-  const toggleRule = (id: string) => {
-    setRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
+  const load = useCallback(async () => {
+    const [r, i] = await Promise.all([
+      api<{ rules: Rule[] }>("/api/automations"),
+      api<{ avatars: { id: string; name: string }[]; accounts: AccountInfo[]; platforms: PlatformInfo[]; system: { geminiApiKey: string } }>("/api/integrations"),
+    ]);
+    setRules(r.rules);
+    setAvatars(i.avatars);
+    setAccounts(i.accounts);
+    setPlatforms(i.platforms);
+    setGeminiReady(!!i.system.geminiApiKey);
+  }, []);
+  useEffect(() => {
+    load().catch((e) => setNotice({ kind: "error", msg: e.message }));
+  }, [load]);
+
+  const byId = useMemo(() => Object.fromEntries(platforms.map((p) => [p.id, p])), [platforms]);
+  const accountName = (id: string) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? `${byId[a.platform]?.icon ?? ""} ${a.accountName}` : "(削除済み)";
   };
 
-  const triggerLabel = (t: string) => t === "schedule" ? "⏰ スケジュール" : t === "interval" ? "🔁 インターバル" : t === "event" ? "⚡ イベント" : "📊 閾値";
-  const triggerColor = (t: string) => t === "schedule" ? "#3b82f6" : t === "interval" ? "#22d3ee" : t === "event" ? "#f59e0b" : "#a78bfa";
+  async function save() {
+    if (!draft) return;
+    setBusy("save");
+    const body = {
+      avatarId: draft.avatarId,
+      name: draft.name,
+      trigger:
+        draft.triggerType === "daily"
+          ? { type: "daily", times: draft.times.split(/[,、\s]+/).filter(Boolean), timezone: "Asia/Tokyo" }
+          : { type: "interval", hours: Number(draft.hours) },
+      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, extraPrompt: draft.extraPrompt },
+    };
+    try {
+      if (draft.id) await api(`/api/automations/${draft.id}`, { method: "PATCH", json: body });
+      else await api("/api/automations", { method: "POST", json: body });
+      setNotice({ kind: "ok", msg: "ルールを保存しました" });
+      setDraft(null);
+      load();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function act(id: string, fn: () => Promise<unknown>, okMsg: string) {
+    setBusy(id);
+    try {
+      await fn();
+      setNotice({ kind: "ok", msg: okMsg });
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setBusy(null);
+      load();
+    }
+  }
+
+  const avatarAccounts = draft ? accounts.filter((a) => a.avatarId === draft.avatarId && byId[a.platform]?.support !== "manual") : [];
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#0b0c0f", color: "#fff" }}>
-      <Sidebar />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <Header />
-        <main style={{ flex: 1, padding: "24px", overflow: "auto" }}>
-          {/* Summary */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
-            {[
-              { label: "総ルール数", value: rules.length, color: "#fff" },
-              { label: "有効", value: rules.filter(r => r.enabled).length, color: "#22c55e" },
-              { label: "無効", value: rules.filter(r => !r.enabled).length, color: "#ef4444" },
-              { label: "平均成功率", value: `${(rules.reduce((s, r) => s + r.successRate, 0) / rules.length).toFixed(1)}%`, color: "#22d3ee" },
-            ].map(s => (
-              <div key={s.label} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", textAlign: "center" }}>
-                <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
+    <Shell title="自動化ルール" description="AI で投稿文を生成し、下書き作成または自動投稿">
+      {notice && (
+        <Notice kind={notice.kind} onClose={() => setNotice(null)}>
+          {notice.msg}
+        </Notice>
+      )}
+      {!geminiReady && (
+        <Notice kind="error">
+          Gemini API キーが未設定のため、ルールを実行すると失敗します。{" "}
+          <Link href="/settings?tab=system" className="underline">
+            設定 → システム
+          </Link>{" "}
+          で入力してください。
+        </Notice>
+      )}
 
-          {/* Rules List */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {rules.map(rule => (
-              <div key={rule.id} style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${rule.enabled ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)"}`, borderRadius: 14, padding: 20, opacity: rule.enabled ? 1 : 0.6, transition: "all 0.2s" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                      <span style={{ fontWeight: 600, fontSize: 15 }}>{rule.name}</span>
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: `${triggerColor(rule.trigger)}15`, color: triggerColor(rule.trigger), border: `1px solid ${triggerColor(rule.trigger)}30` }}>{triggerLabel(rule.trigger)}</span>
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.4)" }}>{rule.frequency}</span>
-                    </div>
-                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>{rule.description}</div>
-                    <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
-                      <span style={{ color: "rgba(255,255,255,0.4)" }}>
-                        アバター: {rule.avatarIds.map(id => avatarNames[id]).join(", ")}
-                      </span>
-                      {rule.platforms.length > 0 && (
-                        <span style={{ color: "rgba(255,255,255,0.4)" }}>
-                          SNS: {rule.platforms.join(", ")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
-                    {/* Toggle */}
-                    <button onClick={() => toggleRule(rule.id)} style={{ width: 44, height: 24, borderRadius: 12, border: "none", cursor: "pointer", background: rule.enabled ? "#22c55e" : "rgba(255,255,255,0.15)", position: "relative", transition: "background 0.2s" }}>
-                      <span style={{ position: "absolute", width: 18, height: 18, borderRadius: "50%", background: "#fff", top: 3, left: rule.enabled ? 23 : 3, transition: "left 0.2s" }} />
+      {draft ? (
+        <Card className="mb-6 space-y-4">
+          <h3 className="text-sm font-semibold">{draft.id ? "ルールを編集" : "新しいルール"}</h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field def={{ key: "name", label: "ルール名", required: true, placeholder: "朝の投稿" }} value={draft.name} onChange={(v) => setDraft({ ...draft, name: v })} />
+            <label className="block">
+              <span className="mb-1 block text-xs text-white/60">アバター</span>
+              <select
+                value={draft.avatarId}
+                disabled={!!draft.id}
+                onChange={(e) => setDraft({ ...draft, avatarId: e.target.value, accountIds: [] })}
+                className={inputCls}
+              >
+                {avatars.map((a) => (
+                  <option key={a.id} value={a.id} className="bg-[#111]">
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Field
+              def={{ key: "t", label: "実行タイミング", type: "select", options: [{ value: "daily", label: "毎日決まった時刻" }, { value: "interval", label: "一定間隔" }] }}
+              value={draft.triggerType}
+              onChange={(v) => setDraft({ ...draft, triggerType: v as Draft["triggerType"] })}
+            />
+            {draft.triggerType === "daily" ? (
+              <Field def={{ key: "times", label: "時刻（日本時間・カンマ区切り）", placeholder: "09:00, 19:00" }} value={draft.times} onChange={(v) => setDraft({ ...draft, times: v })} />
+            ) : (
+              <Field def={{ key: "hours", label: "間隔（時間）", placeholder: "6" }} value={draft.hours} onChange={(v) => setDraft({ ...draft, hours: v })} />
+            )}
+            <Field
+              def={{ key: "mode", label: "生成後の動作", type: "select", options: [{ value: "draft", label: "下書き（承認してから投稿）" }, { value: "auto", label: "そのまま自動投稿" }] }}
+              value={draft.mode}
+              onChange={(v) => setDraft({ ...draft, mode: v as Draft["mode"] })}
+            />
+          </div>
+          <div>
+            <div className="mb-1 text-xs text-white/60">投稿先アカウント</div>
+            {avatarAccounts.length === 0 ? (
+              <p className="text-xs text-amber-300">
+                このアバターには投稿できるアカウントがありません。
+                <Link href="/settings?tab=accounts" className="underline">
+                  アカウントを接続
+                </Link>
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {avatarAccounts.map((a) => {
+                  const on = draft.accountIds.includes(a.id);
+                  return (
+                    <button
+                      key={a.id}
+                      onClick={() => setDraft({ ...draft, accountIds: on ? draft.accountIds.filter((x) => x !== a.id) : [...draft.accountIds, a.id] })}
+                      className={`rounded-lg border px-3 py-1.5 text-xs ${on ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-200" : "border-white/10 text-white/60"}`}
+                    >
+                      {byId[a.platform]?.icon} {a.accountName}
                     </button>
-                    <div style={{ display: "flex", gap: 12, fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
-                      <span>最終: {rule.lastRun}</span>
-                      <span style={{ color: rule.successRate > 97 ? "#22c55e" : rule.successRate > 90 ? "#f59e0b" : "#ef4444" }}>成功率: {rule.successRate}%</span>
-                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <Field
+            def={{ key: "topics", label: "トピック（1行に1つ。実行ごとに順番に使います）", type: "textarea", placeholder: "朝のルーティン\n集中力を保つコツ" }}
+            value={draft.topics}
+            onChange={(v) => setDraft({ ...draft, topics: v })}
+          />
+          <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
+          <div className="flex gap-2">
+            <Button onClick={save} disabled={busy === "save" || !draft.name.trim()}>
+              {busy === "save" ? "保存中…" : "保存"}
+            </Button>
+            <Button variant="ghost" onClick={() => setDraft(null)}>
+              キャンセル
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Button
+          className="mb-6"
+          disabled={!avatars.length}
+          onClick={() =>
+            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", extraPrompt: "" })
+          }
+        >
+          + 新しいルール
+        </Button>
+      )}
+
+      {rules.length === 0 ? (
+        <EmptyState>自動化ルールはまだありません。「新しいルール」から作成してください。</EmptyState>
+      ) : (
+        <div className="space-y-3">
+          {rules.map((r) => (
+            <Card key={r.id} className={r.isActive ? "" : "opacity-60"}>
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{r.name}</span>
+                    <Badge className="bg-white/5 text-white/50">{r.avatarName}</Badge>
+                    <Badge className={r.action.mode === "auto" ? "bg-violet-500/15 text-violet-300" : "bg-cyan-500/15 text-cyan-300"}>
+                      {r.action.mode === "auto" ? "自動投稿" : "下書き→承認"}
+                    </Badge>
                   </div>
+                  <div className="mt-1 text-xs text-white/50">{scheduleLabel(r.trigger)}</div>
+                  <div className="mt-1 text-xs text-white/50">投稿先: {r.action.accountIds.map(accountName).join("、")}</div>
+                  <div className="mt-1 text-xs text-white/40">トピック: {r.action.topics.join(" / ")}</div>
+                  <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-white/35">
+                    <span>実行 {r.executionCount}回</span>
+                    <span>最終 {relTime(r.lastExecutedAt)}</span>
+                    <span>次回 {r.isActive && r.nextRunAt ? new Date(r.nextRunAt).toLocaleString("ja-JP") : "—"}</span>
+                  </div>
+                  {r.lastError && <p className="mt-2 break-all text-xs text-red-300">直近のエラー: {r.lastError}</p>}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { isActive: !r.isActive } }), r.isActive ? "停止しました" : "再開しました")}
+                    className={`relative h-6 w-11 rounded-full transition ${r.isActive ? "bg-emerald-500" : "bg-white/15"}`}
+                    title={r.isActive ? "停止" : "再開"}
+                  >
+                    <span className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-white transition-all ${r.isActive ? "left-[23px]" : "left-[3px]"}`} />
+                  </button>
+                  <Button
+                    variant="ghost"
+                    disabled={busy === r.id}
+                    onClick={() => act(r.id, () => api(`/api/automations/${r.id}/run`, { method: "POST" }), "実行しました（投稿ページで結果を確認できます）")}
+                  >
+                    <Play className="inline h-3 w-3" /> {busy === r.id ? "実行中…" : "今すぐ実行"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setDraft(toDraft(r))}>
+                    編集
+                  </Button>
+                  <Button
+                    variant="danger"
+                    onClick={() => confirm(`「${r.name}」を削除しますか？`) && act(r.id, () => api(`/api/automations/${r.id}`, { method: "DELETE" }), "削除しました")}
+                  >
+                    <Trash2 className="inline h-3 w-3" />
+                  </Button>
                 </div>
               </div>
-            ))}
-          </div>
-
-          {/* Add Rule Button */}
-          <button style={{ width: "100%", marginTop: 16, padding: "16px", borderRadius: 14, border: "1px dashed rgba(255,255,255,0.15)", background: "transparent", cursor: "pointer", color: "rgba(255,255,255,0.3)", fontSize: 14, fontWeight: 500 }}>
-            + 新しい自動化ルールを追加
-          </button>
-        </main>
-      </div>
-    </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </Shell>
   );
 }

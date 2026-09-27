@@ -9,6 +9,7 @@ export interface SystemInfo {
   metaGraphVersion: string;
   linkedinVersion: string;
   geminiApiKey: string;
+  geminiModel: string;
 }
 
 export function SystemSection({ system, onChanged }: { system: SystemInfo; onChanged: (msg: string, ok: boolean) => void }) {
@@ -17,6 +18,7 @@ export function SystemSection({ system, onChanged }: { system: SystemInfo; onCha
     metaGraphVersion: system.metaGraphVersion,
     linkedinVersion: system.linkedinVersion,
     geminiApiKey: "",
+    geminiModel: system.geminiModel,
   });
   const [busy, setBusy] = useState(false);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -86,6 +88,11 @@ export function SystemSection({ system, onChanged }: { system: SystemInfo; onCha
           value={v.geminiApiKey}
           configured={!!system.geminiApiKey}
           onChange={(x) => setV({ ...v, geminiApiKey: x })}
+        />
+        <Field
+          def={{ key: "model", label: "モデル", placeholder: "gemini-3.8-flash", help: "ai.google.dev/gemini-api/docs/models の最新モデル名。gemini-2.5-flash は 2026年10月16日に提供終了" }}
+          value={v.geminiModel}
+          onChange={(x) => setV({ ...v, geminiModel: x })}
         />
       </Card>
 

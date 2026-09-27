@@ -29,6 +29,8 @@ export const SETTING_KEYS = {
   metaGraphVersion: "meta_graph_version",
   linkedinVersion: "linkedin_version",
   geminiApiKey: "gemini_api_key",
+  geminiModel: "gemini_model",
+  workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;
 

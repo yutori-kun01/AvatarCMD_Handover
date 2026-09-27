@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { PLATFORM_LIST } from "@avatar-cmd/integrations";
 import {
-  describePlatformApp, ensureDefaultAvatar, getSetting, getSystemConfig, listAccounts, mask, redirectUriFor, SETTING_KEYS,
+  DEFAULT_GEMINI_MODEL, describePlatformApp, ensureDefaultAvatar, getSetting, getSystemConfig, listAccounts, mask, redirectUriFor, SETTING_KEYS,
 } from "@avatar-cmd/integrations/server";
 import { prisma } from "@avatar-cmd/db";
 import { route } from "@/lib/api";
@@ -14,6 +14,7 @@ export const GET = route(async () => {
   await ensureDefaultAvatar();
   const system = await getSystemConfig();
   const gemini = await getSetting(SETTING_KEYS.geminiApiKey);
+  const geminiModelName = (await getSetting(SETTING_KEYS.geminiModel)) || DEFAULT_GEMINI_MODEL;
   const platforms = await Promise.all(
     PLATFORM_LIST.map(async (p) => ({
       id: p.id,
@@ -35,7 +36,7 @@ export const GET = route(async () => {
   );
   const avatars = await prisma.avatar.findMany({ select: { id: true, name: true }, orderBy: { createdAt: "asc" } });
   return NextResponse.json({
-    system: { ...system, geminiApiKey: gemini ? mask(gemini) : "", appUrlFromEnv: process.env.APP_URL ?? null },
+    system: { ...system, geminiApiKey: gemini ? mask(gemini) : "", geminiModel: geminiModelName, appUrlFromEnv: process.env.APP_URL ?? null },
     platforms,
     avatars,
     accounts: await listAccounts(),

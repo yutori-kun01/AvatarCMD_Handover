@@ -22,6 +22,11 @@ export const PUT = route(async (req: Request) => {
     if (v && !/^\d{6}$/.test(v)) return NextResponse.json({ error: "LinkedIn-Version は YYYYMM の形式で入力してください" }, { status: 400 });
     await setSetting(SETTING_KEYS.linkedinVersion, v || null);
   }
+  if (b.geminiModel !== undefined) {
+    const v = b.geminiModel.trim();
+    if (v && !/^[a-z0-9.\-]+$/i.test(v)) return NextResponse.json({ error: "モデル名が不正です" }, { status: 400 });
+    await setSetting(SETTING_KEYS.geminiModel, v || null);
+  }
   if (b.geminiApiKey !== undefined && b.geminiApiKey.trim() !== "") {
     await setSetting(SETTING_KEYS.geminiApiKey, b.geminiApiKey.trim() === "-" ? null : b.geminiApiKey.trim());
   }

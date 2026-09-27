@@ -5,7 +5,7 @@
 // 「今すぐ投稿」もキュー経由（scheduledAt=現在時刻）で処理される。
 
 import { prisma } from "@avatar-cmd/db";
-import { ensureDefaultAvatar, processDuePosts } from "@avatar-cmd/integrations/server";
+import { ensureDefaultAvatar, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -15,6 +15,10 @@ let timer: NodeJS.Timeout | undefined;
 
 async function tick() {
   try {
+    // ダッシュボードの「worker 稼働中」表示用
+    await setSetting(SETTING_KEYS.workerHeartbeat, new Date().toISOString());
+    const r = await processDueRules();
+    if (r) console.log(`[worker] ${new Date().toISOString()} ran ${r} automation rule(s)`);
     const n = await processDuePosts({ limit: 10, maxRetries: MAX_RETRIES });
     if (n) console.log(`[worker] ${new Date().toISOString()} processed ${n} post(s)`);
   } catch (e) {

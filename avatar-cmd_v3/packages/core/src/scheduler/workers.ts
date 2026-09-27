@@ -1,10 +1,9 @@
 import { Job } from "./orchestrator";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@avatar-cmd/db";
 import { readAvatarFile } from "../persona/soul-engine";
 import { generatePostContent } from "../ai/router";
 // import cheerio for future HTML parsing, but for now fallback to fetch text
 
-const prisma = new PrismaClient();
 
 export async function processJob(job: Job): Promise<void> {
   const { type, payload } = job;
@@ -59,7 +58,7 @@ async function handleGeneratePost(payload: any) {
 
   let contextExt = "";
   if (recentKnowledge.length > 0) {
-    contextExt = "\n\n【最近学習した知識（参考）】\n" + recentKnowledge.map(k => `・${k.title}: ${k.content ? k.content.slice(0, 100) : k.sourceUrl}`).join("\n");
+    contextExt = "\n\n【最近学習した知識（参考）】\n" + recentKnowledge.map((k: { title: string; content: string | null; sourceUrl: string | null }) => `・${k.title}: ${k.content ? k.content.slice(0, 100) : k.sourceUrl}`).join("\n");
   }
 
   const fullPromptLength = (soulContent + contextExt).length;
@@ -86,7 +85,7 @@ async function handleGeneratePost(payload: any) {
       category: "content",
       description: `新しい下書きを作成しました: ${generatedText.slice(0, 40)}...`,
       metadata: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
         promptChars: fullPromptLength,
         outputChars: generatedText.length,
         topic: payload.data?.topic || "日々の気づき",
