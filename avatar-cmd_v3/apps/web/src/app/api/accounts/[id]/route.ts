@@ -7,8 +7,10 @@ export const runtime = "nodejs";
 
 export const PATCH = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const { settings, isActive } = (await req.json()) as { settings?: Record<string, unknown>; isActive?: boolean };
-  await updateAccountSettings(id, settings ?? {}, isActive);
+  const { settings, isActive, clearError } = (await req.json()) as { settings?: Record<string, unknown>; isActive?: boolean; clearError?: boolean };
+  // 「直近のエラー」を確認済みにする（履歴はアクティビティに残る）
+  if (clearError) await prisma.snsAccount.update({ where: { id }, data: { lastError: null } });
+  if (settings || isActive !== undefined) await updateAccountSettings(id, settings ?? {}, isActive);
   return NextResponse.json({ ok: true });
 });
 

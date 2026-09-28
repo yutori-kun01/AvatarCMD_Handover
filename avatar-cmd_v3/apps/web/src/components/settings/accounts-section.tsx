@@ -5,7 +5,7 @@
 //   ・アカウントごとの認証情報の確認（伏せ字）・今すぐ更新・差し替え
 import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, KeyRound, Link2, RefreshCw, Trash2 } from "lucide-react";
-import { api, Badge, Button, Card, CopyText, Field, inputCls, LinkButton, SUPPORT_LABEL, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "./ui";
+import { api, Badge, Button, Card, CopyText, Field, inputCls, LastError, LinkButton, SUPPORT_LABEL, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "./ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
 function ConnectForm({ p, avatarId, onDone }: { p: PlatformInfo; avatarId: string; onDone: (msg: string, ok: boolean) => void }) {
@@ -267,6 +267,14 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
       setBusy(false);
     }
   }
+  async function dismissError() {
+    try {
+      await api(`/api/accounts/${a.id}`, { method: "PATCH", json: { clearError: true } });
+      onChanged(`${a.accountName} のエラー表示を消しました`, true);
+    } catch (e) {
+      onChanged((e as Error).message, false);
+    }
+  }
   async function remove() {
     if (!confirm(`${a.accountName} の接続を削除しますか？（保存された認証情報も削除されます）`)) return;
     try {
@@ -297,7 +305,7 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
           <Badge className="bg-white/5 text-white/40">期限 {expiry.toLocaleString("ja-JP")}</Badge>
         ) : null}
       </div>
-      {a.lastError && <p className="mt-2 break-all text-xs text-red-300">直近のエラー: {a.lastError}</p>}
+      {a.lastError && <LastError message={a.lastError} onDismiss={() => dismissError()} />}
       {(p?.settingFields.length ?? 0) > 0 && (
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           {p!.settingFields.map((f) => (

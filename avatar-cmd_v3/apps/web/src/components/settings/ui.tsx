@@ -213,3 +213,21 @@ export async function api<T = any>(url: string, init?: RequestInit & { json?: un
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data as T;
 }
+
+/** 「直近のエラー」表示。確認済みにすると表示を消す（履歴はアクティビティに残る） */
+export function LastError({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
+  return (
+    <div className="mt-2 flex items-start gap-2">
+      <p className="min-w-0 flex-1 break-all text-xs text-red-300">直近のエラー: {message}</p>
+      {onDismiss && (
+        <button
+          onClick={onDismiss}
+          title="確認済みにして表示を消す（履歴はアクティビティに残ります）"
+          className="shrink-0 rounded border border-white/10 px-2 py-0.5 text-[11px] text-white/50 hover:bg-white/[0.05] hover:text-white"
+        >
+          確認済み ×
+        </button>
+      )}
+    </div>
+  );
+}
