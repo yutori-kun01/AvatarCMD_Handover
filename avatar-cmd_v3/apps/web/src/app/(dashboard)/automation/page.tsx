@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { BarChart3, Play, Trash2 } from "lucide-react";
 import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
-import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { api, Badge, Button, Card, Field, inputCls, LastError, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
 interface Rule {
@@ -319,7 +319,12 @@ export default function AutomationPage() {
                     <span>最終 {relTime(r.lastExecutedAt)}</span>
                     <span>次回 {r.isActive && r.nextRunAt ? new Date(r.nextRunAt).toLocaleString("ja-JP") : "—"}</span>
                   </div>
-                  {r.lastError && <p className="mt-2 break-all text-xs text-red-300">直近のエラー: {r.lastError}</p>}
+                  {r.lastError && (
+                    <LastError
+                      message={r.lastError}
+                      onDismiss={() => act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { clearError: true } }), "エラー表示を消しました")}
+                    />
+                  )}
                   {r.performance && <PerformanceBlock p={r.performance} />}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
