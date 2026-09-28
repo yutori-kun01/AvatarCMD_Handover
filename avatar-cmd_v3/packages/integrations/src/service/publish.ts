@@ -99,6 +99,7 @@ export async function publishContent(contentId: string) {
     media: (meta.media ?? []).map((m) => toMediaFile(m, system)),
     options: meta.options ?? {},
     quotePostId: meta.quote?.postId,
+    quotePostUrl: meta.quote?.url,
   };
   if (post.quotePostId && !def.supportsQuote) throw new ConfigError(`${def.name} は引用投稿に対応していません`);
 

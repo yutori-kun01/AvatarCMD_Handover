@@ -116,6 +116,8 @@ export interface PostInput {
   options: Record<string, string>;
   /** 引用投稿: 引用元の投稿 ID（X: quote_tweet_id / Threads: quote_post_id） */
   quotePostId?: string;
+  /** 引用元の投稿 URL（X で引用が拒否されたとき、本文に URL を入れて投稿し直すのに使う） */
+  quotePostUrl?: string;
 }
 
 export interface PublishContext {

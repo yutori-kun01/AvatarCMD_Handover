@@ -210,13 +210,18 @@ export const x: PlatformDefinition = {
     const body: Record<string, unknown> = { text: post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text };
     if (mediaIds.length) body.media = { media_ids: mediaIds };
     if (post.quotePostId) body.quote_tweet_id = post.quotePostId;
-    const d = await requestJson("x", `${API}/2/tweets`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      json: body,
-    }).catch((e) => {
-      if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジット/プランが不足しています (${e.body.slice(0, 200)})`);
-      throw e;
+    const send = (json: Record<string, unknown>) =>
+      requestJson("x", `${API}/2/tweets`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, json }).catch((e) => {
+        if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジット/プランが不足しています (${e.body.slice(0, 200)})`);
+        throw e;
+      });
+    const d = await send(body).catch((e) => {
+      // X API は「自分が投稿者か、メンションされている投稿」しか引用できない。
+      // 拒否されたら引用元の URL を本文の末尾に入れて通常の投稿として送り直す（X 上では引用カードとして表示される）
+      if (!(post.quotePostId && e instanceof ApiError && e.status === 403 && e.body.includes("not-authorized-for-resource"))) throw e;
+      const url = post.quotePostUrl || `https://x.com/i/status/${post.quotePostId}`;
+      const { quote_tweet_id: _, ...rest } = body;
+      return send({ ...rest, text: `${body.text}\n${url}` });
     });
     const username = (ctx.credentials.username as string) || ctx.account.accountName.replace(/^@/, "");
     return { postId: d.data.id, url: `https://x.com/${username}/status/${d.data.id}` };

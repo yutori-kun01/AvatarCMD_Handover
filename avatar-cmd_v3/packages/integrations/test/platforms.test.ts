@@ -91,6 +91,19 @@ test("X: 期限5分前ならリフレッシュし、ローテーションされ�
   }
 });
 
+test("X: 引用が 403 (not-authorized-for-resource) なら URL を本文に入れて通常投稿し直す", async () => {
+  const denied = { status: 403, json: { detail: "You can only reply to or quote posts where you are mentioned or are the author.", status: 403, type: "https://api.x.com/2/problems/not-authorized-for-resource" } };
+  const m = mockFetch([["POST", /api\.x\.com\/2\/tweets$/, (c) => (c.json.quote_tweet_id ? denied : { json: { data: { id: "T2" } } })]]);
+  try {
+    const r = await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "me" } }), post({ quotePostId: "Q1", quotePostUrl: "https://x.com/someone/status/Q1" }));
+    assert.equal(m.calls.length, 2);
+    assert.deepEqual(m.calls[1].json, { text: "hello\nhttps://x.com/someone/status/Q1" });
+    assert.equal(r.postId, "T2");
+  } finally {
+    m.restore();
+  }
+});
+
 test("Threads: TEXT コンテナ作成 → threads_publish", async () => {
   const m = mockFetch([
     ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads$/, { id: "C1" }],
