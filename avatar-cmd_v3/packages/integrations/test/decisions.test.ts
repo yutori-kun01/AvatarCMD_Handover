@@ -189,6 +189,7 @@ test("Threads: 引用投稿はコンテナ作成時に quote_post_id、認可に
   assert.match(url.searchParams.get("scope")!, /threads_manage_insights/);
   const m = mockFetch([
     ["POST", /\/v1\.0\/U1\/threads$/, { id: "C1" }],
+    ["GET", /\/v1\.0\/C1\?/, { status: "FINISHED" }],
     ["POST", /\/v1\.0\/U1\/threads_publish$/, { id: "P1" }],
     ["GET", /\/v1\.0\/P1\?/, { permalink: "https://www.threads.net/@y/post/P1" }],
   ]);
