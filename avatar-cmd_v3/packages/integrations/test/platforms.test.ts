@@ -91,17 +91,49 @@ test("X: 期限5分前ならリフレッシュし、ローテーションされ�
   }
 });
 
+test("X: 引用が 403 (not-authorized-for-resource) なら URL を本文に入れて通常投稿し直す", async () => {
+  const denied = { status: 403, json: { detail: "You can only reply to or quote posts where you are mentioned or are the author.", status: 403, type: "https://api.x.com/2/problems/not-authorized-for-resource" } };
+  const m = mockFetch([["POST", /api\.x\.com\/2\/tweets$/, (c) => (c.json.quote_tweet_id ? denied : { json: { data: { id: "T2" } } })]]);
+  try {
+    const r = await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "me" } }), post({ quotePostId: "Q1", quotePostUrl: "https://x.com/someone/status/Q1" }));
+    assert.equal(m.calls.length, 2);
+    assert.deepEqual(m.calls[1].json, { text: "hello\nhttps://x.com/someone/status/Q1" });
+    assert.equal(r.postId, "T2");
+  } finally {
+    m.restore();
+  }
+});
+
 test("Threads: TEXT コンテナ作成 → threads_publish", async () => {
   const m = mockFetch([
     ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads$/, { id: "C1" }],
+    ["GET", /graph\.threads\.net\/v1\.0\/C1\?/, { status: "FINISHED" }],
     ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads_publish$/, { id: "P1" }],
     ["GET", /graph\.threads\.net\/v1\.0\/P1\?/, { permalink: "https://www.threads.com/@me/post/x" }],
   ]);
   try {
     const r = await PLATFORMS.threads.publish!(ctx({ credentials: { accessToken: "AT", userId: "U1" } }), post());
     assert.deepEqual(m.calls[0].form, { media_type: "TEXT", text: "hello", access_token: "AT" });
-    assert.equal(m.calls[1].form!.creation_id, "C1");
+    assert.equal(m.calls[2].form!.creation_id, "C1");
     assert.equal(r.url, "https://www.threads.com/@me/post/x");
+  } finally {
+    m.restore();
+  }
+});
+
+test("Threads: 公開時の「メディアが見つかりません」(4279009) は待って再試行する", async () => {
+  let n = 0;
+  const notFound = { status: 400, json: { error: { message: "The requested resource does not exist", code: 24, error_subcode: 4279009 } } };
+  const m = mockFetch([
+    ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads$/, { id: "C1" }],
+    ["GET", /graph\.threads\.net\/v1\.0\/C1\?/, { status: "FINISHED" }],
+    ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads_publish$/, () => (n++ === 0 ? notFound : { json: { id: "P1" } })],
+    ["GET", /graph\.threads\.net\/v1\.0\/P1\?/, { permalink: "https://www.threads.com/@me/post/x" }],
+  ]);
+  try {
+    const r = await PLATFORMS.threads.publish!(ctx({ credentials: { accessToken: "AT", userId: "U1" } }), post());
+    assert.equal(n, 2);
+    assert.equal(r.postId, "P1");
   } finally {
     m.restore();
   }

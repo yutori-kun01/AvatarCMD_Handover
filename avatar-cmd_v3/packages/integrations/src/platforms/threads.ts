@@ -40,6 +40,27 @@ async function waitReady(id: string, token: string) {
   );
 }
 
+// 作成直後のコンテナを公開すると「メディアが見つかりません」(code 24 / subcode 4279009) になることがあるため、
+// FINISHED を待ってから公開し、それでも出た場合は少し待って再試行する
+async function publishContainer(uid: string, token: string, creationId: string): Promise<string> {
+  let tries = 0;
+  return poll(
+    async () => {
+      try {
+        const d = await requestJson("threads", `${GRAPH}/${V}/${uid}/threads_publish`, {
+          method: "POST",
+          form: { creation_id: creationId, access_token: token },
+        });
+        return { done: true, value: String(d.id) };
+      } catch (e) {
+        if (e instanceof ApiError && e.body.includes("4279009") && ++tries < 5) return { done: false };
+        throw e;
+      }
+    },
+    { intervalMs: 5000, label: "Threads の公開" }
+  );
+}
+
 function mediaParams(m: MediaFile): Record<string, string> {
   return m.mimeType.startsWith("video/")
     ? { media_type: "VIDEO", video_url: m.url }
@@ -131,6 +152,7 @@ export const threads: PlatformDefinition = {
     let creationId: string;
     if (post.media.length === 0) {
       creationId = await createContainer(uid, token, { media_type: "TEXT", text, ...quote });
+      await waitReady(creationId, token);
     } else if (post.media.length === 1) {
       creationId = await createContainer(uid, token, { ...mediaParams(post.media[0]), text, ...quote });
       await waitReady(creationId, token);
@@ -145,12 +167,9 @@ export const threads: PlatformDefinition = {
       await waitReady(creationId, token);
     }
 
-    const pub = await requestJson("threads", `${GRAPH}/${V}/${uid}/threads_publish`, {
-      method: "POST",
-      form: { creation_id: creationId, access_token: token },
-    });
-    const info = await requestJson("threads", withQuery(`${GRAPH}/${V}/${pub.id}`, { fields: "permalink", access_token: token })).catch(() => ({}));
-    return { postId: String(pub.id), url: (info as any).permalink };
+    const postId = await publishContainer(uid, token, creationId);
+    const info = await requestJson("threads", withQuery(`${GRAPH}/${V}/${postId}`, { fields: "permalink", access_token: token })).catch(() => ({}));
+    return { postId, url: (info as any).permalink };
   },
   supportsQuote: true,
   async fetchMetrics(ctx, posts) {
