@@ -116,7 +116,7 @@ export async function revenueReport() {
   const rows = await prisma.revenue.findMany({
     orderBy: { earnedAt: "desc" },
     take: 500,
-    include: { avatar: { select: { name: true } } },
+    include: { avatar: { select: { name: true } }, snsAccount: { select: { accountName: true, platform: true } }, item: { select: { name: true } } },
   });
   const valid = rows.filter((r) => r.status !== "refunded");
   const sum = (xs: typeof rows) => xs.reduce((s, r) => s + r.amount, 0);
@@ -143,6 +143,9 @@ export async function revenueReport() {
     entries: rows.slice(0, 100).map((r) => ({
       id: r.id,
       avatarName: r.avatar.name,
+      accountName: r.snsAccount ? `${getPlatform(r.snsAccount.platform)?.name ?? r.snsAccount.platform} ${r.snsAccount.accountName}` : null,
+      itemName: r.item?.name ?? null,
+      quantity: r.quantity,
       source: r.source,
       platform: r.platform,
       amount: r.amount,

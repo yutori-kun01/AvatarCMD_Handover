@@ -281,6 +281,11 @@ export const x: PlatformDefinition = {
     };
   },
   supportsQuote: true,
+  async fetchProfile(ctx) {
+    const d = await requestJson("x", withQuery(`${API}/2/users/me`, { "user.fields": "public_metrics" }), { headers: bearer(ctx) }).catch(readError);
+    const m = (d.data?.public_metrics ?? {}) as Record<string, number>;
+    return { followers: m.followers_count, following: m.following_count, posts: m.tweet_count };
+  },
   async fetchMetrics(ctx, posts) {
     if (!posts.length) return {};
     const uid = ctx.account.accountId;

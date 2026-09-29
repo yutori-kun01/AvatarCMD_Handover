@@ -6,7 +6,7 @@
 // 「今すぐ投稿」もキュー経由（scheduledAt=現在時刻）で処理される。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectMetrics, ensureDefaultAvatar, processPerformanceReviews, processQuoteScans, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processPerformanceReviews, processQuoteScans, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -30,6 +30,9 @@ async function tick() {
       lastMetricsAt = Date.now();
       const m = await collectMetrics().catch((e) => (console.error("[worker] metrics failed:", e), 0));
       if (m) console.log(`[worker] ${new Date().toISOString()} updated metrics of ${m} post(s)`);
+      // フォロワー数（各アカウント1日1回。アカウント分析の推移グラフ用）
+      const f = await collectFollowers().catch((e) => (console.error("[worker] followers failed:", e), 0));
+      if (f) console.log(`[worker] ${new Date().toISOString()} updated followers of ${f} account(s)`);
       // 改善か継続かの判定（各ルール1日1回）
       const p = await processPerformanceReviews().catch((e) => (console.error("[worker] performance review failed:", e), 0));
       if (p) console.log(`[worker] ${new Date().toISOString()} reviewed performance of ${p} rule(s)`);

@@ -59,6 +59,13 @@ export const bluesky: PlatformDefinition = {
       credentials: { identifier: input.identifier.trim(), appPassword: input.appPassword.trim(), service },
     };
   },
+  async fetchProfile(ctx) {
+    // 公開プロフィールは認証なしで取得できる（ログイン回数を増やさない）
+    const actor = ctx.account.accountId || ctx.account.accountName.replace(/^@/, "");
+    const agent = new AtpAgent({ service: "https://public.api.bsky.app" });
+    const { data } = await agent.getProfile({ actor });
+    return { followers: data.followersCount, following: data.followsCount, posts: data.postsCount };
+  },
   async publish(ctx, post) {
     const c = ctx.credentials as Record<string, string>;
     if (!c.identifier || !c.appPassword) throw new ConfigError("Bluesky: アカウントを再接続してください");
