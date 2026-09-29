@@ -8,6 +8,8 @@ import { ApiError, ConfigError } from "../http";
 import { loadFreshCredentials } from "./accounts";
 import { getSystemConfig } from "./store";
 import { toMediaFile, type MediaRef } from "./media";
+import { cleanPostText } from "../post-text";
+import { taskForPlatform } from "./ai";
 
 export interface ContentMetadata {
   title?: string;
@@ -92,7 +94,8 @@ export async function publishContent(contentId: string) {
   const { credentials, app } = await loadFreshCredentials(acc.id);
   const meta = (content.metadata ?? {}) as ContentMetadata;
   const post: PostInput = {
-    text: content.content,
+    // 「」の除去・箇条書きの改行（どのプラットフォームでも投稿前に必ず通す）
+    text: cleanPostText(content.content, { article: taskForPlatform(acc.platform) === "article" }),
     title: meta.title,
     link: meta.link,
     tags: meta.tags,

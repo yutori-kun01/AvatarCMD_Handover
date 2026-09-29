@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
-import { ComboChart, movingAverage } from "@/components/analytics/combo-chart";
+import { CHART_COLORS as C, ComboChart, movingAverage } from "@/components/analytics/combo-chart";
 import { AVATAR_STATUS as STATUS_LABEL, EmptyState, relTime, Shell, Stat, yen } from "@/components/dashboard/shell";
 import { api, Badge, Card, Notice } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -90,10 +90,10 @@ export default function DashboardPage() {
                 xFormat={(v) => `${Number(v.slice(5, 7))}/${Number(v.slice(8))}`}
                 labelFormat={(v) => `${Number(v.slice(5, 7))}/${Number(v.slice(8))}`}
                 series={[
-                  { key: "count", label: "投稿", color: "#3b82f6", kind: "bar" },
-                  { key: "failed", label: "失敗", color: "#f87171", kind: "bar" },
-                  { key: "avg", label: "投稿の7日平均", color: "#fbbf24", kind: "line", compare: true },
-                  { key: "revenue", label: "収益", color: "#a78bfa", kind: "area", right: true },
+                  { key: "count", label: "投稿", color: C.blue, kind: "bar" },
+                  { key: "failed", label: "失敗", color: C.red, kind: "bar" },
+                  { key: "avg", label: "投稿の7日平均", color: C.amber, kind: "line", compare: true },
+                  { key: "revenue", label: "収益", color: C.violet, gradient: [C.brandFrom, C.brandTo], kind: "area", right: true },
                 ]}
                 formatLeft={(v) => `${v}件`}
                 formatRight={yen}

@@ -6,6 +6,29 @@
 import { useId, useMemo, useState } from "react";
 import { Area, Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipProps } from "recharts";
 
+/**
+ * Avatar CMD の配色（ロゴ・ボタンのグラデーション #4f7cff → #8b5cf6 と、テーマの chart トークン）。
+ * グラフはここの色だけを使う。
+ */
+export const CHART_COLORS = {
+  /** 主役の数値（収益など）: ブランドのグラデーション */
+  brand: "#6d6af8",
+  brandFrom: "#8b5cf6",
+  brandTo: "#4f7cff",
+  blue: "#4f7cff",
+  violet: "#8b5cf6",
+  /** --chart-1 / --primary（シアン） */
+  cyan: "#18c5dc",
+  /** --chart-2 / --accent（グリーン） */
+  green: "#22c38e",
+  /** --chart-3（アンバー）: 平均線 */
+  amber: "#f49d25",
+  /** --destructive: 失敗・エラー */
+  red: "#df3a3a",
+  /** 比較（前月など） */
+  muted: "rgba(255,255,255,0.4)",
+} as const;
+
 export type SeriesKind = "bar" | "line" | "area";
 export interface Series {
   key: string;
@@ -18,6 +41,8 @@ export interface Series {
   compare?: boolean;
   /** 最初は非表示 */
   hidden?: boolean;
+  /** 棒・面のグラデーション（上 → 下）。ブランドの棒は [brandFrom, brandTo] */
+  gradient?: [string, string];
 }
 type Mode = "combo" | SeriesKind;
 const MODES: { id: Mode; label: string }[] = [
@@ -41,14 +66,14 @@ function ChartTooltip({
 }: TooltipProps<number, string> & { series: Series[]; formatLeft: (v: number) => string; formatRight: (v: number) => string; labelFormat?: (l: string) => string }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg border border-white/10 bg-[#111318]/95 px-3 py-2 text-xs shadow-xl backdrop-blur">
+    <div className="rounded-lg border border-white/10 bg-[#0b0c0f]/95 px-3 py-2 text-xs shadow-xl backdrop-blur">
       <div className="mb-1 text-white/50">{labelFormat ? labelFormat(String(label)) : label}</div>
       {series
         .map((s) => ({ s, p: payload.find((p) => p.dataKey === s.key) }))
         .filter((x) => x.p && x.p.value !== null && x.p.value !== undefined)
         .map(({ s, p }) => (
           <div key={s.key} className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ background: s.color, opacity: s.compare ? 0.6 : 1 }} />
+            <span className="h-2 w-2 rounded-full" style={{ background: s.gradient ? `linear-gradient(135deg, ${s.gradient[1]}, ${s.gradient[0]})` : s.color, opacity: s.compare ? 0.6 : 1 }} />
             <span className="flex-1 text-white/60">{s.label}</span>
             <span className="font-semibold tabular-nums">{(s.right ? formatRight : formatLeft)(Number(p!.value))}</span>
           </div>
@@ -113,7 +138,10 @@ export function ComboChart<T extends Record<string, unknown>>({
             {s.compare ? (
               <span className="w-3 border-t-2 border-dashed" style={{ borderColor: hidden.has(s.key) ? "rgba(255,255,255,0.2)" : s.color }} />
             ) : (
-              <span className={`h-2.5 w-2.5 ${s.kind === "bar" && mode !== "line" ? "rounded-sm" : "rounded-full"}`} style={{ background: hidden.has(s.key) ? "rgba(255,255,255,0.2)" : s.color }} />
+              <span
+                className={`h-2.5 w-2.5 ${s.kind === "bar" && mode !== "line" ? "rounded-sm" : "rounded-full"}`}
+                style={{ background: hidden.has(s.key) ? "rgba(255,255,255,0.2)" : s.gradient ? `linear-gradient(135deg, ${s.gradient[1]}, ${s.gradient[0]})` : s.color }}
+              />
             )}
             {s.label}
           </button>
@@ -135,10 +163,18 @@ export function ComboChart<T extends Record<string, unknown>>({
             <defs>
               {series.map((s) => (
                 <linearGradient key={s.key} id={`${uid}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={s.color} stopOpacity={0.45} />
-                  <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
+                  <stop offset="0%" stopColor={s.gradient?.[0] ?? s.color} stopOpacity={0.45} />
+                  <stop offset="100%" stopColor={s.gradient?.[1] ?? s.color} stopOpacity={0.02} />
                 </linearGradient>
               ))}
+              {series
+                .filter((s) => s.gradient)
+                .map((s) => (
+                  <linearGradient key={`${s.key}-bar`} id={`${uid}-${s.key}-bar`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={s.gradient![0]} />
+                    <stop offset="100%" stopColor={s.gradient![1]} />
+                  </linearGradient>
+                ))}
             </defs>
             <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
             <XAxis dataKey={xKey} {...axis} interval={interval} tickFormatter={xFormat} minTickGap={4} />
@@ -151,7 +187,7 @@ export function ComboChart<T extends Record<string, unknown>>({
             {visible.map((s) => {
               const kind = s.compare || mode === "combo" ? s.kind : mode;
               const common = { dataKey: s.key, name: s.label, yAxisId: s.right ? "right" : "left", isAnimationActive: false };
-              if (kind === "bar") return <Bar key={s.key} {...common} fill={s.color} fillOpacity={s.compare ? 0.35 : 0.9} radius={[3, 3, 0, 0]} barSize={barSize} />;
+              if (kind === "bar") return <Bar key={s.key} {...common} fill={s.gradient ? `url(#${uid}-${s.key}-bar)` : s.color} fillOpacity={s.compare ? 0.35 : 0.9} radius={[3, 3, 0, 0]} barSize={barSize} />;
               if (kind === "area")
                 return (
                   <Area

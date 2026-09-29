@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
 import { Bar, BarChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from "recharts";
-import { ComboChart, MetricCard, movingAverage, withCumulative } from "./combo-chart";
+import { CHART_COLORS as C, ComboChart, MetricCard, movingAverage, withCumulative } from "./combo-chart";
 import { EmptyState, relTime, yen } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, inputCls } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -62,9 +62,9 @@ interface Vitals {
 }
 
 const LEVEL: Record<Level, { label: string; color: string; cls: string }> = {
-  good: { label: "良好", color: "#34d399", cls: "bg-emerald-500/15 text-emerald-300" },
-  warning: { label: "注意", color: "#fbbf24", cls: "bg-amber-500/15 text-amber-300" },
-  error: { label: "要対応", color: "#f87171", cls: "bg-red-500/15 text-red-300" },
+  good: { label: "良好", color: C.green, cls: "bg-emerald-500/15 text-emerald-300" },
+  warning: { label: "注意", color: C.amber, cls: "bg-amber-500/15 text-amber-300" },
+  error: { label: "要対応", color: C.red, cls: "bg-red-500/15 text-red-300" },
   inactive: { label: "停止中", color: "#6b7280", cls: "bg-white/10 text-white/50" },
 };
 
@@ -85,10 +85,10 @@ function revenueSeries(rows: { date: string; revenue: number | null; prevRevenue
   ]);
 }
 const REVENUE_SERIES = [
-  { key: "revenue", label: "日別の収益", color: "#8b5cf6", kind: "bar" as const },
-  { key: "cumulative", label: "累計", color: "#22d3ee", kind: "area" as const, right: true },
-  { key: "prevCumulative", label: "前月の累計", color: "#94a3b8", kind: "line" as const, right: true, compare: true },
-  { key: "prevRevenue", label: "前月の日別", color: "#a78bfa", kind: "bar" as const, compare: true, hidden: true },
+  { key: "revenue", label: "日別の収益", color: C.brand, gradient: [C.brandFrom, C.brandTo] as [string, string], kind: "bar" as const },
+  { key: "cumulative", label: "累計", color: C.cyan, kind: "area" as const, right: true },
+  { key: "prevCumulative", label: "前月の累計", color: C.muted, kind: "line" as const, right: true, compare: true },
+  { key: "prevRevenue", label: "前月の日別", color: C.violet, kind: "bar" as const, compare: true, hidden: true },
 ];
 
 /** 6か月: 収益（棒）+ 投稿数（折れ線）+ 3か月平均（点線） */
@@ -97,9 +97,9 @@ function trendSeries(rows: { month: string; total: number; posts: number }[]) {
   return rows.map((r, i) => ({ ...r, label: shortMonth(r.month), avg: avg[i] }));
 }
 const TREND_SERIES = [
-  { key: "total", label: "収益", color: "#3b82f6", kind: "bar" as const },
-  { key: "avg", label: "3か月平均", color: "#f472b6", kind: "line" as const, compare: true },
-  { key: "posts", label: "投稿数", color: "#22d3ee", kind: "line" as const, right: true },
+  { key: "total", label: "収益", color: C.brand, gradient: [C.brandFrom, C.brandTo] as [string, string], kind: "bar" as const },
+  { key: "avg", label: "3か月平均", color: C.amber, kind: "line" as const, compare: true },
+  { key: "posts", label: "投稿数", color: C.cyan, kind: "line" as const, right: true },
 ];
 
 /** フォロワー数と前日比（記録のある日どうしの差） */
@@ -118,9 +118,9 @@ function postSeries(rows: { date: string; posts: number | null; failed: number |
   return rows.map((r, i) => ({ ...r, avg: r.posts === null ? null : avg[i] }));
 }
 const POST_SERIES = [
-  { key: "posts", label: "投稿", color: "#22d3ee", kind: "bar" as const },
-  { key: "failed", label: "失敗", color: "#f87171", kind: "bar" as const },
-  { key: "avg", label: "7日平均", color: "#fbbf24", kind: "line" as const, compare: true },
+  { key: "posts", label: "投稿", color: C.blue, kind: "bar" as const },
+  { key: "failed", label: "失敗", color: C.red, kind: "bar" as const },
+  { key: "avg", label: "7日平均", color: C.amber, kind: "line" as const, compare: true },
 ];
 
 /** 前月・翌月に移動するページャー */
@@ -165,7 +165,7 @@ function ScoreRing({ score, level, size = 44 }: { score: number; level: Level; s
   );
 }
 
-function Spark({ data, color = "#8b5cf6" }: { data: { v: number }[]; color?: string }) {
+function Spark({ data, color = C.violet }: { data: { v: number }[]; color?: string }) {
   return (
     <div className="h-8 w-24">
       <ResponsiveContainer width="100%" height="100%">
@@ -253,8 +253,8 @@ function AccountDetail({ a, onChanged }: { a: AccountVital; onChanged: () => voi
               xFormat={dayLabel}
               labelFormat={dayLabel}
               series={[
-                { key: "followers", label: "フォロワー", color: "#34d399", kind: "area" },
-                { key: "change", label: "前日比", color: "#a3e635", kind: "bar", right: true },
+                { key: "followers", label: "フォロワー", color: C.green, kind: "area" },
+                { key: "change", label: "前日比", color: C.cyan, kind: "bar", right: true },
               ]}
               formatLeft={people}
               formatRight={(v) => `${v > 0 ? "+" : ""}${v}人`}

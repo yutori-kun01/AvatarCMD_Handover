@@ -8,6 +8,7 @@ import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
 import { completeJson, completeText, type AiTask } from "./llm";
+import { cleanPostText } from "../post-text";
 
 /** 長文記事として書かせるプラットフォーム */
 const LONG_FORM_PLATFORMS = ["wordpress", "zenn", "note", "medium"];
@@ -65,6 +66,8 @@ export function buildPrompts(
     persona.prompt && `守るべきルール:\n${persona.prompt}`,
     knowledge.length && `参考にしてよい知識:\n${knowledge.map((k) => `・${k.title}${k.summary ? `: ${k.summary}` : ""}`).join("\n")}`,
     "事実と異なる内容や、根拠のない断定はしないでください。出力は投稿本文のみとし、前置きや説明は付けないでください。",
+    "本文を「」や引用符で囲まないでください。本文中でも「」は使わないでください。",
+    !longForm && "箇条書きを使うときは、1項目ずつ改行して行頭に「・」を付け、箇条書きの前後は空行で区切ってください。",
   ]
     .filter(Boolean)
     .join("\n");
@@ -100,7 +103,8 @@ export async function generatePostText(input: GenerateInput): Promise<{ text: st
   const { avatar, persona, knowledge } = await loadAvatarContext(input.avatarId);
   const { system, user, limit } = buildPrompts(avatar, persona, input, knowledge);
   const res = await completeText({ task: taskForPlatform(input.platform), system, user });
-  let text = res.text;
+  const article = taskForPlatform(input.platform) === "article";
+  let text = cleanPostText(res.text, { article });
   if (limit && count(text) > limit) {
     // 文字数オーバーは「文字数調整」用途のモデルで短くし、それでも超える分だけ切り詰める
     try {
@@ -108,7 +112,7 @@ export async function generatePostText(input: GenerateInput): Promise<{ text: st
     } catch (e) {
       console.warn("[ai] 文字数調整に失敗したため切り詰めます:", (e as Error).message);
     }
-    text = truncate(text, limit);
+    text = truncate(cleanPostText(text, { article }), limit);
   }
   return { ...res, text };
 }
@@ -126,7 +130,8 @@ export async function rewriteToFit(input: { avatarId: string; text: string; maxL
     input.text,
   ].join("\n");
   const res = await completeText({ task: "rewrite", system, user });
-  return { ...res, text: truncate(res.text, input.maxLength), fitted: count(res.text) <= input.maxLength };
+  const text = cleanPostText(res.text, { article: taskForPlatform(input.platform) === "article" });
+  return { ...res, text: truncate(text, input.maxLength), fitted: count(text) <= input.maxLength };
 }
 
 // --- 投稿前チェック -------------------------------------------------------------

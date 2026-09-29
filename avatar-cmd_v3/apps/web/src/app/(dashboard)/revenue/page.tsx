@@ -5,7 +5,7 @@ import { Archive, ArchiveRestore, Pencil, Trash2 } from "lucide-react";
 import { EmptyState, Shell, Stat, yen } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo } from "@/components/settings/ui";
 import { AccountVitals } from "@/components/analytics/account-vitals";
-import { ComboChart, MetricCard, movingAverage, withCumulative } from "@/components/analytics/combo-chart";
+import { CHART_COLORS as C, ComboChart, MetricCard, movingAverage, withCumulative } from "@/components/analytics/combo-chart";
 
 interface Report {
   total: number;
@@ -546,9 +546,9 @@ function Overview({ r, onRemove }: { r: Report; onRemove: (id: string) => void }
           })()}
           xKey="label"
           series={[
-            { key: "total", label: "月の収益", color: "#8b5cf6", kind: "bar" },
-            { key: "avg", label: "3か月平均", color: "#f472b6", kind: "line", compare: true },
-            { key: "cumulative", label: "累計", color: "#22d3ee", kind: "area", right: true },
+            { key: "total", label: "月の収益", color: C.brand, gradient: [C.brandFrom, C.brandTo], kind: "bar" },
+            { key: "avg", label: "3か月平均", color: C.amber, kind: "line", compare: true },
+            { key: "cumulative", label: "累計", color: C.cyan, kind: "area", right: true },
           ]}
           formatLeft={yen}
           formatRight={yen}
