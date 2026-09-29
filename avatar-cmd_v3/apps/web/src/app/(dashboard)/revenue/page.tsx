@@ -2,9 +2,10 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Archive, ArchiveRestore, Pencil, Trash2 } from "lucide-react";
-import { Bars, EmptyState, Shell, Stat, yen } from "@/components/dashboard/shell";
+import { EmptyState, Shell, Stat, yen } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo } from "@/components/settings/ui";
 import { AccountVitals } from "@/components/analytics/account-vitals";
+import { ComboChart, MetricCard, movingAverage, withCumulative } from "@/components/analytics/combo-chart";
 
 interface Report {
   total: number;
@@ -537,15 +538,23 @@ function Overview({ r, onRemove }: { r: Report; onRemove: (id: string) => void }
         <Stat label="今月" value={yen(r.monthly[r.monthly.length - 1]?.total ?? 0)} tone="text-cyan-300" />
         <Stat label="先月" value={yen(r.monthly[r.monthly.length - 2]?.total ?? 0)} />
       </div>
-      <Card>
-        <h3 className="mb-3 text-sm font-semibold">月別（6か月）</h3>
-        <Bars data={r.monthly.map((m) => ({ label: m.month, value: m.total }))} format={yen} />
-        <div className="mt-1 flex justify-between text-[10px] text-white/30">
-          {r.monthly.map((m) => (
-            <span key={m.month}>{m.month}</span>
-          ))}
-        </div>
-      </Card>
+      <MetricCard title="月別（6か月）" value={yen(r.monthly.reduce((s, m) => s + m.total, 0))} sub="6か月合計">
+        <ComboChart
+          data={(() => {
+            const avg = movingAverage(r.monthly.map((m) => m.total), 3);
+            return withCumulative(r.monthly, [["total", "cumulative"]]).map((m, i) => ({ ...m, label: `${Number(m.month.slice(5))}月`, avg: avg[i] }));
+          })()}
+          xKey="label"
+          series={[
+            { key: "total", label: "月の収益", color: "#8b5cf6", kind: "bar" },
+            { key: "avg", label: "3か月平均", color: "#f472b6", kind: "line", compare: true },
+            { key: "cumulative", label: "累計", color: "#22d3ee", kind: "area", right: true },
+          ]}
+          formatLeft={yen}
+          formatRight={yen}
+          height={240}
+        />
+      </MetricCard>
       <div className="grid gap-4 md:grid-cols-3">
         <List title="アバター別" rows={r.byAvatar} />
         <List title="収益源別" rows={r.bySource} label={sourceLabel} />

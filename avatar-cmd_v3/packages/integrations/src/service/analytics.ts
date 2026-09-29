@@ -342,7 +342,8 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
   const [accounts, published, failed, pending, drafts, revenues, snaps] = await Promise.all([
     prisma.snsAccount.findMany({ where: avatarFilter, orderBy: [{ avatarId: "asc" }, { createdAt: "asc" }], include: { avatar: { select: { name: true } } } }),
     prisma.content.findMany({
-      where: { ...avatarFilter, status: "PUBLISHED", publishedAt: { gte: start, lt: end }, snsAccountId: { not: null } },
+      // 6か月の推移（投稿数）にも使うので trendStart から取る
+      where: { ...avatarFilter, status: "PUBLISHED", publishedAt: { gte: trendStart, lt: end }, snsAccountId: { not: null } },
       select: { snsAccountId: true, publishedAt: true, engagement: true },
     }),
     prisma.content.findMany({
@@ -363,13 +364,19 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
   ]);
 
   const trendMonths = Array.from({ length: 6 }, (_, i) => shiftMonth(month, i - 5));
+  const today = jstDay(now);
+  // 前月の同じ日（前月の方が短い月は null）。今月の未来の日は null（累計線を今日で止める）
+  const prevDays = monthDays(shiftMonth(month, -1));
+  const future = (date: string) => currentMonth && date > today;
+  const inRange = (d: Date, r: { start: Date; end: Date }) => d >= r.start && d < r.end;
   const count = (rows: { snsAccountId: string | null; _count: { _all: number } }[]) => new Map(rows.map((r) => [r.snsAccountId, r._count._all]));
   const pendingBy = count(pending);
   const draftBy = count(drafts);
 
   const rows = accounts.map((a) => {
     const def = getPlatform(a.platform);
-    const myPosts = published.filter((p) => p.snsAccountId === a.id);
+    const myPostsAll = published.filter((p) => p.snsAccountId === a.id);
+    const myPosts = myPostsAll.filter((p) => inRange(p.publishedAt!, { start, end }));
     const myFailed = failed.filter((p) => p.snsAccountId === a.id);
     const myRevenue = revenues.filter((r) => r.snsAccountId === a.id);
     const inMonth = myRevenue.filter((r) => r.earnedAt >= start && r.earnedAt < end);
@@ -389,11 +396,13 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
     }
 
     const followerByDay = new Map(mySnaps.filter((s) => s.followers !== null).map((s) => [s.date, s.followers!]));
-    const daily = days.map((date) => ({
+    const prevInMonth = myRevenue.filter((r) => inRange(r.earnedAt, prev));
+    const daily = days.map((date, i) => ({
       date,
-      posts: myPosts.filter((p) => jstDay(p.publishedAt!) === date).length,
-      failed: myFailed.filter((p) => jstDay(p.updatedAt) === date).length,
-      revenue: inMonth.filter((r) => jstDay(r.earnedAt) === date).reduce((s, r) => s + r.amount, 0),
+      posts: future(date) ? null : myPosts.filter((p) => jstDay(p.publishedAt!) === date).length,
+      failed: future(date) ? null : myFailed.filter((p) => jstDay(p.updatedAt) === date).length,
+      revenue: future(date) ? null : inMonth.filter((r) => jstDay(r.earnedAt) === date).reduce((s, r) => s + r.amount, 0),
+      prevRevenue: prevDays[i] ? prevInMonth.filter((r) => jstDay(r.earnedAt) === prevDays[i]).reduce((s, r) => s + r.amount, 0) : null,
       followers: followerByDay.get(date) ?? null,
     }));
 
@@ -449,7 +458,11 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
       daily,
       revenueTrend: trendMonths.map((m) => {
         const r = monthRange(m);
-        return { month: m, total: myRevenue.filter((x) => x.earnedAt >= r.start && x.earnedAt < r.end).reduce((s, x) => s + x.amount, 0) };
+        return {
+          month: m,
+          total: myRevenue.filter((x) => inRange(x.earnedAt, r)).reduce((s, x) => s + x.amount, 0),
+          posts: myPostsAll.filter((p) => inRange(p.publishedAt!, r)).length,
+        };
       }),
       items: [...itemTotals.values()].sort((x, y) => y.total - x.total),
     };
@@ -459,7 +472,8 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
   const unassigned = revenues.filter((r) => !r.snsAccountId);
   const sumIn = (xs: typeof revenues, r: { start: Date; end: Date }) => xs.filter((x) => x.earnedAt >= r.start && x.earnedAt < r.end).reduce((s, x) => s + x.amount, 0);
   const all = revenues;
-  const allInMonth = all.filter((r) => r.earnedAt >= start && r.earnedAt < end);
+  const allInMonth = all.filter((r) => inRange(r.earnedAt, { start, end }));
+  const allPrev = all.filter((r) => inRange(r.earnedAt, prev));
 
   return {
     month,
@@ -477,8 +491,14 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
       followers: rows.reduce((s, r) => s + (r.followers ?? 0), 0),
       followersDelta: rows.reduce((s, r) => s + (r.followersDelta ?? 0), 0),
       attention: rows.filter((r) => r.vital.level === "error" || r.vital.level === "warning").length,
-      dailyRevenue: days.map((date) => ({ date, revenue: allInMonth.filter((r) => jstDay(r.earnedAt) === date).reduce((s, r) => s + r.amount, 0) })),
-      revenueTrend: trendMonths.map((m) => ({ month: m, total: sumIn(all, monthRange(m)) })),
+      daily: days.map((date, i) => ({
+        date,
+        revenue: future(date) ? null : allInMonth.filter((r) => jstDay(r.earnedAt) === date).reduce((s, r) => s + r.amount, 0),
+        prevRevenue: prevDays[i] ? allPrev.filter((r) => jstDay(r.earnedAt) === prevDays[i]).reduce((s, r) => s + r.amount, 0) : null,
+        posts: future(date) ? null : rows.reduce((s, a) => s + (a.daily[i].posts ?? 0), 0),
+        failed: future(date) ? null : rows.reduce((s, a) => s + (a.daily[i].failed ?? 0), 0),
+      })),
+      revenueTrend: trendMonths.map((m) => ({ month: m, total: sumIn(all, monthRange(m)), posts: published.filter((p) => inRange(p.publishedAt!, monthRange(m))).length })),
     },
     accounts: rows,
   };

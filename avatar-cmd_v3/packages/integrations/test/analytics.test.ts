@@ -125,9 +125,14 @@ test("収益アイテム: 登録 → 選んで数量だけで記録 → アカ�
   assert.equal(a.daily.find((d) => d.date === "2026-09-15")!.followers, 230);
   assert.deepEqual(a.items, [{ name: "記事『朝の集中ルーティン』", total: 1950, quantity: 4 }]);
   assert.deepEqual(a.revenueTrend.slice(-2), [
-    { month: "2026-08", total: 500 },
-    { month: "2026-09", total: 1950 },
+    { month: "2026-08", total: 500, posts: 0 },
+    { month: "2026-09", total: 1950, posts: 0 },
   ]);
+  // 前月の同じ日との比較（8/20 の 500 円）と、今月の未来の日は null（累計線を今日で止める）
+  assert.equal(a.daily.find((d) => d.date === "2026-09-20")!.prevRevenue, 500);
+  assert.equal(a.daily.find((d) => d.date === "2026-09-20")!.revenue, null);
+  assert.equal(v.totals.daily.find((d) => d.date === "2026-09-05")!.revenue, 10000);
+  assert.equal(v.totals.daily.find((d) => d.date === "2026-09-20")!.prevRevenue, 500);
 
   // 前月に戻る（ページャー）
   const prev = await svc.accountVitals({ month: "2026-08", avatarId, now });

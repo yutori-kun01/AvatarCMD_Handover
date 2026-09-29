@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
-import { AVATAR_STATUS as STATUS_LABEL, Bars, EmptyState, relTime, Shell, Stat, yen } from "@/components/dashboard/shell";
+import { ComboChart, movingAverage } from "@/components/analytics/combo-chart";
+import { AVATAR_STATUS as STATUS_LABEL, EmptyState, relTime, Shell, Stat, yen } from "@/components/dashboard/shell";
 import { api, Badge, Card, Notice } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
@@ -18,7 +19,7 @@ interface Overview {
     revenue30: number;
     revenueChange: number;
   };
-  daily: { date: string; count: number }[];
+  daily: { date: string; count: number; failed: number; revenue: number }[];
   platforms: { platform: string; name: string; icon: string; count: number }[];
   avatars: {
     id: string;
@@ -75,14 +76,29 @@ export default function DashboardPage() {
           <div className="grid gap-6 lg:grid-cols-3">
             <Card className="lg:col-span-2">
               <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">日別の投稿数（30日）</h3>
-                <span className="text-xs text-white/40">{d.daily.reduce((s, x) => s + x.count, 0)}件</span>
+                <h3 className="text-sm font-semibold">日別の投稿・エラー・収益（30日）</h3>
+                <span className="text-xs text-white/40">
+                  投稿 {d.daily.reduce((s, x) => s + x.count, 0)}件 ・ 収益 {yen(d.daily.reduce((s, x) => s + x.revenue, 0))}
+                </span>
               </div>
-              <Bars data={d.daily.map((x) => ({ label: x.date, value: x.count }))} format={(v) => `${v}件`} />
-              <div className="mt-1 flex justify-between text-[10px] text-white/30">
-                <span>{d.daily[0]?.date}</span>
-                <span>{d.daily[d.daily.length - 1]?.date}</span>
-              </div>
+              <ComboChart
+                data={(() => {
+                  const avg = movingAverage(d.daily.map((x) => x.count), 7);
+                  return d.daily.map((x, i) => ({ ...x, avg: avg[i] }));
+                })()}
+                xKey="date"
+                xFormat={(v) => `${Number(v.slice(5, 7))}/${Number(v.slice(8))}`}
+                labelFormat={(v) => `${Number(v.slice(5, 7))}/${Number(v.slice(8))}`}
+                series={[
+                  { key: "count", label: "投稿", color: "#3b82f6", kind: "bar" },
+                  { key: "failed", label: "失敗", color: "#f87171", kind: "bar" },
+                  { key: "avg", label: "投稿の7日平均", color: "#fbbf24", kind: "line", compare: true },
+                  { key: "revenue", label: "収益", color: "#a78bfa", kind: "area", right: true },
+                ]}
+                formatLeft={(v) => `${v}件`}
+                formatRight={yen}
+                height={200}
+              />
             </Card>
             <Card>
               <h3 className="mb-3 text-sm font-semibold">システム</h3>

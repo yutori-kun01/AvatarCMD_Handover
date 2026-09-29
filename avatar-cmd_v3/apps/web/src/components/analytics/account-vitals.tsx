@@ -3,7 +3,8 @@
 // 収益分析ページ（全アカウント）とアバター管理ページ（そのアバターのアカウント）で共通
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, ComposedChart, Line, LineChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from "recharts";
+import { ComboChart, MetricCard, movingAverage, withCumulative } from "./combo-chart";
 import { EmptyState, relTime, yen } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, inputCls } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -35,8 +36,8 @@ export interface AccountVital {
   views: number;
   engagements: number;
   engagementRate: number | null;
-  daily: { date: string; posts: number; failed: number; revenue: number; followers: number | null }[];
-  revenueTrend: { month: string; total: number }[];
+  daily: { date: string; posts: number | null; failed: number | null; revenue: number | null; prevRevenue: number | null; followers: number | null }[];
+  revenueTrend: { month: string; total: number; posts: number }[];
   items: { name: string; total: number; quantity: number }[];
 }
 interface Vitals {
@@ -54,8 +55,8 @@ interface Vitals {
     followers: number;
     followersDelta: number;
     attention: number;
-    dailyRevenue: { date: string; revenue: number }[];
-    revenueTrend: { month: string; total: number }[];
+    daily: { date: string; revenue: number | null; prevRevenue: number | null; posts: number | null; failed: number | null }[];
+    revenueTrend: { month: string; total: number; posts: number }[];
   };
   accounts: AccountVital[];
 }
@@ -72,8 +73,55 @@ const shortMonth = (m: string) => `${Number(m.slice(5))}月`;
 const num = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("ja-JP"));
 const signed = (n: number | null | undefined) => (n === null || n === undefined ? "" : `${n > 0 ? "+" : ""}${n.toLocaleString("ja-JP")}`);
 const pct = (a: number, b: number) => (b === 0 ? null : Math.round(((a - b) / b) * 100));
-const tooltipStyle = { contentStyle: { background: "#111318", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 12 }, labelStyle: { color: "rgba(255,255,255,0.6)" } };
-const axis = { stroke: "rgba(255,255,255,0.3)", fontSize: 10, tickLine: false, axisLine: false } as const;
+const count = (v: number) => `${v.toLocaleString("ja-JP")}件`;
+const people = (v: number) => `${v.toLocaleString("ja-JP")}人`;
+const dayLabel = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8))}`;
+
+/** 日別の収益に累計・前月累計を足す（Stripe 風の「累計 vs 前月」比較用） */
+function revenueSeries(rows: { date: string; revenue: number | null; prevRevenue: number | null }[]) {
+  return withCumulative(rows, [
+    ["revenue", "cumulative"],
+    ["prevRevenue", "prevCumulative"],
+  ]);
+}
+const REVENUE_SERIES = [
+  { key: "revenue", label: "日別の収益", color: "#8b5cf6", kind: "bar" as const },
+  { key: "cumulative", label: "累計", color: "#22d3ee", kind: "area" as const, right: true },
+  { key: "prevCumulative", label: "前月の累計", color: "#94a3b8", kind: "line" as const, right: true, compare: true },
+  { key: "prevRevenue", label: "前月の日別", color: "#a78bfa", kind: "bar" as const, compare: true, hidden: true },
+];
+
+/** 6か月: 収益（棒）+ 投稿数（折れ線）+ 3か月平均（点線） */
+function trendSeries(rows: { month: string; total: number; posts: number }[]) {
+  const avg = movingAverage(rows.map((r) => r.total), 3);
+  return rows.map((r, i) => ({ ...r, label: shortMonth(r.month), avg: avg[i] }));
+}
+const TREND_SERIES = [
+  { key: "total", label: "収益", color: "#3b82f6", kind: "bar" as const },
+  { key: "avg", label: "3か月平均", color: "#f472b6", kind: "line" as const, compare: true },
+  { key: "posts", label: "投稿数", color: "#22d3ee", kind: "line" as const, right: true },
+];
+
+/** フォロワー数と前日比（記録のある日どうしの差） */
+function followerSeries(rows: { date: string; followers: number | null }[]) {
+  let last: number | null = null;
+  return rows.map((r) => {
+    const change = r.followers !== null && last !== null ? r.followers - last : null;
+    if (r.followers !== null) last = r.followers;
+    return { date: r.date, followers: r.followers, change };
+  });
+}
+
+/** 日別の投稿・失敗（棒）+ 7日平均（折れ線） */
+function postSeries(rows: { date: string; posts: number | null; failed: number | null }[]) {
+  const avg = movingAverage(rows.map((r) => r.posts ?? 0), 7);
+  return rows.map((r, i) => ({ ...r, avg: r.posts === null ? null : avg[i] }));
+}
+const POST_SERIES = [
+  { key: "posts", label: "投稿", color: "#22d3ee", kind: "bar" as const },
+  { key: "failed", label: "失敗", color: "#f87171", kind: "bar" as const },
+  { key: "avg", label: "7日平均", color: "#fbbf24", kind: "line" as const, compare: true },
+];
 
 /** 前月・翌月に移動するページャー */
 export function MonthPager({ month, prev, next, onChange }: { month: string; prev: string; next: string | null; onChange: (m: string | null) => void }) {
@@ -150,12 +198,11 @@ function Change({ now, prev }: { now: number; prev: number }) {
   );
 }
 
-function AccountDetail({ a, days, onChanged }: { a: AccountVital; days: number; onChanged: () => void }) {
+function AccountDetail({ a, onChanged }: { a: AccountVital; onChanged: () => void }) {
   const [followers, setFollowers] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const daily = a.daily.map((d) => ({ ...d, label: String(Number(d.date.slice(8))) }));
-  const hasFollowers = daily.some((d) => d.followers !== null);
+  const hasFollowers = a.daily.some((d) => d.followers !== null);
 
   async function updateFollowers(manual: boolean) {
     setBusy(true);
@@ -185,51 +232,35 @@ function AccountDetail({ a, days, onChanged }: { a: AccountVital; days: number; 
       {a.lastError && <p className="break-all text-xs text-red-300">直近のエラー: {a.lastError}</p>}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div>
-          <h4 className="mb-2 text-xs font-semibold text-white/70">日別の収益と投稿数</h4>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={daily} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis dataKey="label" {...axis} interval={Math.max(0, Math.floor(days / 10) - 1)} />
-                <YAxis yAxisId="r" {...axis} width={48} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : String(v))} />
-                <YAxis yAxisId="p" orientation="right" {...axis} width={24} allowDecimals={false} />
-                <Tooltip {...tooltipStyle} formatter={(v: number, k: string) => (k === "収益" ? yen(v) : `${v}件`)} labelFormatter={(l) => `${l}日`} />
-                <Bar yAxisId="r" dataKey="revenue" name="収益" fill="#8b5cf6" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                <Line yAxisId="p" dataKey="posts" name="投稿" stroke="#22d3ee" strokeWidth={2} dot={false} type="linear" isAnimationActive={false} />
-                <Line yAxisId="p" dataKey="failed" name="失敗" stroke="#f87171" strokeWidth={1.5} dot={false} type="linear" isAnimationActive={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-        <div>
-          <h4 className="mb-2 text-xs font-semibold text-white/70">収益の推移（6か月）</h4>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={a.revenueTrend.map((t) => ({ ...t, label: shortMonth(t.month) }))} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis dataKey="label" {...axis} />
-                <YAxis {...axis} width={48} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : String(v))} />
-                <Tooltip {...tooltipStyle} formatter={(v: number) => yen(v)} />
-                <Bar dataKey="total" name="収益" fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={false} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-        <div>
-          <h4 className="mb-2 text-xs font-semibold text-white/70">フォロワー数の推移</h4>
+        <MetricCard title="収益（日別・累計・前月比較）" value={yen(a.revenue)} delta={pct(a.revenue, a.prevRevenue)} sub={`前月 ${yen(a.prevRevenue)}`}>
+          <ComboChart data={revenueSeries(a.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={REVENUE_SERIES} formatLeft={yen} formatRight={yen} height={200} />
+        </MetricCard>
+        <MetricCard title="6か月の推移（収益と投稿数）" value={yen(a.revenueTrend.reduce((s, t) => s + t.total, 0))} sub="6か月合計">
+          <ComboChart data={trendSeries(a.revenueTrend)} xKey="label" series={TREND_SERIES} formatLeft={yen} formatRight={count} height={200} />
+        </MetricCard>
+        <MetricCard title="投稿とエラー（日別）" value={`${a.posts}件`} sub={a.failed ? `失敗 ${a.failed}件` : "失敗なし"}>
+          <ComboChart data={postSeries(a.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={POST_SERIES} formatLeft={count} height={180} />
+        </MetricCard>
+        <MetricCard
+          title="フォロワー数の推移"
+          value={num(a.followers)}
+          sub={a.followersDelta !== null ? `この月 ${signed(a.followersDelta) || "±0"}` : undefined}
+        >
           {hasFollowers ? (
-            <div className="h-40">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={daily} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis dataKey="label" {...axis} interval={Math.max(0, Math.floor(days / 10) - 1)} />
-                  <YAxis {...axis} width={48} domain={["dataMin - 5", "dataMax + 5"]} allowDecimals={false} />
-                  <Tooltip {...tooltipStyle} formatter={(v: number) => `${v.toLocaleString("ja-JP")}人`} labelFormatter={(l) => `${l}日`} />
-                  <Line dataKey="followers" name="フォロワー" stroke="#34d399" strokeWidth={2} dot={{ r: 2 }} connectNulls type="monotone" isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <ComboChart
+              data={followerSeries(a.daily)}
+              xKey="date"
+              xFormat={dayLabel}
+              labelFormat={dayLabel}
+              series={[
+                { key: "followers", label: "フォロワー", color: "#34d399", kind: "area" },
+                { key: "change", label: "前日比", color: "#a3e635", kind: "bar", right: true },
+              ]}
+              formatLeft={people}
+              formatRight={(v) => `${v > 0 ? "+" : ""}${v}人`}
+              leftDomain={["dataMin - 5", "dataMax + 5"]}
+              height={180}
+            />
           ) : (
             <EmptyState>この月のフォロワー数の記録がありません</EmptyState>
           )}
@@ -246,9 +277,8 @@ function AccountDetail({ a, days, onChanged }: { a: AccountVital; days: number; 
             <span className="text-white/35">{a.followersUpdatedAt ? `最終更新 ${relTime(a.followersUpdatedAt)}` : a.followersAuto ? "毎日自動取得" : "自動取得に非対応（手入力）"}</span>
           </div>
           {(msg || a.followersError) && <p className="mt-1 break-all text-[11px] text-amber-300">{msg ?? `取得できませんでした: ${a.followersError}`}</p>}
-        </div>
-        <div>
-          <h4 className="mb-2 text-xs font-semibold text-white/70">この月の売上（アイテム別）</h4>
+        </MetricCard>
+        <MetricCard title="この月の売上（アイテム別）">
           {a.items.length === 0 ? (
             <EmptyState>このアカウントに紐付いた収益はまだありません</EmptyState>
           ) : (
@@ -282,7 +312,7 @@ function AccountDetail({ a, days, onChanged }: { a: AccountVital; days: number; 
               <div className="text-sm font-semibold">{a.engagementRate === null ? "—" : `${(a.engagementRate * 100).toFixed(1)}%`}</div>
             </div>
           </div>
-        </div>
+        </MetricCard>
       </div>
     </div>
   );
@@ -320,7 +350,6 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
   if (err) return <p className="text-xs text-red-300">{err}</p>;
   if (!data) return <p className="text-xs text-white/40">読み込み中…</p>;
   const t = data.totals;
-  const days = data.totals.dailyRevenue.length;
 
   return (
     <div className={`space-y-4 ${loading ? "opacity-70" : ""}`}>
@@ -340,34 +369,15 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
 
       {showOverview && (
         <div className="grid gap-4 lg:grid-cols-3">
-          <Card className="lg:col-span-2">
-            <h3 className="mb-2 text-sm font-semibold">日別の収益（{monthLabel(data.month)}）</h3>
-            <div className="h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={t.dailyRevenue.map((d) => ({ ...d, label: String(Number(d.date.slice(8))) }))} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis dataKey="label" {...axis} interval={Math.max(0, Math.floor(days / 10) - 1)} />
-                  <YAxis {...axis} width={48} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : String(v))} />
-                  <Tooltip {...tooltipStyle} formatter={(v: number) => yen(v)} labelFormatter={(l) => `${l}日`} />
-                  <Bar dataKey="revenue" name="収益" fill="#8b5cf6" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
-          <Card>
-            <h3 className="mb-2 text-sm font-semibold">6か月の推移</h3>
-            <div className="h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={t.revenueTrend.map((m) => ({ ...m, label: shortMonth(m.month) }))} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis dataKey="label" {...axis} />
-                  <YAxis {...axis} width={48} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : String(v))} />
-                  <Tooltip {...tooltipStyle} formatter={(v: number) => yen(v)} />
-                  <Bar dataKey="total" name="収益" fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={false} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
+          <MetricCard className="lg:col-span-2" title={`収益（${monthLabel(data.month)}）`} value={yen(t.revenue)} delta={pct(t.revenue, t.prevRevenue)} sub={`前月 ${yen(t.prevRevenue)}`}>
+            <ComboChart data={revenueSeries(t.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={REVENUE_SERIES} formatLeft={yen} formatRight={yen} height={240} />
+          </MetricCard>
+          <MetricCard title="6か月の推移" value={yen(t.revenueTrend.reduce((s, m) => s + m.total, 0))} sub="6か月合計">
+            <ComboChart data={trendSeries(t.revenueTrend)} xKey="label" series={TREND_SERIES} formatLeft={yen} formatRight={count} height={240} modes={false} />
+          </MetricCard>
+          <MetricCard className="lg:col-span-3" title="投稿とエラー（日別・全アカウント）" value={`${t.posts}件`} sub={t.failed ? `失敗 ${t.failed}件` : "失敗なし"}>
+            <ComboChart data={postSeries(t.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={POST_SERIES} formatLeft={count} height={170} />
+          </MetricCard>
         </div>
       )}
 
@@ -420,7 +430,7 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
                     </div>
                   </div>
                   <div className="hidden md:block">
-                    <Spark data={a.daily.map((d) => ({ v: d.revenue }))} />
+                    <Spark data={a.daily.map((d) => ({ v: d.revenue ?? 0 }))} />
                   </div>
                   <ChevronDown className={`h-4 w-4 text-white/40 transition ${isOpen ? "rotate-180" : ""}`} />
                 </button>
@@ -429,7 +439,7 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
                     プロフィールを開く <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
-                {isOpen && <AccountDetail a={a} days={days} onChanged={load} />}
+                {isOpen && <AccountDetail a={a} onChanged={load} />}
               </Card>
             );
           })}
