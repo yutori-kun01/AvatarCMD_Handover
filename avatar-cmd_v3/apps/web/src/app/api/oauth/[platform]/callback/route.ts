@@ -1,6 +1,6 @@
 // OAuth コールバック: 認可コードをトークンに交換してアカウントを保存
 import { NextResponse } from "next/server";
-import { errorMessage, finishOAuth, getSystemConfig } from "@avatar-cmd/integrations/server";
+import { errorMessage, finishOAuth, getSystemConfig, sameAccountWarnings } from "@avatar-cmd/integrations/server";
 
 export const runtime = "nodejs";
 
@@ -18,6 +18,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ platform
   if (!code || !state) return back({ error: `${platform}: 認可コードがありません` });
   try {
     const saved = await finishOAuth(platform, state, code);
+    const warnings = await sameAccountWarnings(saved);
+    if (warnings.length) return back({ error: warnings.join(" / ") });
     return back({ connected: saved.map((s) => s.accountName).join(", ") });
   } catch (e) {
     return back({ error: errorMessage(e) });

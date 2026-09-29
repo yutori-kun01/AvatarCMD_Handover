@@ -24,7 +24,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./post-text": "./src/post-text.ts"
   },
   "type": "module"
 }

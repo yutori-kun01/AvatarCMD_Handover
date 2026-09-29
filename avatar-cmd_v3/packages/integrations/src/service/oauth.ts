@@ -61,6 +61,28 @@ export async function finishOAuth(platform: string, state: string, code: string)
   return saved;
 }
 
+/**
+ * 接続したアカウントが別のアバターにも接続されていれば、その警告文を返す。
+ * X / Threads の認可画面はブラウザでログイン中のアカウントで許可されるため、
+ * 別アカウントでログインし直さずに接続すると、2つ目のアバターにも1つ目と同じアカウントがつながってしまう。
+ */
+export async function sameAccountWarnings(saved: { avatarId: string; platform: string; accountId: string | null; accountName: string }[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const s of saved) {
+    if (!s.accountId) continue;
+    const others = await prisma.snsAccount.findMany({
+      where: { platform: s.platform, accountId: s.accountId, avatarId: { not: s.avatarId } },
+      include: { avatar: { select: { name: true } } },
+    });
+    if (others.length) {
+      out.push(
+        `${s.accountName} はアバター「${others.map((o) => o.avatar.name).join("」「")}」にも接続されています。別のアカウントを接続したい場合は、ブラウザでそのアカウントにログインし直してから再接続してください`
+      );
+    }
+  }
+  return out;
+}
+
 /** OAuth 以外（アプリパスワード・トークン・Cookie 等）で接続する */
 export async function connectWithCredentials(platform: string, avatarId: string, input: Record<string, string>) {
   const def = getPlatform(platform);

@@ -14,11 +14,14 @@
 
 import type { MediaFile, PlatformDefinition, PostMetrics } from "../types";
 import { ApiError, ConfigError, DAY, expiresWithin, olderThan, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
+import { charCount, formatPostText, LONG_POST_MODE_FIELD, longPostMode } from "../post-text";
 
 const GRAPH = "https://graph.threads.net";
 const V = "v1.0";
-// threads_manage_insights は投稿の反応（インサイト）取得用。追加前に接続したアカウントは再接続が必要
-const SCOPES = ["threads_basic", "threads_content_publish", "threads_manage_insights"];
+// threads_manage_insights は投稿の反応（インサイト）取得用、threads_manage_replies はツリー投稿（自分の投稿への返信）用。
+// 追加前に接続したアカウントは再接続が必要
+const SCOPES = ["threads_basic", "threads_content_publish", "threads_manage_insights", "threads_manage_replies"];
+const MAX_TEXT = 500;
 const METRICS = ["views", "likes", "replies", "reposts", "quotes", "shares"] as const;
 
 async function createContainer(uid: string, token: string, params: Record<string, string>): Promise<string> {
@@ -73,13 +76,13 @@ export const threads: PlatformDefinition = {
   icon: "🧵",
   support: "official",
   connection: "oauth",
-  maxLength: 500,
+  maxLength: MAX_TEXT,
   appFields: [
     { key: "appId", label: "Threads App ID", required: true, help: "Meta アプリの「Threads API」ユースケースに表示される Threads App ID" },
     { key: "appSecret", label: "Threads App Secret", type: "password", required: true },
   ],
   accountFields: [],
-  settingFields: [],
+  settingFields: [LONG_POST_MODE_FIELD],
   postFields: [],
   media: { image: true, video: true, maxCount: 20 },
   docs: [
@@ -88,7 +91,7 @@ export const threads: PlatformDefinition = {
   ],
   notes: [
     "Meta for Developers でアプリを作成し、ユースケース「Threads API にアクセス」を追加してください。",
-    "権限 threads_basic / threads_content_publish / threads_manage_insights（反応の取得）を追加し、リダイレクトコールバックURLに下記URIを登録します。",
+    "権限 threads_basic / threads_content_publish / threads_manage_insights（反応の取得）/ threads_manage_replies（ツリー投稿）を追加し、リダイレクトコールバックURLに下記URIを登録します。",
     "投稿の反応（インサイト）はフォロワー100人以上など Meta の条件を満たすと取得できます。満たさない間は取得をスキップします。",
     "アプリが開発モードの間は、Threads テスターに追加したアカウントのみ接続できます。",
     "画像・動画は公開URLから取り込まれるため、公開URL（システム設定）が外部から到達可能である必要があります。",
@@ -146,7 +149,10 @@ export const threads: PlatformDefinition = {
     const token = ctx.credentials.accessToken;
     const uid = (ctx.credentials.userId as string) || ctx.account.accountId;
     if (!token) throw new ConfigError("Threads: アカウントを再接続してください");
-    const text = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
+    // 200文字以内は改行なし、超える場合は設定に従って改行あり1件 or ツリー（500文字を超えるなら必ずツリー）
+    const full = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
+    const parts = formatPostText(full, { mode: longPostMode(ctx.settings), limit: MAX_TEXT, measure: charCount });
+    const text = parts[0];
     const quote: Record<string, string> = post.quotePostId ? { quote_post_id: post.quotePostId } : {};
 
     let creationId: string;
@@ -169,7 +175,22 @@ export const threads: PlatformDefinition = {
 
     const postId = await publishContainer(uid, token, creationId);
     const info = await requestJson("threads", withQuery(`${GRAPH}/${V}/${postId}`, { fields: "permalink", access_token: token })).catch(() => ({}));
-    return { postId, url: (info as any).permalink };
+    const url = (info as any).permalink as string | undefined;
+
+    // ツリーの2件目以降は直前の投稿への返信（reply_to_id）。1件目は投稿済みなので、失敗しても全体は失敗にしない
+    let prev = postId;
+    for (let i = 1; i < parts.length; i++) {
+      try {
+        const id = await createContainer(uid, token, { media_type: "TEXT", text: parts[i], reply_to_id: prev });
+        await waitReady(id, token);
+        prev = await publishContainer(uid, token, id);
+      } catch (e) {
+        const hint = e instanceof ApiError && /permission|scope|threads_manage_replies/i.test(e.body) ? "（threads_manage_replies 権限を追加して再接続してください）" : "";
+        const msg = e instanceof Error ? e.message : String(e);
+        return { postId, url, note: `ツリー ${i + 1}/${parts.length} 件目以降の投稿に失敗${hint}: ${msg.slice(0, 200)}` };
+      }
+    }
+    return { postId, url, ...(parts.length > 1 ? { note: `ツリー投稿（${parts.length}件）` } : {}) };
   },
   supportsQuote: true,
   async fetchMetrics(ctx, posts) {

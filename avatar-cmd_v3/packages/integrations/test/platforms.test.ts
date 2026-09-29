@@ -104,6 +104,87 @@ test("X: 引用が 403 (not-authorized-for-resource) なら URL を本文に入�
   }
 });
 
+test("X: 長文はツリー設定なら返信でつなげて投稿し、メディアは1件目だけ", async () => {
+  let n = 0;
+  const m = mockFetch([
+    ["POST", /\/2\/media\/upload$/, { data: { id: "M1" } }],
+    ["POST", /\/2\/tweets$/, () => ({ json: { data: { id: `T${++n}` } } })],
+  ]);
+  try {
+    const text = `${"あ".repeat(120)}。\n\n${"い".repeat(120)}。`;
+    const r = await PLATFORMS.x.publish!(
+      ctx({ credentials: { accessToken: "AT", username: "me" }, settings: { longPostMode: "thread" } }),
+      post({ text, media: [media("image/png")] })
+    );
+    const tweets = m.calls.filter((c) => c.url.endsWith("/2/tweets"));
+    assert.equal(tweets.length, 2);
+    assert.deepEqual(tweets[0].json, { text: `${"あ".repeat(120)}。`, media: { media_ids: ["M1"] } });
+    assert.deepEqual(tweets[1].json, { text: `${"い".repeat(120)}。`, reply: { in_reply_to_tweet_id: "T1" } });
+    assert.equal(r.postId, "T1");
+    assert.match(r.note!, /ツリー投稿（2件）/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("X: 200文字以内は改行を取り除いて1件", async () => {
+  const m = mockFetch([["POST", /\/2\/tweets$/, { data: { id: "T1" } }]]);
+  try {
+    await PLATFORMS.x.publish!(ctx({ settings: { premium: "on" } }), post({ text: "おはよう。\n\n今日も頑張ろう。", link: "https://example.com" }));
+    assert.deepEqual(m.calls[0].json, { text: "おはよう。今日も頑張ろう。 https://example.com" });
+  } finally {
+    m.restore();
+  }
+});
+
+test("X: 2件目以降が失敗しても1件目は投稿済みとして返す（再試行で重複させない）", async () => {
+  let n = 0;
+  const m = mockFetch([["POST", /\/2\/tweets$/, () => (n++ === 0 ? { json: { data: { id: "T1" } } } : { status: 503, text: "down" })]]);
+  try {
+    const r = await PLATFORMS.x.publish!(ctx({ settings: { longPostMode: "thread", premium: "on" } }), post({ text: `${"あ".repeat(150)}。\n${"い".repeat(150)}。` }));
+    assert.equal(r.postId, "T1");
+    assert.match(r.note!, /2\/2 件目以降の投稿に失敗/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("X: 402 はクレジット不足の設定エラー、401 は再接続を促す", async () => {
+  for (const [status, re] of [[402, /クレジット/], [401, /再接続/]] as const) {
+    const m = mockFetch([["POST", /\/2\/tweets$/, () => ({ status, json: { title: "err" } })]]);
+    try {
+      await assert.rejects(PLATFORMS.x.publish!(ctx(), post()), (e: Error) => e.name === "ConfigError" && re.test(e.message));
+    } finally {
+      m.restore();
+    }
+  }
+});
+
+test("Threads: 長文はツリー設定なら reply_to_id でつなげて投稿", async () => {
+  let c = 0;
+  let p = 0;
+  const m = mockFetch([
+    ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads$/, () => ({ json: { id: `C${++c}` } })],
+    ["GET", /graph\.threads\.net\/v1\.0\/C\d\?/, { status: "FINISHED" }],
+    ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads_publish$/, () => ({ json: { id: `P${++p}` } })],
+    ["GET", /graph\.threads\.net\/v1\.0\/P1\?/, { permalink: "https://www.threads.com/@me/post/x" }],
+  ]);
+  try {
+    const text = `${"あ".repeat(150)}。\n${"い".repeat(150)}。`;
+    const r = await PLATFORMS.threads.publish!(ctx({ credentials: { accessToken: "AT", userId: "U1" }, settings: { longPostMode: "thread" } }), post({ text }));
+    const containers = m.calls.filter((x) => x.method === "POST" && x.url.endsWith("/U1/threads"));
+    assert.equal(containers.length, 2);
+    assert.equal(containers[0].form!.text, `${"あ".repeat(150)}。`);
+    assert.equal(containers[0].form!.reply_to_id, undefined);
+    assert.equal(containers[1].form!.text, `${"い".repeat(150)}。`);
+    assert.equal(containers[1].form!.reply_to_id, "P1");
+    assert.equal(r.postId, "P1");
+    assert.equal(r.url, "https://www.threads.com/@me/post/x");
+  } finally {
+    m.restore();
+  }
+});
+
 test("Threads: TEXT コンテナ作成 → threads_publish", async () => {
   const m = mockFetch([
     ["POST", /graph\.threads\.net\/v1\.0\/U1\/threads$/, { id: "C1" }],

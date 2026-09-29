@@ -17,6 +17,7 @@
 
 import type { MediaFile, PlatformDefinition, PostMetrics, PublishContext, TimelinePost } from "../types";
 import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
+import { formatPostText, LONG_POST_MODE_FIELD, longPostMode, xLength, xPostLimit } from "../post-text";
 
 const API = "https://api.x.com";
 const SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"];
@@ -30,6 +31,26 @@ function bearer(ctx: PublishContext): Record<string, string> {
 
 function readError(e: unknown): never {
   if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジットが不足しています (${e.body.slice(0, 200)})`);
+  throw e;
+}
+
+/**
+ * 投稿の失敗を、原因と対処がわかる設定エラーにする。
+ * 設定で直せないもの（429・5xx など）はそのまま投げて再試行させる
+ */
+function postError(e: unknown): never {
+  if (!(e instanceof ApiError)) throw e;
+  const body = e.body.slice(0, 200);
+  const lower = e.body.toLowerCase();
+  if (e.status === 402) throw new ConfigError(`X: API クレジット/プランが不足しています。アバター専用アプリの場合は、そのアプリの開発者アカウント側にクレジットが必要です (${body})`);
+  if (e.status === 401) throw new ConfigError(`X: 認証に失敗しました。アカウントを再接続してください（アプリの Client ID/Secret を変更した場合も再接続が必要です） (${body})`);
+  if (lower.includes("too long") || lower.includes("text is too long")) {
+    throw new ConfigError(`X: 文字数が上限を超えています。X Premium でないアカウントは日本語で約140文字までです。アカウント設定の「X Premium」を確認してください (${body})`);
+  }
+  if (lower.includes("duplicate")) throw new ConfigError(`X: 直前と同じ内容の投稿は拒否されます (${body})`);
+  if (e.status === 403 && (lower.includes("oauth1-permissions") || lower.includes("not permitted") || lower.includes("unsupported-authentication"))) {
+    throw new ConfigError(`X: アプリの権限が不足しています。App permissions を「Read and write」にしたうえで再接続してください (${body})`);
+  }
   throw e;
 }
 
@@ -121,6 +142,18 @@ export const x: PlatformDefinition = {
   ],
   accountFields: [],
   settingFields: [
+    LONG_POST_MODE_FIELD,
+    {
+      key: "premium",
+      label: "X Premium（長文投稿）",
+      type: "select",
+      default: "off",
+      options: [
+        { value: "off", label: "なし（1件 280＝日本語 約140文字まで）" },
+        { value: "on", label: "あり（長文を1件で投稿できる）" },
+      ],
+      help: "Premium でないアカウントは日本語で約140文字を超えると投稿できないため、超える分は自動でツリーに分けます",
+    },
     {
       key: "quoteScanHours",
       label: "引用候補の自動探索（ホームタイムライン）",
@@ -204,27 +237,48 @@ export const x: PlatformDefinition = {
     if (!token) throw new ConfigError("X: アカウントを再接続してください（アクセストークンなし）");
     const videos = post.media.filter((m) => m.mimeType.startsWith("video/") || m.mimeType === "image/gif");
     if (videos.length && post.media.length > 1) throw new ConfigError("X: 動画・GIF は1件のみ添付できます（画像との混在不可）");
+
+    // 200文字以内は改行なし、超える場合は設定に従って改行あり1件 or ツリー（上限を超えるなら必ずツリー）
+    const full = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
+    const parts = formatPostText(full, { mode: longPostMode(ctx.settings), limit: xPostLimit(ctx.settings), measure: xLength });
+
     const mediaIds: string[] = [];
     for (const m of post.media.slice(0, 4)) mediaIds.push(await uploadMedia(token, m));
 
-    const body: Record<string, unknown> = { text: post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text };
+    const body: Record<string, unknown> = { text: parts[0] };
     if (mediaIds.length) body.media = { media_ids: mediaIds };
     if (post.quotePostId) body.quote_tweet_id = post.quotePostId;
     const send = (json: Record<string, unknown>) =>
-      requestJson("x", `${API}/2/tweets`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, json }).catch((e) => {
-        if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジット/プランが不足しています (${e.body.slice(0, 200)})`);
-        throw e;
-      });
-    const d = await send(body).catch((e) => {
-      // X API は「自分が投稿者か、メンションされている投稿」しか引用できない。
-      // 拒否されたら引用元の URL を本文の末尾に入れて通常の投稿として送り直す（X 上では引用カードとして表示される）
-      if (!(post.quotePostId && e instanceof ApiError && e.status === 403 && e.body.includes("not-authorized-for-resource"))) throw e;
-      const url = post.quotePostUrl || `https://x.com/i/status/${post.quotePostId}`;
-      const { quote_tweet_id: _, ...rest } = body;
-      return send({ ...rest, text: `${body.text}\n${url}` });
-    });
+      requestJson("x", `${API}/2/tweets`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, json });
+    const d = await send(body)
+      .catch((e) => {
+        // X API は「自分が投稿者か、メンションされている投稿」しか引用できない。
+        // 拒否されたら引用元の URL を本文の末尾に入れて通常の投稿として送り直す（X 上では引用カードとして表示される）
+        if (!(post.quotePostId && e instanceof ApiError && e.status === 403 && e.body.includes("not-authorized-for-resource"))) throw e;
+        const url = post.quotePostUrl || `https://x.com/i/status/${post.quotePostId}`;
+        const { quote_tweet_id: _, ...rest } = body;
+        return send({ ...rest, text: `${body.text}\n${url}` });
+      })
+      .catch(postError);
     const username = (ctx.credentials.username as string) || ctx.account.accountName.replace(/^@/, "");
-    return { postId: d.data.id, url: `https://x.com/${username}/status/${d.data.id}` };
+    const first: string = d.data.id;
+
+    // ツリーの2件目以降は直前の投稿への返信。1件目は投稿済みなので、失敗しても全体は失敗にしない（再試行で重複させない）
+    let prev = first;
+    for (let i = 1; i < parts.length; i++) {
+      try {
+        const r = await send({ text: parts[i], reply: { in_reply_to_tweet_id: prev } }).catch(postError);
+        prev = r.data.id;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { postId: first, url: `https://x.com/${username}/status/${first}`, note: `ツリー ${i + 1}/${parts.length} 件目以降の投稿に失敗: ${msg.slice(0, 200)}` };
+      }
+    }
+    return {
+      postId: first,
+      url: `https://x.com/${username}/status/${first}`,
+      ...(parts.length > 1 ? { note: `ツリー投稿（${parts.length}件）` } : {}),
+    };
   },
   supportsQuote: true,
   async fetchMetrics(ctx, posts) {
