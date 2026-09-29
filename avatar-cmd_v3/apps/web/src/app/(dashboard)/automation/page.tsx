@@ -14,13 +14,20 @@ interface Rule {
   description: string | null;
   isActive: boolean;
   trigger: { type: "daily"; times: string[]; timezone?: string } | { type: "interval"; hours: number };
-  action: { accountIds: string[]; topics: string[]; mode: "draft" | "auto"; extraPrompt?: string };
+  action: { accountIds: string[]; topics: string[]; mode: "draft" | "auto"; approval?: Approval; extraPrompt?: string };
   executionCount: number;
   lastExecutedAt: string | null;
   nextRunAt: string | null;
   lastError: string | null;
   performance: Performance | null;
 }
+
+type Approval = "all" | "standard" | "strict";
+const APPROVAL: Record<Approval, { label: string; badge: string }> = {
+  all: { label: "すべて自動承認（チェック結果は記録のみ）", badge: "自動承認" },
+  standard: { label: "NG 判定のみ保留（注意レベルは投稿）", badge: "NGのみ保留" },
+  strict: { label: "チェック OK のみ投稿（それ以外は承認待ち）", badge: "OKのみ投稿" },
+};
 
 type Verdict = "continue" | "improve" | "stop" | "insufficient";
 interface Performance {
@@ -95,6 +102,7 @@ interface Draft {
   accountIds: string[];
   topics: string;
   mode: "draft" | "auto";
+  approval: Approval;
   extraPrompt: string;
 }
 
@@ -109,6 +117,7 @@ function toDraft(r: Rule): Draft {
     accountIds: r.action.accountIds,
     topics: r.action.topics.join("\n"),
     mode: r.action.mode,
+    approval: r.action.approval ?? "all",
     extraPrompt: r.action.extraPrompt ?? "",
   };
 }
@@ -158,7 +167,7 @@ export default function AutomationPage() {
         draft.triggerType === "daily"
           ? { type: "daily", times: draft.times.split(/[,、\s]+/).filter(Boolean), timezone: "Asia/Tokyo" }
           : { type: "interval", hours: Number(draft.hours) },
-      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, extraPrompt: draft.extraPrompt },
+      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval: draft.approval, extraPrompt: draft.extraPrompt },
     };
     try {
       if (draft.id) await api(`/api/automations/${draft.id}`, { method: "PATCH", json: body });
@@ -243,6 +252,23 @@ export default function AutomationPage() {
               onChange={(v) => setDraft({ ...draft, mode: v as Draft["mode"] })}
             />
           </div>
+          {draft.mode === "auto" && (
+            <div>
+              <Field
+                def={{
+                  key: "approval",
+                  label: "自動承認の範囲",
+                  type: "select",
+                  options: (Object.keys(APPROVAL) as Approval[]).map((k) => ({ value: k, label: APPROVAL[k].label })),
+                }}
+                value={draft.approval}
+                onChange={(v) => setDraft({ ...draft, approval: v as Approval })}
+              />
+              <p className="mt-1 text-[11px] text-white/40">
+                投稿前チェック（AI）と Jev（gate モード時）の判定のうち、どこまでを承認なしで投稿するか。「すべて自動承認」では承認待ちになりません（指摘があった投稿はアクティビティに記録されます）。
+              </p>
+            </div>
+          )}
           <div>
             <div className="mb-1 text-xs text-white/60">投稿先アカウント</div>
             {avatarAccounts.length === 0 ? (
@@ -289,7 +315,7 @@ export default function AutomationPage() {
           className="mb-6"
           disabled={!avatars.length}
           onClick={() =>
-            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", extraPrompt: "" })
+            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", approval: "all", extraPrompt: "" })
           }
         >
           + 新しいルール
@@ -308,7 +334,7 @@ export default function AutomationPage() {
                     <span className="font-semibold">{r.name}</span>
                     <Badge className="bg-white/5 text-white/50">{r.avatarName}</Badge>
                     <Badge className={r.action.mode === "auto" ? "bg-violet-500/15 text-violet-300" : "bg-cyan-500/15 text-cyan-300"}>
-                      {r.action.mode === "auto" ? "自動投稿" : "下書き→承認"}
+                      {r.action.mode === "auto" ? `自動投稿・${APPROVAL[r.action.approval ?? "all"].badge}` : "下書き→承認"}
                     </Badge>
                   </div>
                   <div className="mt-1 text-xs text-white/50">{scheduleLabel(r.trigger)}</div>

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextRunAfter, validateAction, validateTrigger } from "../src/service/automation";
+import { autoApprovalDecision, nextRunAfter, validateAction, validateTrigger } from "../src/service/automation";
 import { buildPrompts, readPersona, taskForPlatform } from "../src/service/ai";
 
 test("daily: Asia/Tokyo の 09:00 / 19:00 の次回時刻", () => {
@@ -26,6 +26,41 @@ test("interval と入力検証", () => {
   assert.throws(() => validateTrigger({ type: "interval", hours: 0 }), /間隔/);
   assert.throws(() => validateAction({ accountIds: [], topics: ["a"], mode: "auto" }), /アカウント/);
   assert.equal(validateAction({ accountIds: ["x"], topics: [" a ", ""], mode: "bogus" as any }).mode, "draft");
+});
+
+test("自動承認: 自動投稿モードの approval は未指定なら all、下書きモードでは持たない", () => {
+  assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto" }).approval, "all");
+  assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto", approval: "strict" }).approval, "strict");
+  assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto", approval: "bogus" as any }).approval, "all");
+  assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "draft", approval: "strict" }).approval, undefined);
+});
+
+test("自動承認: 範囲ごとに投稿するか下書きに回すか", () => {
+  const ok = { verdict: "ok", summary: "" };
+  const caution = { verdict: "caution", summary: "表現が強い" };
+  const ng = { verdict: "ng", summary: "断定表現" };
+  const err = { verdict: "error", summary: "", error: "timeout" };
+  const hold = { mode: "gate" as const, action: "hold", publish: false, reason: "Jev: 公開すべきでない（hold）" };
+  const review = { mode: "gate" as const, action: "review", publish: false, reason: "Jev: 人の確認が必要（review）" };
+  const shadowHold = { ...hold, mode: "shadow" as const };
+
+  // all: 何があっても投稿（Jev の判定は反映しない）
+  for (const r of [ok, caution, ng, err]) assert.deepEqual(autoApprovalDecision("all", r, hold), { publish: true, gateApplied: false });
+
+  // standard: NG と Jev の hold だけ保留
+  assert.equal(autoApprovalDecision("standard", caution).publish, true);
+  assert.equal(autoApprovalDecision("standard", err).publish, true);
+  assert.equal(autoApprovalDecision("standard", ok, review).publish, true);
+  assert.deepEqual(autoApprovalDecision("standard", ng), { publish: false, reason: "断定表現", gateApplied: false });
+  assert.deepEqual(autoApprovalDecision("standard", ok, hold), { publish: false, reason: hold.reason, gateApplied: true });
+  assert.equal(autoApprovalDecision("standard", ok, shadowHold).publish, true);
+
+  // strict: OK かつ Jev 通過のみ（従来の動作）
+  assert.equal(autoApprovalDecision("strict", ok).publish, true);
+  assert.equal(autoApprovalDecision("strict", caution).publish, false);
+  assert.match(autoApprovalDecision("strict", err).reason!, /チェック失敗/);
+  assert.deepEqual(autoApprovalDecision("strict", ok, review), { publish: false, reason: review.reason, gateApplied: true });
+  assert.equal(autoApprovalDecision("strict", ok, shadowHold).publish, true);
 });
 
 test("プロンプト: ペルソナ・文字数制限が入る", () => {

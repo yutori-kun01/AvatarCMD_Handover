@@ -114,6 +114,14 @@ export const youtube: PlatformDefinition = {
     });
     return { ...cred, accessToken: t.access_token, refreshToken: t.refresh_token ?? cred.refreshToken, ...tokenTimes(t.expires_in) };
   },
+  async fetchProfile(ctx) {
+    const token = ctx.credentials.accessToken;
+    if (!token) throw new ConfigError("YouTube: アカウントを再接続してください");
+    const d = await requestJson("youtube", "https://www.googleapis.com/youtube/v3/channels?part=statistics&mine=true", { headers: { Authorization: `Bearer ${token}` } });
+    const st = d.items?.[0]?.statistics as { subscriberCount?: string; videoCount?: string; hiddenSubscriberCount?: boolean } | undefined;
+    const n = (v?: string) => (v === undefined ? undefined : Number(v));
+    return { followers: st?.hiddenSubscriberCount ? undefined : n(st?.subscriberCount), posts: n(st?.videoCount) };
+  },
   async publish(ctx, post) {
     const token = ctx.credentials.accessToken;
     if (!token) throw new ConfigError("YouTube: アカウントを再接続してください");

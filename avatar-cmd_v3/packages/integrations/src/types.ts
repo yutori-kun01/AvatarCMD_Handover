@@ -80,6 +80,13 @@ export interface MediaFile {
   load(): Promise<Uint8Array>;
 }
 
+/** アカウントの規模（取得できたものだけ入る） */
+export interface ProfileStats {
+  followers?: number;
+  following?: number;
+  posts?: number;
+}
+
 /** 投稿の反応（取得できたものだけ入る） */
 export interface PostMetrics {
   views?: number;
@@ -182,6 +189,8 @@ export interface PlatformDefinition {
   publish?(ctx: PublishContext, post: PostInput): Promise<PublishResult>;
   /** 自分の投稿の反応を取得する。取得できない投稿はエラー理由を返す */
   fetchMetrics?(ctx: PublishContext, posts: { postId: string; publishedAt: Date }[]): Promise<Record<string, PostMetrics | { error: string }>>;
+  /** アカウントのフォロワー数など（1日1回程度取得して推移を記録する） */
+  fetchProfile?(ctx: PublishContext): Promise<ProfileStats>;
   /** 自分のホームタイムライン（フォロー中の投稿）を新しい順に取得する */
   fetchTimeline?(ctx: PublishContext, opts: { maxResults: number; sinceId?: string }): Promise<TimelinePost[]>;
   /** 引用投稿に対応しているか */

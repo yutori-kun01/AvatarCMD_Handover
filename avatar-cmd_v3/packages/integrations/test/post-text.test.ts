@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { charCount, formatPostText, removeLineBreaks, xLength } from "../src/post-text";
+import { charCount, cleanPostText, formatBullets, formatPostText, removeLineBreaks, stripBrackets, xLength } from "../src/post-text";
 
 const ja = (n: number) => "あ".repeat(n);
 
@@ -52,4 +52,30 @@ test("URL は途中で切らない", () => {
   const url = "https://example.com/abc";
   const parts = formatPostText(`${ja(139)}${url}`, { mode: "newline", limit: 280, measure: xLength });
   assert.ok(parts.some((p) => p.includes(url)));
+});
+
+test("「」は必ず取り除く。本文全体を囲む『』や引用符も外す", () => {
+  assert.equal(stripBrackets("「朝の10分で集中力が変わる」"), "朝の10分で集中力が変わる");
+  assert.equal(stripBrackets("今日は「ポモドーロ」を試した。「25分」だけ集中。"), "今日はポモドーロを試した。25分だけ集中。");
+  assert.equal(stripBrackets("“朝活のすすめ”"), "朝活のすすめ");
+  assert.equal(stripBrackets("『本A』と『本B』を読んだ"), "『本A』と『本B』を読んだ");
+});
+
+test("箇条書き: 行の途中に続いた項目を1項目ずつ改行し、前後の文と空行で分ける", () => {
+  assert.equal(
+    formatBullets("集中のコツは3つ。・朝日を浴びる ・水を飲む ・散歩する\nぜひ試して"),
+    "集中のコツは3つ。\n\n・朝日を浴びる\n・水を飲む\n・散歩する\n\nぜひ試して"
+  );
+  assert.equal(formatBullets("ポイント：①睡眠②運動③食事"), "ポイント：\n\n①睡眠\n②運動\n③食事");
+  // 語の間の中黒は区切らない。箇条書きでなければそのまま
+  assert.equal(formatBullets("コーヒー・紅茶を控えると眠りやすい"), "コーヒー・紅茶を控えると眠りやすい");
+  assert.equal(formatBullets("おはよう。\n今日も頑張ろう"), "おはよう。\n今日も頑張ろう");
+});
+
+test("箇条書きは200文字以内でも改行を残して1件、「」は取り除く", () => {
+  const parts = formatPostText("「今日のToDo」\n・メール返信\n・資料作成\n・散歩", { mode: "newline", limit: 280, measure: xLength });
+  assert.deepEqual(parts, ["今日のToDo\n\n・メール返信\n・資料作成\n・散歩"]);
+  // 箇条書きでない短文は従来どおり改行を除く
+  assert.deepEqual(formatPostText("「おはよう」\n今日も頑張ろう", { mode: "newline", limit: 280, measure: xLength }), ["おはよう今日も頑張ろう"]);
+  assert.equal(cleanPostText("「見出し」\n- a\n- b", { article: true }), "見出し\n- a\n- b");
 });

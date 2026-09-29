@@ -125,6 +125,7 @@ model Avatar {
   contents        Content[]
   campaigns       Campaign[]
   revenues        Revenue[]
+  revenueItems    RevenueItem[]
   analytics       AvatarAnalytics[]
   automationRules AutomationRule[]
   activityLogs    ActivityLog[]
@@ -214,12 +215,18 @@ model SnsAccount {
   followingCount Int?     @map("following_count")
   healthScore   Int       @default(100) @map("health_score")
   lastError     String?   @map("last_error")
+  // v3.5 — フォロワー数を最後に取得した時刻・取得できなかった理由
+  followersUpdatedAt DateTime? @map("followers_updated_at")
+  followersError     String?   @map("followers_error")
   // v3.3 — 接続に使った開発者アプリ: shared = 共通（設定 > SNS連携アプリ）/ avatar = アバター専用
   // トークンの更新は、発行したのと同じアプリで行う必要があるため記録する
   appScope      String    @default("shared") @map("app_scope")
 
   avatar        Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   contents      Content[]
+  revenues      Revenue[]
+  revenueItems  RevenueItem[]
+  snapshots     AccountSnapshot[]
 
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
@@ -352,6 +359,24 @@ model ScheduledPost {
   @@map("scheduled_posts")
 }
 
+// v3.5 — アカウントのフォロワー数の日次記録（推移グラフ用。1アカウント1日1行）
+model AccountSnapshot {
+  id           String     @id @default(uuid())
+  snsAccountId String     @map("sns_account_id")
+  date         DateTime   @db.Date
+  followers    Int?
+  following    Int?
+  posts        Int?
+
+  snsAccount   SnsAccount @relation(fields: [snsAccountId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@unique([snsAccountId, date])
+  @@map("account_snapshots")
+}
+
 // ==============================================
 // 8. Revenue
 // ==============================================
@@ -371,12 +396,42 @@ model Revenue {
   description   String?
   status        String   @default("confirmed") // pending, confirmed, refunded
   earnedAt      DateTime @map("earned_at")
+  // v3.5 — どのアカウント・アイテム（記事・商品など）の売上か。数量 × 単価 = amount（手入力で上書き可）
+  snsAccountId  String?  @map("sns_account_id")
+  itemId        String?  @map("item_id")
+  quantity      Int      @default(1)
 
-  avatar        Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  avatar        Avatar       @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  snsAccount    SnsAccount?  @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
+  item          RevenueItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
 
   createdAt     DateTime @default(now()) @map("created_at")
 
+  @@index([earnedAt])
+  @@index([snsAccountId, earnedAt])
   @@map("revenues")
+}
+
+// v3.5 — 繰り返し売れる記事・商品など。登録しておくと、次からは選ぶだけで記録できる
+model RevenueItem {
+  id           String      @id @default(uuid())
+  avatarId     String      @map("avatar_id")
+  snsAccountId String?     @map("sns_account_id")
+  name         String
+  source       String      @default("paid_content")
+  platform     String
+  unitPrice    Float       @map("unit_price")
+  url          String?
+  isActive     Boolean     @default(true) @map("is_active")
+
+  avatar       Avatar      @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  snsAccount   SnsAccount? @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
+  revenues     Revenue[]
+
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@map("revenue_items")
 }
 
 // ==============================================

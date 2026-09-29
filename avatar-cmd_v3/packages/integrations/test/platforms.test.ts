@@ -451,3 +451,20 @@ test("全プラットフォーム: 定義の整合性", () => {
     if (p.connection === "credentials") assert.ok(p.connect && p.accountFields.length, p.id);
   }
 });
+
+test("フォロワー数: X は users/me の public_metrics、Threads は threads_insights、YouTube は channels statistics", async () => {
+  const m = mockFetch([
+    ["GET", /api\.x\.com\/2\/users\/me\?/, { data: { id: "42", public_metrics: { followers_count: 1200, following_count: 80, tweet_count: 950 } } }],
+    ["GET", /graph\.threads\.net\/v1\.0\/acct\/threads_insights\?/, { data: [{ name: "followers_count", total_value: { value: 340 } }] }],
+    ["GET", /youtube\/v3\/channels\?part=statistics/, { items: [{ statistics: { subscriberCount: "5000", videoCount: "12", hiddenSubscriberCount: false } }] }],
+  ]);
+  try {
+    assert.deepEqual(await PLATFORMS.x.fetchProfile!(ctx()), { followers: 1200, following: 80, posts: 950 });
+    assert.match(m.calls[0].url, /user\.fields=public_metrics/);
+    assert.deepEqual(await PLATFORMS.threads.fetchProfile!(ctx()), { followers: 340 });
+    assert.match(m.calls[1].url, /metric=followers_count/);
+    assert.deepEqual(await PLATFORMS.youtube.fetchProfile!(ctx()), { followers: 5000, posts: 12 });
+  } finally {
+    m.restore();
+  }
+});

@@ -15,3 +15,4 @@ export * from "./service/performance";
 export * from "./service/quotes";
 export * from "./service/automation";
 export * from "./service/stats";
+export * from "./service/analytics";

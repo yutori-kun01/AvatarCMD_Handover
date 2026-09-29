@@ -34,7 +34,7 @@ export async function overview() {
   const since14 = new Date(now - 14 * DAY);
   const since30 = new Date(now - 30 * DAY);
 
-  const [avatars, accounts, published30, published7, publishedPrev7, failed7, scheduled, drafts, rules, revenue30, revenuePrev30] =
+  const [avatars, accounts, published30, published7, publishedPrev7, failed7, scheduled, drafts, rules, revenue30, revenuePrev30, failed30, revenueRows30] =
     await Promise.all([
       prisma.avatar.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, name: true, role: true, status: true } }),
       prisma.snsAccount.findMany({ select: { id: true, avatarId: true, platform: true, accountName: true, isActive: true, lastError: true, tokenExpiry: true } }),
@@ -47,17 +47,21 @@ export async function overview() {
       prisma.automationRule.findMany({ select: { isActive: true, nextRunAt: true, name: true } }),
       prisma.revenue.aggregate({ _sum: { amount: true }, where: { earnedAt: { gte: since30 }, status: { not: "refunded" } } }),
       prisma.revenue.aggregate({ _sum: { amount: true }, where: { earnedAt: { gte: new Date(now - 60 * DAY), lt: since30 }, status: { not: "refunded" } } }),
+      prisma.content.findMany({ where: { status: "FAILED", updatedAt: { gte: since30 } }, select: { updatedAt: true } }),
+      prisma.revenue.findMany({ where: { earnedAt: { gte: since30 }, status: { not: "refunded" } }, select: { earnedAt: true, amount: true } }),
     ]);
 
   const change = (a: number, b: number) => (b === 0 ? (a > 0 ? 100 : 0) : Math.round(((a - b) / b) * 1000) / 10);
   const successRate = published7 + failed7 === 0 ? null : Math.round((published7 / (published7 + failed7)) * 1000) / 10;
 
-  // 日別投稿数（30日）
-  const byDay = new Map<string, number>();
-  for (let i = 29; i >= 0; i--) byDay.set(dayKey(new Date(now - i * DAY)), 0);
-  for (const c of published30) {
-    const k = dayKey(c.publishedAt!);
-    if (byDay.has(k)) byDay.set(k, byDay.get(k)! + 1);
+  // 日別の投稿数・失敗数・収益（30日）
+  const byDay = new Map<string, { count: number; failed: number; revenue: number }>();
+  for (let i = 29; i >= 0; i--) byDay.set(dayKey(new Date(now - i * DAY)), { count: 0, failed: 0, revenue: 0 });
+  for (const c of published30) byDay.get(dayKey(c.publishedAt!)) && byDay.get(dayKey(c.publishedAt!))!.count++;
+  for (const c of failed30) byDay.get(dayKey(c.updatedAt)) && byDay.get(dayKey(c.updatedAt))!.failed++;
+  for (const r of revenueRows30) {
+    const d = byDay.get(dayKey(r.earnedAt));
+    if (d) d.revenue += r.amount;
   }
 
   const platformCounts = new Map<string, number>();
@@ -101,7 +105,7 @@ export async function overview() {
       revenue30: revenue30._sum.amount ?? 0,
       revenueChange: change(revenue30._sum.amount ?? 0, revenuePrev30._sum.amount ?? 0),
     },
-    daily: [...byDay.entries()].map(([date, count]) => ({ date, count })),
+    daily: [...byDay.entries()].map(([date, v]) => ({ date, ...v })),
     platforms: [...platformCounts.entries()]
       .map(([p, count]) => ({ platform: p, name: getPlatform(p)?.name ?? p, icon: getPlatform(p)?.icon ?? "", count }))
       .sort((a, b) => b.count - a.count),
@@ -116,7 +120,7 @@ export async function revenueReport() {
   const rows = await prisma.revenue.findMany({
     orderBy: { earnedAt: "desc" },
     take: 500,
-    include: { avatar: { select: { name: true } } },
+    include: { avatar: { select: { name: true } }, snsAccount: { select: { accountName: true, platform: true } }, item: { select: { name: true } } },
   });
   const valid = rows.filter((r) => r.status !== "refunded");
   const sum = (xs: typeof rows) => xs.reduce((s, r) => s + r.amount, 0);
@@ -143,6 +147,9 @@ export async function revenueReport() {
     entries: rows.slice(0, 100).map((r) => ({
       id: r.id,
       avatarName: r.avatar.name,
+      accountName: r.snsAccount ? `${getPlatform(r.snsAccount.platform)?.name ?? r.snsAccount.platform} ${r.snsAccount.accountName}` : null,
+      itemName: r.item?.name ?? null,
+      quantity: r.quantity,
       source: r.source,
       platform: r.platform,
       amount: r.amount,

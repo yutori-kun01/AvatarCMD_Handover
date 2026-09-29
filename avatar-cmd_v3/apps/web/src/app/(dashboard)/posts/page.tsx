@@ -5,7 +5,7 @@ import { ExternalLink, ImagePlus, Quote, RefreshCw, ScissorsLineDashed, ShieldCh
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
-import { charCount, formatPostText, longPostMode, removeLineBreaks, SHORT_POST_CHARS, xLength, xPostLimit } from "@avatar-cmd/integrations/post-text";
+import { charCount, cleanPostText, formatPostText, hasBulletList, longPostMode, removeLineBreaks, SHORT_POST_CHARS, xLength, xPostLimit } from "@avatar-cmd/integrations/post-text";
 
 /** X / Threads で実際にどう投稿されるか（アカウント設定の「200文字を超える投稿」「X Premium」に従う） */
 function splitLabel(text: string, a: AccountInfo): string {
@@ -18,7 +18,9 @@ function splitLabel(text: string, a: AccountInfo): string {
     measure: isX ? xLength : charCount,
   });
   if (parts.length > 1) return `ツリー ${parts.length}件`;
-  return charCount(removeLineBreaks(text)) <= SHORT_POST_CHARS ? "1件（改行なし）" : "1件（改行あり）";
+  const clean = cleanPostText(text);
+  if (hasBulletList(clean)) return "1件（箇条書きは改行あり）";
+  return charCount(removeLineBreaks(clean)) <= SHORT_POST_CHARS ? "1件（改行なし）" : "1件（改行あり）";
 }
 import { PlatformIcon } from "@/components/platform-icon";
 

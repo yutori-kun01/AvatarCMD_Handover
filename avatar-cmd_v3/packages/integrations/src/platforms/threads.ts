@@ -193,6 +193,17 @@ export const threads: PlatformDefinition = {
     return { postId, url, ...(parts.length > 1 ? { note: `ツリー投稿（${parts.length}件）` } : {}) };
   },
   supportsQuote: true,
+  async fetchProfile(ctx) {
+    const token = ctx.credentials.accessToken;
+    if (!token) throw new ConfigError("Threads: アカウントを再接続してください");
+    try {
+      const d = await requestJson("threads", withQuery(`${GRAPH}/${V}/${ctx.account.accountId || "me"}/threads_insights`, { metric: "followers_count", access_token: token }));
+      const row = ((d.data ?? []) as { name: string; total_value?: { value: number } }[]).find((r) => r.name === "followers_count");
+      return { followers: row?.total_value?.value };
+    } catch (e) {
+      throw new ConfigError(insightError(e));
+    }
+  },
   async fetchMetrics(ctx, posts) {
     const token = ctx.credentials.accessToken;
     if (!token) throw new ConfigError("Threads: アカウントを再接続してください");

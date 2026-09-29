@@ -4,7 +4,11 @@
 // AutomationRule の JSON 形式:
 //   triggerConfig: { type: "daily", times: ["09:00","19:00"], timezone: "Asia/Tokyo" }
 //                | { type: "interval", hours: 6 }
-//   actionConfig:  { accountIds: string[], topics: string[], mode: "draft" | "auto", extraPrompt?: string }
+//   actionConfig:  { accountIds: string[], topics: string[], mode: "draft" | "auto", approval?: AutoApproval, extraPrompt?: string }
+//     approval（mode: "auto" のときの自動承認の範囲。未指定は "all"）:
+//       all      … 投稿前チェック・Jev の結果に関わらず自動承認して投稿（結果は記録のみ）
+//       standard … NG（公開すべきでない）・Jev の hold だけ下書きに回し、それ以外は投稿
+//       strict   … 投稿前チェックが OK かつ Jev を通過したものだけ投稿（チェック失敗も下書き）
 // worker が tick ごとに processDueRules() を呼び、nextRunAt を過ぎたルールを実行する。
 
 import { prisma } from "@avatar-cmd/db";
@@ -19,11 +23,38 @@ export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
   | { type: "interval"; hours: number };
 
+export type AutoApproval = "all" | "standard" | "strict";
+export const AUTO_APPROVALS: AutoApproval[] = ["all", "standard", "strict"];
+
 export interface ActionConfig {
   accountIds: string[];
   topics: string[];
   mode: "draft" | "auto";
+  /** mode: "auto" のときの自動承認の範囲（未指定は all） */
+  approval?: AutoApproval;
   extraPrompt?: string;
+}
+
+/**
+ * 自動投稿モードで、投稿前チェック（review）と Jev の判定から「自動承認して投稿するか」を決める。
+ * publish: false のときは下書き（承認待ち）に回す。gateApplied は Jev の判定を処理に反映したか。
+ */
+export function autoApprovalDecision(
+  approval: AutoApproval,
+  review: { verdict: string; summary?: string; error?: string },
+  jev?: { mode: "shadow" | "gate"; action: string; publish: boolean; reason: string }
+): { publish: boolean; reason?: string; gateApplied: boolean } {
+  const reviewWhy = () => (review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict);
+  const gate = jev?.mode === "gate" ? jev : undefined;
+  if (approval === "all") return { publish: true, gateApplied: false };
+  if (approval === "standard") {
+    if (review.verdict === "ng") return { publish: false, reason: reviewWhy(), gateApplied: !!gate };
+    if (gate?.action === "hold") return { publish: false, reason: gate.reason, gateApplied: true };
+    return { publish: true, gateApplied: !!gate };
+  }
+  if (review.verdict !== "ok") return { publish: false, reason: reviewWhy(), gateApplied: !!gate };
+  if (gate && !gate.publish) return { publish: false, reason: gate.reason, gateApplied: true };
+  return { publish: true, gateApplied: !!gate };
 }
 
 const DEFAULT_TZ = "Asia/Tokyo";
@@ -96,7 +127,9 @@ export function validateAction(a: ActionConfig): ActionConfig {
   if (!accountIds.length) throw new ConfigError("投稿先アカウントを選択してください");
   const topics = (a.topics ?? []).map((t) => t.trim()).filter(Boolean);
   if (!topics.length) throw new ConfigError("トピックを1つ以上入力してください");
-  return { accountIds, topics, mode: a.mode === "auto" ? "auto" : "draft", extraPrompt: a.extraPrompt?.trim() || undefined };
+  const mode = a.mode === "auto" ? "auto" : "draft";
+  const approval = mode === "auto" ? (AUTO_APPROVALS.includes(a.approval as AutoApproval) ? a.approval : "all") : undefined;
+  return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
 }
 
 /** ルールを1回実行する。作成した投稿数を返す */
@@ -114,6 +147,7 @@ export async function runRule(ruleId: string): Promise<number> {
   let queued = 0;
   let drafted = 0;
   const held: string[] = [];
+  const flagged: string[] = [];
   for (const [platform, accs] of byPlatform) {
     const { text, model } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt });
     // Jev の判定（キーが無ければ null → 既存の流れのみ）。shadow は記録だけ、gate は自動投稿の可否に反映
@@ -121,29 +155,31 @@ export async function runRule(ruleId: string): Promise<number> {
     const jevMeta = jev ? { action: jev.action, confidence: jev.confidence, mode: jev.mode, model: jev.model, ...postGatePolicy(jev) } : undefined;
     let review: { verdict: string; summary: string; model?: string; error?: string } | undefined;
     if (action.mode === "auto") {
-      // 自動投稿の前に「投稿前チェック」を通す。ok 以外、またはチェック自体の失敗は下書きに回す（安全側）
+      // 自動投稿の前に「投稿前チェック」を通す。どこまで自動承認するかはルールの approval で決める
       try {
         const r = await reviewPost({ text, avatarId: rule.avatarId, platform });
         review = { verdict: r.verdict, summary: r.summary, model: r.model };
       } catch (e) {
         review = { verdict: "error", summary: "", error: errorMessage(e) };
       }
-      const gateBlocks = jev?.mode === "gate" && !jevMeta!.publish;
-      if (jev?.mode === "gate") await markApplied(jev.eventId);
-      if (review.verdict === "ok" && !gateBlocks) {
+      const approval = action.approval ?? "all";
+      const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined);
+      if (jev && d.gateApplied) await markApplied(jev.eventId);
+      if (d.publish) {
         const posted = await createPosts({
           accountIds: accs.map((a) => a.id),
           text,
           title: topic,
           category: "automation",
-          extraMetadata: { automationId: rule.id, model, review, ...(jevMeta ? { jev: jevMeta } : {}) },
+          extraMetadata: { automationId: rule.id, model, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
         });
         if (jev && posted[0]) await linkDecision(jev.eventId, posted[0].id);
         queued += posted.length;
+        // チェックで指摘があっても自動承認した場合は、後から確認できるよう記録しておく
+        if (review.verdict !== "ok") flagged.push(`${getPlatform(platform)?.name ?? platform}: ${review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : `${review.verdict} ${review.summary}`.trim()}`);
         continue;
       }
-      const why = review.verdict !== "ok" ? (review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict) : jevMeta!.reason;
-      held.push(`${getPlatform(platform)?.name ?? platform}: ${why}`);
+      held.push(`${getPlatform(platform)?.name ?? platform}: ${d.reason}`);
     }
     for (const [i, a] of accs.entries()) {
       const c = await prisma.content.create({
@@ -171,6 +207,19 @@ export async function runRule(ruleId: string): Promise<number> {
         category: "content",
         level: "warning",
         description: `自動化「${rule.name}」: 投稿前チェックで保留し、下書きに回しました — ${held.join(" / ")}`,
+        metadata: { ruleId: rule.id },
+      },
+    });
+  }
+
+  if (flagged.length) {
+    await prisma.activityLog.create({
+      data: {
+        avatarId: rule.avatarId,
+        action: "automation_auto_approved",
+        category: "content",
+        level: "warning",
+        description: `自動化「${rule.name}」: 投稿前チェックで指摘がありましたが、自動承認の設定により投稿しました — ${flagged.join(" / ")}`,
         metadata: { ruleId: rule.id },
       },
     });

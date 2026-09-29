@@ -20,6 +20,7 @@ import { buildPrompts, readPersona, reviewPost } from "./ai";
 import { decideWithJev, logDecision, topChoice } from "./decision";
 import { completeJson, completeText } from "./llm";
 import { errorMessage } from "./publish";
+import { cleanPostText } from "../post-text";
 import { getSystemConfig } from "./store";
 
 const HOUR = 3600_000;
@@ -192,7 +193,7 @@ export async function writeQuoteText(input: { avatarId: string; platform: string
     .filter(Boolean)
     .join("\n");
   const res = await completeText({ task: "quote", system, user });
-  let text = res.text;
+  let text = cleanPostText(res.text);
   if (limit && [...text].length > limit) text = [...text].slice(0, limit - 1).join("") + "…";
   return { text, model: res.model };
 }

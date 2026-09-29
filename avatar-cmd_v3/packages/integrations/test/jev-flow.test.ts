@@ -158,7 +158,7 @@ test("引用候補: タイムライン → 除外ルール → Jev 判定 → �
   }
 });
 
-test("gate モード: Jev が hold と判定した自動投稿は下書きに回る（判定は反映済みとして記録）", opts, async () => {
+test("gate モード + 自動承認 strict: Jev が hold と判定した自動投稿は下書きに回る（判定は反映済みとして記録）", opts, async () => {
   await svc.setSetting("jev_api_key", "tsk-test");
   await svc.setSetting("jev_mode", "gate");
   const rule = await prisma.automationRule.create({
@@ -168,7 +168,7 @@ test("gate モード: Jev が hold と判定した自動投稿は下書きに回
       triggerType: "schedule",
       triggerConfig: { type: "interval", hours: 24 },
       actionType: "generate_post",
-      actionConfig: { accountIds: [accountId], topics: ["集中力"], mode: "auto" },
+      actionConfig: { accountIds: [accountId], topics: ["集中力"], mode: "auto", approval: "strict" },
     },
   });
   const m = mocks();
@@ -195,6 +195,34 @@ test("gate モード: Jev が hold と判定した自動投稿は下書きに回
     assert.equal(p.verdict, "insufficient");
     assert.equal(p.engine, "rule");
     assert.equal(m.calls.filter((x) => /typesafe/.test(x.url)).length, before);
+  } finally {
+    m.restore();
+  }
+});
+
+test("gate モード + 自動承認 all（既定）: Jev が hold でも承認なしで投稿キューに入る", opts, async () => {
+  await svc.setSetting("jev_api_key", "tsk-test");
+  await svc.setSetting("jev_mode", "gate");
+  const rule = await prisma.automationRule.create({
+    data: {
+      avatarId,
+      name: "夜の投稿",
+      triggerType: "schedule",
+      triggerConfig: { type: "interval", hours: 24 },
+      actionType: "generate_post",
+      actionConfig: { accountIds: [accountId], topics: ["集中力"], mode: "auto" },
+    },
+  });
+  const m = mocks();
+  try {
+    assert.equal(await svc.runRule(rule.id), 1);
+    const c = await prisma.content.findFirstOrThrow({ where: { avatarId, category: "automation", metadata: { path: ["automationId"], equals: rule.id } }, include: { scheduledPost: true } });
+    assert.equal(c.status, "SCHEDULED");
+    assert.equal(c.scheduledPost?.status, "pending");
+    assert.equal((c.metadata as any).autoApproved, "all");
+    assert.equal((c.metadata as any).jev.publish, false);
+    const ev = await prisma.decisionEvent.findFirstOrThrow({ where: { subjectId: c.id, decisionType: "post_gate" } });
+    assert.equal(ev.applied, false); // all では Jev の判定を処理に反映しない（記録のみ）
   } finally {
     m.restore();
   }

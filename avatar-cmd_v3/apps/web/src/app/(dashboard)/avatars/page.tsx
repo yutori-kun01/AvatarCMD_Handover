@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AVATAR_STATUS, EmptyState, Shell, Stat } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, Notice } from "@/components/settings/ui";
+import { AccountVitals } from "@/components/analytics/account-vitals";
 
 interface Persona {
   tone?: string;
@@ -308,6 +309,18 @@ function AvatarsInner() {
                   </Link>
                 </Card>
               </div>
+
+              <Card>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold">アカウント分析（バイタルチェック）</h3>
+                  <span className="text-[11px] text-white/40">月ごとの投稿・エラー・収益・フォロワー。アカウントをクリックすると詳細グラフ</span>
+                  <span className="flex-1" />
+                  <Link href="/revenue?tab=record" className="text-xs text-cyan-300">
+                    収益を記録 →
+                  </Link>
+                </div>
+                <AccountVitals key={selected.id} avatarId={selected.id} />
+              </Card>
             </>
           )}
         </div>
