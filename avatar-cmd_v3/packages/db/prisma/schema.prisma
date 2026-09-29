@@ -695,6 +695,12 @@ model OAuthState {
   codeVerifier String?  @map("code_verifier")
   redirectUri  String   @map("redirect_uri")
   expiresAt    DateTime @map("expires_at")
+  // redirect = この画面で認可して戻る / external = URL をコピーして別ブラウザで認可（元の画面は結果をポーリング）
+  mode         String    @default("redirect")
+  // 使用済みの時刻（コールバックを受けた時点）。結果は元の画面に伝えるため残す
+  completedAt  DateTime? @map("completed_at")
+  // 結果 JSON: { ok, message }
+  result       String?   @db.Text
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("oauth_states")
