@@ -5,6 +5,21 @@ import { ExternalLink, ImagePlus, Quote, RefreshCw, ScissorsLineDashed, ShieldCh
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { api, Badge, Button, Card, Field, inputCls, Notice, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { charCount, formatPostText, longPostMode, removeLineBreaks, SHORT_POST_CHARS, xLength, xPostLimit } from "@avatar-cmd/integrations/post-text";
+
+/** X / Threads で実際にどう投稿されるか（アカウント設定の「200文字を超える投稿」「X Premium」に従う） */
+function splitLabel(text: string, a: AccountInfo): string {
+  if (!text.trim()) return "—";
+  const settings = a.settings ?? {};
+  const isX = a.platform === "x";
+  const parts = formatPostText(text, {
+    mode: longPostMode(settings),
+    limit: isX ? xPostLimit(settings) : 500,
+    measure: isX ? xLength : charCount,
+  });
+  if (parts.length > 1) return `ツリー ${parts.length}件`;
+  return charCount(removeLineBreaks(text)) <= SHORT_POST_CHARS ? "1件（改行なし）" : "1件（改行あり）";
+}
 import { PlatformIcon } from "@/components/platform-icon";
 
 interface MediaRef {
@@ -230,8 +245,8 @@ export default function PostsPage() {
   const postable = accounts.filter((a) => a.isActive && byId[a.platform] && byId[a.platform].support !== "manual");
   const selectedPlatforms = [...new Set(accounts.filter((a) => selected.includes(a.id)).map((a) => a.platform))].map((id) => byId[id]).filter(Boolean);
   const needsTitle = selectedPlatforms.some((p) => p.postFields.some((f) => f.key === "title"));
-  // 選択中で一番厳しい文字数制限（長文プラットフォームの大きな上限は対象外）
-  const strictest = selectedPlatforms.filter((p) => p.maxLength && p.maxLength <= 3000).sort((a, b) => a.maxLength! - b.maxLength!)[0];
+  // 選択中で一番厳しい文字数制限（長文プラットフォームの大きな上限は対象外。X / Threads は自動でツリーに分けるので対象外）
+  const strictest = selectedPlatforms.filter((p) => p.maxLength && p.maxLength <= 3000 && p.id !== "x" && p.id !== "threads").sort((a, b) => a.maxLength! - b.maxLength!)[0];
   const overLimit = !!strictest && [...text].length > strictest.maxLength!;
   const firstAccount = accounts.find((a) => selected.includes(a.id));
 
@@ -454,8 +469,15 @@ export default function PostsPage() {
                 </label>
                 {selectedPlatforms.length > 0 && (
                   <div className="flex flex-wrap gap-2">
+                    {accounts
+                      .filter((a) => selected.includes(a.id) && (a.platform === "x" || a.platform === "threads"))
+                      .map((a) => (
+                        <Badge key={a.id} className="bg-white/5 text-white/50">
+                          {byId[a.platform]?.name} {a.accountName}: {[...text].length}文字 → {splitLabel(text, a)}
+                        </Badge>
+                      ))}
                     {selectedPlatforms
-                      .filter((p) => p.maxLength)
+                      .filter((p) => p.maxLength && p.id !== "x" && p.id !== "threads")
                       .map((p) => {
                         const over = [...text].length > p.maxLength!;
                         return (

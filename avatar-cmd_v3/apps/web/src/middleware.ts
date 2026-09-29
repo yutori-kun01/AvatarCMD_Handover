@@ -7,7 +7,8 @@ import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 const PROTECTED_PAGES = ["/dashboard", "/avatars", "/activity", "/sns", "/revenue", "/automation", "/settings", "/posts"];
 
 function isPublicApi(pathname: string) {
-  return pathname.startsWith("/api/auth/");
+  // OAuth コールバックは別ブラウザ（未ログイン）からも戻ってくる。1回限りの state で検証するのでログイン不要
+  return pathname.startsWith("/api/auth/") || /^\/api\/oauth\/[^/]+\/callback$/.test(pathname);
 }
 
 export async function middleware(req: NextRequest) {

@@ -3,10 +3,76 @@
 //   ・接続（OAuth / アプリパスワード / トークン / Cookie）
 //   ・アバター専用の開発者アプリ（Client ID / Secret）で共通設定を上書き
 //   ・アカウントごとの認証情報の確認（伏せ字）・今すぐ更新・差し替え
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, KeyRound, Link2, RefreshCw, Trash2 } from "lucide-react";
 import { api, Badge, Button, Card, CopyText, Field, inputCls, LastError, LinkButton, SUPPORT_LABEL, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "./ui";
 import { PlatformIcon } from "@/components/platform-icon";
+
+/**
+ * 別ブラウザで認可する: 認可 URL を発行してコピーし、完了をポーリングして元の画面に反映する。
+ * 接続したい SNS アカウントでログイン済みのブラウザ（または別プロファイル）で開けば、ログインし直さずに済む
+ */
+function ExternalLinkButton({ platform, avatarId, label, onChanged }: { platform: string; avatarId: string; label: string; onChanged: (msg: string, ok: boolean) => void }) {
+  const [link, setLink] = useState<{ url: string; state: string; expiresAt: string } | null>(null);
+  const [status, setStatus] = useState<string>("");
+  // 親の再描画で onChanged が変わってもポーリングをやり直さない
+  const notify = useRef(onChanged);
+  notify.current = onChanged;
+
+  async function create() {
+    try {
+      const r = await api<{ url: string; state: string; expiresAt: string }>(`/api/oauth/${platform}/link`, { method: "POST", json: { avatarId } });
+      setLink(r);
+      setStatus("別のブラウザで開いて認可してください。完了するとこの画面に自動で反映されます");
+      navigator.clipboard?.writeText(r.url).catch(() => {});
+    } catch (e) {
+      onChanged((e as Error).message, false);
+    }
+  }
+
+  useEffect(() => {
+    if (!link) return;
+    const t = setInterval(async () => {
+      try {
+        const s = await api<{ status: string; ok?: boolean; message?: string }>(`/api/oauth/status?state=${encodeURIComponent(link.state)}`);
+        if (s.status === "pending") return;
+        clearInterval(t);
+        setLink(null);
+        if (s.status === "done") {
+          notify.current(s.ok ? `${s.message} を接続しました（別ブラウザで認可）` : s.message ?? "接続できませんでした", !!s.ok);
+          // 元のブラウザに戻ってきたことがわかるように（ブラウザの制限で前面に出ない場合はタブのタイトルで知らせる）
+          window.focus();
+          const title = document.title;
+          document.title = s.ok ? "✓ 接続しました" : "⚠ 接続できませんでした";
+          setTimeout(() => (document.title = title), 8000);
+        } else {
+          notify.current("認可 URL の有効期限（15分）が切れました。もう一度発行してください", false);
+        }
+      } catch {
+        /* 一時的な失敗は次回に再試行 */
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [link]);
+
+  if (!link) {
+    return (
+      <Button variant="ghost" onClick={create} title="URL をコピーして、接続したいアカウントでログイン中の別ブラウザで開けます">
+        {label}
+      </Button>
+    );
+  }
+  return (
+    <div className="mt-2 w-full space-y-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
+      <p className="text-[11px] text-cyan-200">コピーしました（有効期限 {new Date(link.expiresAt).toLocaleTimeString("ja-JP")} まで・1回限り）。{status}</p>
+      <CopyText text={link.url} />
+      <p className="text-[11px] text-white/40">⏳ 別ブラウザでの認可を待っています… この URL を開いた人のアカウントがこのアバターに接続されるため、他人には共有しないでください。</p>
+      <button onClick={() => setLink(null)} className="text-[11px] text-white/40 hover:text-white">
+        キャンセル
+      </button>
+    </div>
+  );
+}
 
 function ConnectForm({ p, avatarId, onDone }: { p: PlatformInfo; avatarId: string; onDone: (msg: string, ok: boolean) => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
@@ -330,6 +396,7 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
             再接続
           </LinkButton>
         )}
+        {p?.connection === "oauth" && <ExternalLinkButton platform={a.platform} avatarId={a.avatarId} label="別ブラウザで再接続（URLコピー）" onChanged={onChanged} />}
         <Button variant="danger" onClick={remove}>
           <Trash2 className="inline h-3 w-3" /> 削除
         </Button>
@@ -433,9 +500,12 @@ export function AccountsSection({
                   ) : appMissing ? (
                     <span className="text-xs text-amber-300">先に「SNS連携アプリ」または専用アプリを登録してください</span>
                   ) : p.connection === "oauth" ? (
-                    <LinkButton href={`/api/oauth/${p.id}/start?avatarId=${avatarId}`}>
-                      <Link2 className="inline h-3 w-3" /> {p.name} で認証して接続
-                    </LinkButton>
+                    <>
+                      <ExternalLinkButton key={avatarId} platform={p.id} avatarId={avatarId} label="別ブラウザで接続（URLコピー）" onChanged={onChanged} />
+                      <LinkButton href={`/api/oauth/${p.id}/start?avatarId=${avatarId}`}>
+                        <Link2 className="inline h-3 w-3" /> {p.name} で認証して接続
+                      </LinkButton>
+                    </>
                   ) : (
                     <Button variant={openForm === p.id ? "ghost" : "primary"} onClick={() => setOpenForm(openForm === p.id ? null : p.id)}>
                       {openForm === p.id ? "閉じる" : "接続情報を入力"}

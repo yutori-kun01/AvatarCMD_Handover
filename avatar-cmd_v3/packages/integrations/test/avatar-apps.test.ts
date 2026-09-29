@@ -119,3 +119,38 @@ test("共通アプリで接続したアカウントは、後から専用アプ�
     m.restore();
   }
 });
+
+test("別ブラウザ用の認可 URL: 完了を元の画面が読み取れ、同じ URL は1回しか使えない", opts, async () => {
+  const m = mockFetch([
+    ["POST", /api\.x\.com\/2\/oauth2\/token/, { access_token: "E1", refresh_token: "ER1", expires_in: 7200 }],
+    ["GET", /api\.x\.com\/2\/users\/me/, { data: { id: "u-ext", username: "ext_user" } }],
+  ]);
+  try {
+    const link = await svc.createOAuthLink("x", avatarB);
+    assert.equal(new URL(link.url).searchParams.get("state"), link.state);
+    assert.equal(await svc.getOAuthMode(link.state), "external");
+    assert.deepEqual(await svc.getOAuthLinkStatus(link.state), { status: "pending" });
+
+    const saved = await svc.finishOAuth("x", link.state, "CODE");
+    await svc.recordOAuthResult(link.state, { ok: true, message: saved[0].accountName });
+    assert.deepEqual(await svc.getOAuthLinkStatus(link.state), { status: "done", ok: true, message: "@ext_user" });
+
+    // 使用済みの URL をもう一度開いても失敗し、成功の結果は上書きされない
+    await assert.rejects(svc.finishOAuth("x", link.state, "CODE"), /使用済み/);
+    await svc.recordOAuthResult(link.state, { ok: false, message: "used" });
+    assert.equal((await svc.getOAuthLinkStatus(link.state)).ok, true);
+
+    // この画面で認可する通常の state はポーリング対象外
+    const normal = new URL(await svc.startOAuth("x", avatarB)).searchParams.get("state")!;
+    assert.equal((await svc.getOAuthLinkStatus(normal)).status, "unknown");
+
+    // 同じ X アカウントを別アバターにも接続すると警告
+    const again = await svc.createOAuthLink("x", avatarA);
+    const dup = await svc.finishOAuth("x", again.state, "CODE");
+    const warnings = await svc.sameAccountWarnings(dup);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /@ext_user/);
+  } finally {
+    m.restore();
+  }
+});
