@@ -1,3 +1,4 @@
+import { checkInlineQuote, xLength } from "../src/post-text";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PLATFORMS } from "../src/platforms";
@@ -91,14 +92,35 @@ test("X: 期限5分前ならリフレッシュし、ローテーションされ�
   }
 });
 
-test("X: 引用が 403 (not-authorized-for-resource) なら URL を本文に入れて通常投稿し直す", async () => {
-  const denied = { status: 403, json: { detail: "You can only reply to or quote posts where you are mentioned or are the author.", status: 403, type: "https://api.x.com/2/problems/not-authorized-for-resource" } };
-  const m = mockFetch([["POST", /api\.x\.com\/2\/tweets$/, (c) => (c.json.quote_tweet_id ? denied : { json: { data: { id: "T2" } } })]]);
+test("X: 引用は最初から元投稿の URL を本文に入れて投稿する（quote_tweet_id は送らない・URL の前後に半角スペース）", async () => {
+  const m = mockFetch([["POST", /api\.x\.com\/2\/tweets$/, { data: { id: "T2" } }]]);
   try {
-    const r = await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "me" } }), post({ quotePostId: "Q1", quotePostUrl: "https://x.com/someone/status/Q1" }));
-    assert.equal(m.calls.length, 2);
-    assert.deepEqual(m.calls[1].json, { text: "hello\nhttps://x.com/someone/status/Q1" });
+    const r = await PLATFORMS.x.publish!(
+      ctx({ credentials: { accessToken: "AT", username: "me" } }),
+      post({ text: "わかる。朝に場所を変えると集中が戻る https://twitter.com/someone/status/1234567890?s=20", quotePostId: "1234567890", quotePostUrl: "https://twitter.com/someone/status/1234567890?s=20" })
+    );
+    assert.equal(m.calls.length, 1);
+    assert.equal(m.calls[0].json.quote_tweet_id, undefined);
+    // 本文中の重複した URL は除き、正規化した URL を1回だけ、前後に半角スペースを入れて付ける
+    assert.equal(m.calls[0].json.text, "わかる。朝に場所を変えると集中が戻る https://x.com/someone/status/1234567890 ");
     assert.equal(r.postId, "T2");
+  } finally {
+    m.restore();
+  }
+});
+
+test("X: 引用 URL 付きの長文はツリーに分け、URL は1件目に1回だけ（分割されない）", async () => {
+  let n = 0;
+  const m = mockFetch([["POST", /\/2\/tweets$/, () => ({ json: { data: { id: `T${++n}` } } })]]);
+  try {
+    const text = `・朝日を浴びる\n・水を飲む\n${"あ".repeat(150)}。${"い".repeat(150)}？`;
+    await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "me" }, settings: { longPostMode: "thread" } }), post({ text, quotePostId: "99999", quotePostUrl: "https://x.com/a/status/99999" }));
+    const url = "https://x.com/a/status/99999";
+    const texts = m.calls.map((c) => c.json.text as string);
+    assert.ok(texts.length >= 2);
+    assert.equal(texts.filter((t) => t.includes(url)).length, 1);
+    assert.equal(checkInlineQuote(texts[0], url), null);
+    assert.ok(texts.every((t) => xLength(t) <= 280));
   } finally {
     m.restore();
   }

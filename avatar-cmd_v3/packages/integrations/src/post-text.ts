@@ -143,9 +143,12 @@ export function cleanPostText(text: string, opts: { article?: boolean } = {}): s
 /** 1件に入るか */
 type Fits = (s: string) => boolean;
 
-/** 文の区切り（句点・感嘆符など）の直後で分ける */
-function sentences(line: string): string[] {
-  return line.match(/[^。．！？!?]+[。．！？!?」』）)]*|[。．！？!?]+/g) ?? [line];
+/** 文の区切り（句点・感嘆符など）の直後で分ける。URL の中の ? や ! では分けない */
+export function sentences(line: string): string[] {
+  const urls: string[] = [];
+  const masked = line.replace(URL_RE, (u) => `\u0000${urls.push(u) - 1}\u0000`);
+  const parts = masked.match(/[^。．！？!?]+[。．！？!?」』）)]*|[。．！？!?]+/g) ?? [masked];
+  return parts.map((p) => p.replace(/\u0000(\d+)\u0000/g, (_, i) => urls[Number(i)]));
 }
 
 /** どうしても収まらない文は文字単位で切る（URL の途中では切らない） */
@@ -232,4 +235,47 @@ export function xPostLimit(settings: Record<string, unknown>): number {
 
 export function longPostMode(settings: Record<string, unknown>): LongPostMode {
   return settings.longPostMode === "thread" ? "thread" : "newline";
+}
+
+// --- 引用投稿（X）: 元投稿の URL を本文に直接入れる ------------------------------
+// X の引用は専用の quote_tweet_id を使わず、最初から「本文に元投稿の URL を入れる」方式で投稿する
+// （API の quote_tweet_id は自分の投稿・メンションされた投稿しか引用できないため）。
+// URL の前後には必ず半角スペースを入れる（URL の直後に日本語が続くと URL の一部とみなされることがあるため）。
+// 本文の整形（「」の除去・改行の調整・ツリー分割）はすべて URL を入れる前に済ませ、整形で URL やスペースが崩れないようにする。
+
+/** X の URL の長さ（t.co に短縮されるため長さに関係なく 23） */
+export const X_URL_WEIGHT = 23;
+/** URL と前後の半角スペースぶんの重み */
+export const INLINE_QUOTE_WEIGHT = X_URL_WEIGHT + 2;
+
+/**
+ * 元投稿の URL を正規化する（x.com / twitter.com / mobile の違い、クエリ・フラグメントを除く）。
+ * 投稿の URL として読めなければ null。
+ */
+export function canonicalStatusUrl(url: string | undefined | null, fallbackId?: string): string | null {
+  const m = /^https?:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15}|i(?:\/web)?)\/status(?:es)?\/(\d{1,25})/.exec(url?.trim() ?? "");
+  if (m) return m[1].startsWith("i") && !/^[A-Za-z0-9_]{1,15}$/.test(m[1]) ? `https://x.com/i/status/${m[2]}` : `https://x.com/${m[1]}/status/${m[2]}`;
+  if (fallbackId && /^\d{1,25}$/.test(fallbackId)) return `https://x.com/i/status/${fallbackId}`;
+  return null;
+}
+
+/** 本文から、引用する投稿の URL（表記ゆれを含む）と余分な空白を取り除く */
+export function stripQuoteUrl(body: string, statusId: string): string {
+  const re = new RegExp(`https?:\\/\\/(?:www\\.|mobile\\.)?(?:x|twitter)\\.com\\/[^\\s　]*?status(?:es)?\\/${statusId}[^\\s　]*`, "g");
+  return body.replace(re, "").replace(/[ \t]+\n/g, "\n").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/** 整形済みの本文（1件目）に URL を入れる: 「本文 URL 」（URL の前後に半角スペース） */
+export function appendInlineQuote(text: string, url: string): string {
+  return `${text.replace(/\s+$/, "")} ${url} `;
+}
+
+/** URL を入れた投稿本文が要件を満たすか（テスト・投稿前の確認用）: URL がちょうど1回・前後が半角スペース・途中で切れていない */
+export function checkInlineQuote(text: string, url: string): string | null {
+  const count = text.split(url).length - 1;
+  if (count !== 1) return `URL が ${count} 回含まれています`;
+  const i = text.indexOf(url);
+  if (text[i - 1] !== " ") return "URL の前に半角スペースがありません";
+  if (text[i + url.length] !== " ") return "URL の後ろに半角スペースがありません";
+  return null;
 }

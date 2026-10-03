@@ -90,9 +90,9 @@ function mocks() {
       /api\.x\.com\/2\/users\/[^/]+\/timelines\/reverse_chronological/,
       {
         data: [
-          { id: "P1", text: "集中力が切れたら、思い切って場所を変えるのがいちばん効く。カフェでも図書館でも、環境が変わるだけで頭が切り替わる。", author_id: "u1", created_at: new Date().toISOString(), public_metrics: { like_count: 20, retweet_count: 3 } },
-          { id: "P2", text: "RT @someone: ...", author_id: "u2", created_at: new Date().toISOString(), referenced_tweets: [{ type: "retweeted", id: "Z" }] },
-          { id: "P3", text: "今日の株式市場は大きく下落しました。明日の決算発表に注目が集まっています。投資は自己責任でお願いします。", author_id: "u3", created_at: new Date().toISOString(), public_metrics: { like_count: 50 } },
+          { id: "1001", text: "集中力が切れたら、思い切って場所を変えるのがいちばん効く。カフェでも図書館でも、環境が変わるだけで頭が切り替わる。", author_id: "u1", created_at: new Date().toISOString(), public_metrics: { like_count: 20, retweet_count: 3 } },
+          { id: "1002", text: "RT @someone: ...", author_id: "u2", created_at: new Date().toISOString(), referenced_tweets: [{ type: "retweeted", id: "Z" }] },
+          { id: "1003", text: "今日の株式市場は大きく下落しました。明日の決算発表に注目が集まっています。投資は自己責任でお願いします。", author_id: "u3", created_at: new Date().toISOString(), public_metrics: { like_count: 50 } },
         ],
         includes: { users: [{ id: "u1", username: "alice", name: "Alice" }, { id: "u2", username: "bob", name: "Bob" }, { id: "u3", username: "carol", name: "Carol" }] },
       },
@@ -108,7 +108,7 @@ test("Jev キーが無ければ判定しない（既存の流れのまま）", o
   assert.equal(await prisma.decisionEvent.count({ where: { avatarId } }), before);
 });
 
-test("引用候補: タイムライン → 除外ルール → Jev 判定 → 引用文 → 下書き → 承認 → quote_tweet_id で投稿", opts, async () => {
+test("引用候補: タイムライン → 除外ルール → Jev 判定 → 引用文 → 下書き → 承認 → 元投稿の URL を本文に入れて投稿", opts, async () => {
   await svc.setSetting("jev_api_key", "tsk-test");
   await svc.setSetting("jev_mode", "shadow");
   const m = mocks();
@@ -125,14 +125,14 @@ test("引用候補: タイムライン → 除外ルール → Jev 判定 → �
     assert.equal(jevCall.json.model, "jev-1.13.0");
 
     const cands = await prisma.quoteCandidate.findMany({ where: { avatarId }, orderBy: { externalPostId: "asc" } });
-    assert.deepEqual(cands.map((c) => [c.externalPostId, c.status]), [["P1", "drafted"], ["P2", "skipped"], ["P3", "skipped"]]);
+    assert.deepEqual(cands.map((c) => [c.externalPostId, c.status]), [["1001", "drafted"], ["1002", "skipped"], ["1003", "skipped"]]);
     assert.equal(cands[1].reason, "リポスト");
     assert.match(cands[2].reason!, /方向性/);
 
     const draft = await prisma.content.findUniqueOrThrow({ where: { id: cands[0].contentId! } });
     assert.equal(draft.status, "DRAFT");
     assert.equal(draft.category, "quote");
-    assert.equal((draft.metadata as any).quote.postId, "P1");
+    assert.equal((draft.metadata as any).quote.postId, "1001");
     assert.equal((draft.metadata as any).quoteJudgement.engine, "jev");
     assert.equal((draft.metadata as any).review.verdict, "ok");
 
@@ -147,11 +147,13 @@ test("引用候補: タイムライン → 除外ルール → Jev 判定 → �
     assert.equal((await prisma.quoteCandidate.findUniqueOrThrow({ where: { id: cands[0].id } })).status, "approved");
     await svc.publishContent(draft.id);
     const post = m.calls.find((c) => c.method === "POST" && /\/2\/tweets$/.test(c.url))!;
-    assert.equal(post.json.quote_tweet_id, "P1");
+    // 引用は quote_tweet_id ではなく、元投稿の URL を本文に入れる（前後に半角スペース）
+    assert.equal(post.json.quote_tweet_id, undefined);
+    assert.ok(post.json.text.endsWith(" https://x.com/alice/status/1001 ") || post.json.text.endsWith(" https://x.com/i/status/1001 "), post.json.text);
 
     // 2回目: since_id で続きから取り、同じ投稿は二重に判定しない
     const r2 = await svc.scanQuoteCandidates(accountId, { maxResults: 20 });
-    assert.equal(new URL(m.calls.filter((c) => /timelines/.test(c.url)).at(-1)!.url).searchParams.get("since_id"), "P3");
+    assert.equal(new URL(m.calls.filter((c) => /timelines/.test(c.url)).at(-1)!.url).searchParams.get("since_id"), "1003");
     assert.equal(r2.new, 0);
   } finally {
     m.restore();

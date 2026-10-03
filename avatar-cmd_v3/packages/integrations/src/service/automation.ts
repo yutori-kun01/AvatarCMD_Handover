@@ -21,6 +21,7 @@ import { createPosts, errorMessage, returnToDraft } from "./publish";
 import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
+import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -147,14 +148,18 @@ export function validateAction(a: ActionConfig, opts: { requireApproval?: boolea
   return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
 }
 
+export type RuleActionType = "generate_post" | "quote_post";
+
 export interface RuleInput {
   avatarId?: string;
+  /** generate_post = AI で投稿文を生成（既定）/ quote_post = X の引用投稿（タイムラインから探して引用案を作る） */
+  actionType?: RuleActionType;
   name?: string;
   description?: string;
   isActive?: boolean;
   clearError?: boolean;
   trigger?: TriggerConfig;
-  action?: ActionConfig;
+  action?: ActionConfig | QuoteActionConfig;
   /** 停止時に、このルールで自動承認されて予約キューにある投稿も止める（下書きに戻す） */
   holdQueued?: boolean;
 }
@@ -165,8 +170,8 @@ export async function createRule(b: RuleInput) {
   if (!b.name?.trim()) throw new ConfigError("ルール名を入力してください");
   if (!b.trigger || !b.action) throw new ConfigError("実行タイミングと動作を指定してください");
   const trigger = validateTrigger(b.trigger);
-  const action = validateAction(b.action, { requireApproval: true });
-  await assertAccountsOf(b.avatarId, action.accountIds);
+  const actionType: RuleActionType = b.actionType === "quote_post" ? "quote_post" : "generate_post";
+  const action = await validateRuleAction(actionType, b.avatarId, b.action);
   return prisma.automationRule.create({
     data: {
       avatarId: b.avatarId,
@@ -175,11 +180,25 @@ export async function createRule(b: RuleInput) {
       category: "posting",
       triggerType: "schedule",
       triggerConfig: trigger as object,
-      actionType: "generate_post",
+      actionType,
       actionConfig: action as object,
       nextRunAt: nextRunAfter(trigger, new Date()),
     },
   });
+}
+
+/** 画面・API からの作成/更新時の actionConfig の検証（種類ごと） */
+async function validateRuleAction(actionType: RuleActionType, avatarId: string, raw: unknown): Promise<ActionConfig | QuoteActionConfig> {
+  if (actionType === "quote_post") {
+    const q = validateQuoteAction(raw as QuoteActionConfig, { requireApproval: true });
+    await assertAccountsOf(avatarId, [q.accountId]);
+    const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: q.accountId } });
+    if (acc.platform !== "x") throw new ConfigError("引用投稿ルールは X のアカウントだけに対応しています");
+    return q;
+  }
+  const action = validateAction(raw as ActionConfig, { requireApproval: true });
+  await assertAccountsOf(avatarId, action.accountIds);
+  return action;
 }
 
 async function assertAccountsOf(avatarId: string, accountIds: string[]) {
@@ -195,11 +214,7 @@ export async function updateRule(id: string, b: RuleInput) {
   if (b.name !== undefined) data.name = b.name.trim() || rule.name;
   if (b.description !== undefined) data.description = b.description.trim() || null;
   if (b.trigger) data.triggerConfig = trigger;
-  if (b.action) {
-    const action = validateAction(b.action, { requireApproval: true });
-    await assertAccountsOf(rule.avatarId, action.accountIds);
-    data.actionConfig = action;
-  }
+  if (b.action) data.actionConfig = await validateRuleAction(rule.actionType as RuleActionType, rule.avatarId, b.action);
   if (b.isActive !== undefined) data.isActive = b.isActive;
   // 再開・スケジュール変更時は次回時刻を計算し直す
   if (b.trigger || (b.isActive && !rule.isActive)) data.nextRunAt = nextRunAfter(validateTrigger(trigger), new Date());
@@ -230,6 +245,13 @@ export async function holdQueuedPosts(ruleId: string, reason: string): Promise<n
 export async function runRule(ruleId: string): Promise<number> {
   const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: ruleId } });
   await assertBudget(`自動化「${rule.name}」`);
+  if (rule.actionType === "quote_post") {
+    // 引用投稿ルール: タイムラインから探して引用案を作る（設定はルールの actionConfig）
+    const config = validateQuoteAction(rule.actionConfig as unknown as QuoteActionConfig);
+    const r = await scanQuoteCandidates(config.accountId, { config, ruleId: rule.id });
+    if (r.errors.length && !r.drafted) throw new Error(`引用案の作成に失敗: ${r.errors[0]}`);
+    return r.drafted;
+  }
   return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));
 }
 
@@ -349,7 +371,7 @@ export async function processDueRules(): Promise<number> {
   const now = new Date();
   const due = await prisma.automationRule.findMany({
     // 一時停止中のアバターのルールは実行しない
-    where: { isActive: true, actionType: "generate_post", nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
+    where: { isActive: true, actionType: { in: ["generate_post", "quote_post"] }, nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
     take: 5,
   });
   let n = 0;

@@ -84,11 +84,14 @@ test("改善か継続か: 中央値の比較とコードのルール", () => {
   assert.equal(ruleVerdict({ ...trend, posts: 8 }), "stop");
 });
 
-test("X: 引用投稿は quote_tweet_id を付けて送る", async () => {
+test("X: 引用投稿は quote_tweet_id を使わず、元投稿の URL を本文に入れて送る（ID だけでも URL を組み立てる）", async () => {
   const m = mockFetch([["POST", /\/2\/tweets$/, { data: { id: "T9" } }]]);
   try {
-    await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "yutori" } }), { text: "わかる。自分も…", media: [], options: {}, quotePostId: "Q1" });
-    assert.deepEqual(m.calls[0].json, { text: "わかる。自分も…", quote_tweet_id: "Q1" });
+    await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "yutori" } }), { text: "わかる。自分も…", media: [], options: {}, quotePostId: "123456" });
+    assert.deepEqual(m.calls[0].json, { text: "わかる。自分も… https://x.com/i/status/123456 " });
+    // URL として読めない引用元はエラー（黙って通常投稿にしない）
+    await assert.rejects(PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "yutori" } }), { text: "x", media: [], options: {}, quotePostId: "Q1" }), /URL が不正/);
+    assert.equal(m.calls.length, 1);
   } finally {
     m.restore();
   }

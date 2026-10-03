@@ -14,7 +14,22 @@ interface Rule {
   description: string | null;
   isActive: boolean;
   trigger: { type: "daily"; times: string[]; timezone?: string } | { type: "interval"; hours: number };
-  action: { accountIds: string[]; topics: string[]; mode: "draft" | "auto"; approval?: Approval; extraPrompt?: string };
+  actionType: "generate_post" | "quote_post";
+  action: {
+    accountIds: string[];
+    topics: string[];
+    mode: "draft" | "auto";
+    approval?: Approval;
+    extraPrompt?: string;
+    // 引用投稿ルール（quote_post）
+    accountId?: string;
+    scanPosts?: number;
+    maxDrafts?: number;
+    maxAgeHours?: number;
+    sameAuthorCooldownDays?: number;
+    excludeAuthors?: string[];
+    allowReuseAcrossAvatars?: boolean;
+  };
   executionCount: number;
   lastExecutedAt: string | null;
   nextRunAt: string | null;
@@ -94,6 +109,7 @@ function PerformanceBlock({ p }: { p: Performance }) {
 
 interface Draft {
   id?: string;
+  actionType: Rule["actionType"];
   avatarId: string;
   name: string;
   triggerType: "daily" | "interval";
@@ -105,24 +121,60 @@ interface Draft {
   /** 新規作成時は未選択（""）。自動投稿では選択必須 */
   approval: Approval | "";
   extraPrompt: string;
+  // 引用投稿ルール
+  quoteAccountId: string;
+  scanPosts: string;
+  maxDrafts: string;
+  maxAgeHours: string;
+  cooldownDays: string;
+  excludeAuthors: string;
+  allowReuse: boolean;
 }
 
 function toDraft(r: Rule): Draft {
   return {
     id: r.id,
+    actionType: r.actionType ?? "generate_post",
     avatarId: r.avatarId,
     name: r.name,
     triggerType: r.trigger.type,
     times: r.trigger.type === "daily" ? r.trigger.times.join(", ") : "09:00",
     hours: r.trigger.type === "interval" ? String(r.trigger.hours) : "6",
-    accountIds: r.action.accountIds,
-    topics: r.action.topics.join("\n"),
+    accountIds: r.action.accountIds ?? [],
+    topics: (r.action.topics ?? []).join("\n"),
     mode: r.action.mode,
     // 下書きモードから自動投稿に切り替えるときは、承認範囲を改めて選んでもらう
     approval: r.action.mode === "auto" ? r.action.approval ?? "all" : "",
     extraPrompt: r.action.extraPrompt ?? "",
+    quoteAccountId: r.action.accountId ?? "",
+    scanPosts: String(r.action.scanPosts ?? 30),
+    maxDrafts: String(r.action.maxDrafts ?? 3),
+    maxAgeHours: String(r.action.maxAgeHours ?? 48),
+    cooldownDays: String(r.action.sameAuthorCooldownDays ?? 7),
+    excludeAuthors: (r.action.excludeAuthors ?? []).join(", "),
+    allowReuse: !!r.action.allowReuseAcrossAvatars,
   };
 }
+
+const NEW_DRAFT: Omit<Draft, "avatarId"> = {
+  actionType: "generate_post",
+  name: "",
+  triggerType: "daily",
+  times: "09:00",
+  hours: "6",
+  accountIds: [],
+  topics: "",
+  mode: "draft",
+  approval: "",
+  extraPrompt: "",
+  quoteAccountId: "",
+  scanPosts: "30",
+  maxDrafts: "3",
+  maxAgeHours: "48",
+  cooldownDays: "7",
+  excludeAuthors: "",
+  allowReuse: false,
+};
 
 function scheduleLabel(t: Rule["trigger"]) {
   return t.type === "daily" ? `毎日 ${t.times.join(" / ")}（${t.timezone ?? "Asia/Tokyo"}）` : `${t.hours}時間ごと`;
@@ -162,7 +214,7 @@ export default function AutomationPage() {
 
   // 編集中の設定で、このルールの月額の増分（概算）を見積もる
   useEffect(() => {
-    if (!draft || !draft.accountIds.length || !draft.topics.trim()) return setEstimate(null);
+    if (!draft || draft.actionType !== "generate_post" || !draft.accountIds.length || !draft.topics.trim()) return setEstimate(null);
     const t = setTimeout(() => {
       api<{ item: NonNullable<typeof estimate> }>("/api/costs/estimate", { method: "POST", json: ruleBody(draft) })
         .then((d) => setEstimate(d.item))
@@ -172,14 +224,29 @@ export default function AutomationPage() {
   }, [draft]);
 
   function ruleBody(draft: Draft) {
+    const approval = draft.approval || undefined;
     return {
       avatarId: draft.avatarId,
       name: draft.name,
+      actionType: draft.actionType,
       trigger:
         draft.triggerType === "daily"
           ? { type: "daily", times: draft.times.split(/[,、\s]+/).filter(Boolean), timezone: "Asia/Tokyo" }
           : { type: "interval", hours: Number(draft.hours) },
-      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval: draft.approval || undefined, extraPrompt: draft.extraPrompt },
+      action:
+        draft.actionType === "quote_post"
+          ? {
+              accountId: draft.quoteAccountId,
+              mode: draft.mode,
+              approval,
+              scanPosts: Number(draft.scanPosts),
+              maxDrafts: Number(draft.maxDrafts),
+              maxAgeHours: Number(draft.maxAgeHours),
+              sameAuthorCooldownDays: Number(draft.cooldownDays),
+              excludeAuthors: draft.excludeAuthors.split(/[,、\s]+/).filter(Boolean),
+              allowReuseAcrossAvatars: draft.allowReuse,
+            }
+          : { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval, extraPrompt: draft.extraPrompt },
     };
   }
 
@@ -271,6 +338,20 @@ export default function AutomationPage() {
               </select>
             </label>
           </div>
+          <Field
+            def={{
+              key: "type",
+              label: "ルールの種類",
+              type: "select",
+              options: [
+                { value: "generate_post", label: "AI で投稿文を生成" },
+                { value: "quote_post", label: "X の引用投稿（タイムラインから探して、元投稿の URL を本文に入れて引用）" },
+              ],
+            }}
+            value={draft.actionType}
+            onChange={(v) => (draft.id ? undefined : setDraft({ ...draft, actionType: v as Draft["actionType"] }))}
+          />
+          {draft.id && <p className="-mt-3 text-[11px] text-white/35">種類は作成後に変更できません。</p>}
           <div className="grid gap-4 md:grid-cols-3">
             <Field
               def={{ key: "t", label: "実行タイミング", type: "select", options: [{ value: "daily", label: "毎日決まった時刻" }, { value: "interval", label: "一定間隔" }] }}
@@ -300,6 +381,9 @@ export default function AutomationPage() {
                 value={draft.approval}
                 onChange={(v) => setDraft({ ...draft, approval: v as Approval })}
               />
+              {draft.actionType === "quote_post" && (
+                <p className="mt-1 text-[11px] text-amber-300">X の自動化ルールには、自動の引用・返信に関する制限があります。引用の自動投稿は、規約に沿うことを確認したうえで使ってください（既定は下書き・承認制）。</p>
+              )}
               {draft.approval === "all" && (
                 <p className="mt-1 text-[11px] text-amber-300">全自動では、投稿前チェックが NG・失敗でも、Jev が保留と判定しても承認なしで投稿されます。</p>
               )}
@@ -308,6 +392,36 @@ export default function AutomationPage() {
               </p>
             </div>
           )}
+          {draft.actionType === "quote_post" ? (
+            <div className="space-y-3 rounded-lg border border-white/[0.06] p-3">
+              <p className="text-[11px] text-white/45">
+                ホームタイムラインから、アバターの人格・ナレッジ・対象読者に合う投稿を選んで、独自の意見や補足を添えた引用案を作ります。投稿時は元投稿の URL
+                を本文に直接入れます（URL の前後に半角スペース。専用の引用 API は使いません）。同じ元投稿は再利用しません。実際に引用として表示されるかは X 側の表示に依存し、未検証です。
+              </p>
+              <Field
+                def={{
+                  key: "qacc",
+                  label: "引用に使う X アカウント",
+                  type: "select",
+                  options: [{ value: "", label: "選択してください" }, ...avatarAccounts.filter((a) => a.platform === "x").map((a) => ({ value: a.id, label: a.accountName }))],
+                }}
+                value={draft.quoteAccountId}
+                onChange={(v) => setDraft({ ...draft, quoteAccountId: v })}
+              />
+              <div className="grid gap-3 md:grid-cols-4">
+                <Field def={{ key: "scan", label: "1回に読む件数（10〜100）" }} value={draft.scanPosts} onChange={(v) => setDraft({ ...draft, scanPosts: v })} />
+                <Field def={{ key: "maxd", label: "1回に作る引用案の上限" }} value={draft.maxDrafts} onChange={(v) => setDraft({ ...draft, maxDrafts: v })} />
+                <Field def={{ key: "age", label: "対象にする投稿（何時間以内）" }} value={draft.maxAgeHours} onChange={(v) => setDraft({ ...draft, maxAgeHours: v })} />
+                <Field def={{ key: "cool", label: "同じ相手を引用しない日数" }} value={draft.cooldownDays} onChange={(v) => setDraft({ ...draft, cooldownDays: v })} />
+              </div>
+              <Field def={{ key: "ex", label: "引用しない相手（@なし・カンマ区切り）" }} value={draft.excludeAuthors} onChange={(v) => setDraft({ ...draft, excludeAuthors: v })} />
+              <label className="flex items-center gap-2 text-xs text-white/60">
+                <input type="checkbox" checked={draft.allowReuse} onChange={(e) => setDraft({ ...draft, allowReuse: e.target.checked })} />
+                別のアバターが引用済みの投稿も使う（既定は使わない）
+              </label>
+            </div>
+          ) : (
+          <>
           <div>
             <div className="mb-1 text-xs text-white/60">投稿先アカウント</div>
             {avatarAccounts.length === 0 ? (
@@ -340,6 +454,8 @@ export default function AutomationPage() {
             onChange={(v) => setDraft({ ...draft, topics: v })}
           />
           <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
+          </>
+          )}
           {estimate && (
             <p className="text-[11px] text-white/45">
               このルールの API 費用の目安（月 {estimate.runsPerMonth.toFixed(0)} 回）:{" "}
@@ -350,7 +466,7 @@ export default function AutomationPage() {
             </p>
           )}
           <div className="flex gap-2">
-            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.mode === "auto" && !draft.approval)}>
+            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.mode === "auto" && !draft.approval) || (draft.actionType === "quote_post" && !draft.quoteAccountId)}>
               {busy === "save" ? "保存中…" : "保存"}
             </Button>
             <Button variant="ghost" onClick={() => setDraft(null)}>
@@ -363,7 +479,7 @@ export default function AutomationPage() {
           className="mb-6"
           disabled={!avatars.length}
           onClick={() =>
-            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", approval: "", extraPrompt: "" })
+            setDraft({ ...NEW_DRAFT, avatarId: avatars[0]?.id ?? "" })
           }
         >
           + 新しいルール
@@ -386,8 +502,17 @@ export default function AutomationPage() {
                     </Badge>
                   </div>
                   <div className="mt-1 text-xs text-white/50">{scheduleLabel(r.trigger)}</div>
-                  <div className="mt-1 text-xs text-white/50">投稿先: {r.action.accountIds.map(accountName).join("、")}</div>
-                  <div className="mt-1 text-xs text-white/40">トピック: {r.action.topics.join(" / ")}</div>
+                  {r.actionType === "quote_post" ? (
+                    <div className="mt-1 text-xs text-white/50">
+                      X 引用（URL を本文に挿入）: {accountName(r.action.accountId ?? "")}・1回 {r.action.scanPosts ?? 30} 件を読み、最大 {r.action.maxDrafts ?? 3} 件
+                      {r.action.excludeAuthors?.length ? `・除外 ${r.action.excludeAuthors.length} 人` : ""}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mt-1 text-xs text-white/50">投稿先: {r.action.accountIds.map(accountName).join("、")}</div>
+                      <div className="mt-1 text-xs text-white/40">トピック: {r.action.topics.join(" / ")}</div>
+                    </>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-white/35">
                     <span>実行 {r.executionCount}回</span>
                     <span>最終 {relTime(r.lastExecutedAt)}</span>

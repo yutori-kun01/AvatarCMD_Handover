@@ -14,7 +14,7 @@ import { jevConfig } from "./decision";
 import { taskForPlatform } from "./ai";
 import { validateAction, validateTrigger, type ActionConfig, type TriggerConfig } from "./automation";
 import { costOfRow, loadPrices, summarizeUsage, usageMonthRange, type Price, type PriceUnit } from "./usage";
-import { QUOTE_RULES } from "./quotes";
+import { QUOTE_RULES, type QuoteActionConfig } from "./quotes";
 
 const DAY = 86400_000;
 const HOURS_PER_MONTH = 730;
@@ -165,6 +165,22 @@ export async function estimateMonthly(now = new Date()) {
     } catch (e) {
       items.push(price({ kind: "rule", id: r.id, label: r.name, avatarId: r.avatarId, runsPerMonth: 0, calls: [], notes: [`設定を読めません: ${(e as Error).message}`] }, prices, now));
     }
+  }
+
+  // 引用投稿ルール（quote_post）: 1回あたり タイムラインの読み取り + 判定（上限）+ 引用文（上限）+ チェック
+  const quoteRules = await prisma.automationRule.findMany({ where: { isActive: true, actionType: "quote_post", avatar: { status: "ACTIVE" } } });
+  for (const r of quoteRules) {
+    const c = r.actionConfig as unknown as QuoteActionConfig;
+    const runs = runsPerMonth(validateTrigger(r.triggerConfig as unknown as TriggerConfig));
+    const q = await resolveAi("quote");
+    const rv = await resolveAi("review");
+    const calls: EstimateCall[] = [
+      { provider: "x", model: null, purpose: "x_timeline", requests: runs, inputTokens: 0, outputTokens: 0, reads: (c.scanPosts ?? 30) * runs, basis: "count" },
+      ctx.jev ? llmCall(ctx.avg, "typesafe", null, "jev_quote_candidate", runs * (c.maxJudged ?? QUOTE_RULES.maxJudged), "jev") : llmCall(ctx.avg, q.provider, q.model, "quote", runs * (c.maxJudged ?? QUOTE_RULES.maxJudged)),
+      llmCall(ctx.avg, q.provider, q.model, "quote", runs * (c.maxDrafts ?? QUOTE_RULES.maxDrafts)),
+      llmCall(ctx.avg, rv.provider, rv.model, "review", runs * (c.maxDrafts ?? QUOTE_RULES.maxDrafts)),
+    ];
+    items.push(price({ kind: "rule", id: r.id, label: `${r.name}（X 引用・上限で見積もり）`, avatarId: r.avatarId, runsPerMonth: runs, calls, notes: [] }, prices, now));
   }
 
   // 引用候補の探索（アカウント設定で有効なもの）: タイムラインの読み取り + 判定（最大 maxJudged）+ 引用文（最大 maxDrafts）+ チェック
