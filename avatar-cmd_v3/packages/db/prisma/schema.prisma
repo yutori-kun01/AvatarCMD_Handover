@@ -131,6 +131,7 @@ model Avatar {
   activityLogs    ActivityLog[]
   knowledgeItems  KnowledgeItem[]
   improvementCycles ImprovementCycle[]
+  improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
   collabPartners    Collaboration[] @relation("CollabPartner")
 
@@ -477,15 +478,46 @@ model ImprovementCycle {
   analysis    Json
   suggestions Json
   applied     Json?
-  status      String   @default("pending") // pending, reviewed, applied, dismissed
+  status      String   @default("pending") // pending, partially_applied, applied, dismissed（提案の扱い）
   impact      Json?
+
+  // v3.6 — 14〜27日周期の実行管理（再起動・並行実行・再試行で日程が変わらない／二重実行しない）
+  /// 予定日時（スケジュールの nextRunAt）。アバター×予定日時で一意
+  scheduledFor DateTime? @map("scheduled_for")
+  /// scheduled / running / completed / failed
+  runStatus    String    @default("completed") @map("run_status")
+  leaseUntil   DateTime? @map("lease_until")
+  attempt      Int       @default(0)
+  /// suggest（提案のみ）/ approve（承認後に適用）/ auto（自動適用）
+  mode         String    @default("suggest")
+  completedAt  DateTime? @map("completed_at")
+  error        String?
+  /// 完了時に決めた次回までの日数（14〜27）
+  nextIntervalDays Int?  @map("next_interval_days")
 
   avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@unique([avatarId, scheduledFor])
   @@map("improvement_cycles")
+}
+
+/// アバターごとの改善処理の予定（次回日時は完了時に一度だけ決める）
+model ImprovementSchedule {
+  avatarId    String    @id @map("avatar_id")
+  enabled     Boolean   @default(true)
+  /// suggest（提案のみ・既定）/ approve（承認後に適用）/ auto（自動適用）
+  mode        String    @default("suggest")
+  nextRunAt   DateTime  @map("next_run_at")
+  lastCycleId String?   @map("last_cycle_id")
+  avatar      Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([enabled, nextRunAt])
+  @@map("improvement_schedules")
 }
 
 // ==============================================
@@ -558,14 +590,47 @@ model KnowledgeItem {
   tags        Json     @default("[]")
   category    String   @default("general")
   freshness   DateTime @default(now()) // Last verified/updated
+  // isActive は status = active と同期（旧コード互換）
   isActive    Boolean  @default(true) @map("is_active")
 
+  // v3.6 — 種別・状態・出典・適用範囲・版
+  /// fact（出典付きの事実）/ persona（人格・文体の補足）/ learning（投稿成果から得た学び）
+  kind            String    @default("fact")
+  /// active / disabled / proposed（改善処理の提案で、承認待ち）
+  status          String    @default("active")
+  /// 出典を取得・確認した日時
+  sourceFetchedAt DateTime? @map("source_fetched_at")
+  /// 適用範囲 { platforms?: string[], topics?: string[], ruleIds?: string[] }。空なら全体
+  scope           Json      @default("{}")
+  version         Int       @default(1)
+  /// human / api:<keyId> / improvement:<cycleId> / youtube:<videoId>
+  createdBy       String    @default("human") @map("created_by")
+  /// 根拠（投稿 ID・動画 ID・要約の根拠など）と取り込み時の注意（命令文らしき記述の検出）
+  evidence        Json      @default("{}")
+
   avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  revisions   KnowledgeRevision[]
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@index([avatarId, status])
   @@map("knowledge_items")
+}
+
+/// ナレッジの変更履歴（変更前の版を保存。任意の版へ差し戻せる）
+model KnowledgeRevision {
+  id          String        @id @default(uuid())
+  knowledgeId String        @map("knowledge_id")
+  version     Int
+  snapshot    Json
+  changedBy   String        @map("changed_by")
+  reason      String?
+  knowledge   KnowledgeItem @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@unique([knowledgeId, version])
+  @@map("knowledge_revisions")
 }
 
 // ==============================================
@@ -815,4 +880,78 @@ model PriceEntry {
 
   @@index([provider, unit, effectiveFrom])
   @@map("price_entries")
+}
+
+// ==============================================
+// 21. External API (v3.6) — 外部 AI から操作するための API キー・監査ログ・二重実行防止・レート制限
+// ==============================================
+// キーの平文は保存しない（発行時に1回だけ表示）。hash は HMAC-SHA256（鍵は ENCRYPTION_KEY から派生）。
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  name        String
+  /// 表示・検索用の先頭部分（acmd_<prefix>_...）
+  prefix      String    @unique
+  hash        String
+  /// read / draft / publish / rules:write / knowledge:write
+  scopes      String[]
+  /// 操作できるアバター（allAvatars=false のときだけ使う）
+  avatarIds   String[]  @map("avatar_ids")
+  allAvatars  Boolean   @default(false) @map("all_avatars")
+  expiresAt   DateTime? @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("api_keys")
+}
+
+/// 外部 API の呼び出し記録。本文・Authorization ヘッダー・キーは記録しない
+model ApiAuditLog {
+  id             String   @id @default(uuid())
+  keyId          String?  @map("key_id")
+  method         String
+  path           String
+  avatarId       String?  @map("avatar_id")
+  status         Int
+  idempotencyKey String?  @map("idempotency_key")
+  latencyMs      Int?     @map("latency_ms")
+  ip             String?
+  error          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([keyId, createdAt])
+  @@index([createdAt])
+  @@map("api_audit_logs")
+}
+
+/// 書き込み系リクエストの二重実行防止（Idempotency-Key）
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  keyId          String   @map("key_id")
+  idemKey        String   @map("idem_key")
+  requestHash    String   @map("request_hash")
+  /// processing / done
+  status         String   @default("processing")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([keyId, idemKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+/// レート制限のカウンタ（キー × 1分の窓）
+model ApiRateCounter {
+  keyId   String   @map("key_id")
+  bucket  String
+  window  DateTime
+  count   Int      @default(0)
+
+  @@id([keyId, bucket, window])
+  @@index([window])
+  @@map("api_rate_counters")
 }

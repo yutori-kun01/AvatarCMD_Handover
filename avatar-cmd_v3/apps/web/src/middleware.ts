@@ -4,11 +4,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
-const PROTECTED_PAGES = ["/dashboard", "/avatars", "/activity", "/sns", "/revenue", "/automation", "/settings", "/posts", "/costs"];
+const PROTECTED_PAGES = ["/dashboard", "/avatars", "/activity", "/sns", "/revenue", "/automation", "/settings", "/posts", "/costs", "/knowledge"];
 
 function isPublicApi(pathname: string) {
   // OAuth コールバックは別ブラウザ（未ログイン）からも戻ってくる。1回限りの state で検証するのでログイン不要
-  return pathname.startsWith("/api/auth/") || /^\/api\/oauth\/[^/]+\/callback$/.test(pathname);
+  // 外部 AI 用 API（/api/v1）は Cookie ではなく API キーで認証する（ルート側で検証）
+  return pathname.startsWith("/api/auth/") || pathname.startsWith("/api/v1/") || /^\/api\/oauth\/[^/]+\/callback$/.test(pathname);
 }
 
 export async function middleware(req: NextRequest) {

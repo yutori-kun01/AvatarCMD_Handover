@@ -48,7 +48,7 @@ export const AUTO_ORDER: AiProvider[] = ["anthropic", "openai", "gemini"];
 // recommended: その用途で「これ以上は下げない」最低限の推奨モデル（モデル欄が空欄のときの既定）。
 // upgrade:     品質を上げたいときの候補（設定画面にヒントとして表示）。
 
-export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote";
+export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary";
 
 export interface AiTaskDef {
   label: string;
@@ -91,6 +91,19 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
     help: "タイムラインの投稿を引用し、肯定しつつアバターの知見・体験を添える文章。Jev 未設定時は引用してよいかの判定にも使う",
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 16000,
+  },
+  improvement: {
+    label: "改善分析",
+    help: "14〜27日ごとの改善処理で、反応率の高い投稿の傾向から学び・ルールの改善案を作る（数値の抽出はプログラムで行う）",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 16000,
+  },
+  summary: {
+    label: "動画の要約",
+    help: "YouTube 動画の文字起こしを要約してナレッジにする（文字起こしが無い動画は要約しない）",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     maxTokens: 16000,
   },
   tags: {

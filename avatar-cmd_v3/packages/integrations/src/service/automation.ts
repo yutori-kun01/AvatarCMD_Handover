@@ -249,7 +249,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
   const flagged: string[] = [];
   for (const [platform, accs] of byPlatform) {
     let heldReason: string;
-    const { text, model } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt });
+    const { text, model, knowledgeIds } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt, ruleId: rule.id });
     // Jev の判定（キーが無ければ null → 既存の流れのみ）。shadow は記録だけ、gate は自動投稿の可否に反映
     const jevCfg = await jevConfig();
     const jev = await judgePost({ avatarId: rule.avatarId, platform, text, topic });
@@ -274,7 +274,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
           text,
           title: topic,
           category: "automation",
-          extraMetadata: { automationId: rule.id, model, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
+          extraMetadata: { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
         });
         if (jev && posted[0]) await linkDecision(jev.eventId, posted[0].id);
         queued += posted.length;
@@ -296,7 +296,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
           content: text,
           status: "DRAFT",
           category: "automation",
-          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
         },
       });
       if (jev && i === 0) await linkDecision(jev.eventId, c.id);

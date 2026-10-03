@@ -18,3 +18,7 @@ export * from "./service/stats";
 export * from "./service/analytics";
 export * from "./service/usage";
 export * from "./service/cost";
+export * from "./service/knowledge";
+export * from "./service/improvement";
+export * from "./service/api-keys";
+export * from "./service/api-v1";

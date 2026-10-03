@@ -6,6 +6,7 @@ import { Header } from "@/components/dashboard/header";
 import { api, Notice, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "@/components/settings/ui";
 import { AppsSection } from "@/components/settings/apps-section";
 import { AccountsSection } from "@/components/settings/accounts-section";
+import { ApiKeysSection } from "@/components/settings/api-keys-section";
 import { SecuritySection, SystemSection, type AiInfo, type JevInfo, type SystemInfo } from "@/components/settings/system-section";
 
 interface Data {
@@ -24,6 +25,7 @@ const TABS = [
   { key: "apps", label: "SNS連携アプリ" },
   { key: "system", label: "システム" },
   { key: "security", label: "セキュリティ" },
+  { key: "api", label: "外部AI API" },
 ] as const;
 
 function SettingsInner() {
@@ -93,6 +95,7 @@ function SettingsInner() {
             {data && tab === "apps" && <AppsSection platforms={data.platforms} onChanged={onChanged} />}
             {data && tab === "system" && <SystemSection system={data.system} ai={data.ai} jev={data.jev} onChanged={onChanged} />}
             {data && tab === "security" && <SecuritySection encryptionReady={data.encryptionReady} onChanged={onChanged} />}
+            {data && tab === "api" && <ApiKeysSection avatars={data.avatars} onChanged={onChanged} />}
           </div>
         </main>
       </div>

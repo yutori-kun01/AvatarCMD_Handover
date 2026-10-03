@@ -16,7 +16,7 @@ import type { TimelinePost } from "../types";
 import { getPlatform } from "../platforms";
 import { ConfigError } from "../http";
 import { loadFreshCredentials } from "./accounts";
-import { buildPrompts, readPersona, reviewPost } from "./ai";
+import { buildPrompts, loadAvatarContext, readPersona, reviewPost } from "./ai";
 import { decideWithJev, logDecision, topChoice } from "./decision";
 import { completeJson, completeText } from "./llm";
 import { errorMessage } from "./publish";
@@ -170,13 +170,8 @@ export async function judgeQuoteCandidate(input: { avatarId: string; candidateId
 
 /** 肯定＋知見/体験を添えた引用文を生成する */
 export async function writeQuoteText(input: { avatarId: string; platform: string; post: TimelinePost; angle: Angle }) {
-  const avatar = await prisma.avatar.findUniqueOrThrow({ where: { id: input.avatarId } });
-  const knowledge = await prisma.knowledgeItem.findMany({
-    where: { avatarId: avatar.id, isActive: true },
-    orderBy: { updatedAt: "desc" },
-    take: 5,
-    select: { title: true, summary: true },
-  });
+  // 引用元の投稿に関連するナレッジを使う（引用元の本文は資料として扱う）
+  const { avatar, knowledge } = await loadAvatarContext(input.avatarId, { query: input.post.text, platform: input.platform });
   const { system, limit } = buildPrompts(avatar, readPersona(avatar.communication), { topic: "", platform: input.platform }, knowledge);
   const user = [
     `次の投稿（${input.post.authorUsername ? `@${input.post.authorUsername}` : "フォロー中の投稿"}）を引用して、あなたの投稿を1件書いてください。`,
