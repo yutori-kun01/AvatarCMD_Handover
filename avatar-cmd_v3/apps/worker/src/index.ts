@@ -6,7 +6,7 @@
 // 「今すぐ投稿」もキュー経由（scheduledAt=現在時刻）で処理される。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processQuoteScans, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processQuoteScans, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -39,6 +39,9 @@ async function tick() {
       // 改善処理（アバターごとに 14〜27 日のランダム間隔。日程は DB に保存し、完了時にだけ次回を決める）
       const imp = await processImprovementSchedules().catch((e) => (console.error("[worker] improvement failed:", e), 0));
       if (imp) console.log(`[worker] ${new Date().toISOString()} ran improvement for ${imp} avatar(s)`);
+      // YouTube チャンネルの新動画の取り込み（取得頻度はチャンネルごと）
+      const yt = await processYoutubeChannels().catch((e) => (console.error("[worker] youtube failed:", e), 0));
+      if (yt) console.log(`[worker] ${new Date().toISOString()} polled ${yt} YouTube channel(s)`);
       // 引用候補の自動探索（X アカウントの設定で有効にしたものだけ）
       const q = await processQuoteScans().catch((e) => (console.error("[worker] quote scan failed:", e), 0));
       if (q) console.log(`[worker] ${new Date().toISOString()} scanned quote candidates for ${q} account(s)`);

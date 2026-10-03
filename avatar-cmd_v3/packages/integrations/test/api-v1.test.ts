@@ -63,7 +63,7 @@ test("認証: キー無し・不正・失効・期限切れは 401。平文キ�
   assert.equal((await call("acmd_AAAAAAAAAA_wrongwrongwrongwrongwrong", "GET", "me")).status, 401);
   const k = await issue(["read"]);
   const row = await prisma.apiKey.findUniqueOrThrow({ where: { id: k.id } });
-  assert.ok(!JSON.stringify(row).includes(k.key.split("_")[2]));
+  assert.ok(!JSON.stringify(row).includes(k.key.slice(16)));
   const me = await call(k.key, "GET", "me");
   assert.equal(me.status, 200);
   assert.deepEqual((await me.json()).scopes, ["read"]);
@@ -123,7 +123,7 @@ test("下書き → 承認（publish 権限）→ 予約の取り消し。書き
   // 監査ログ: 本文・キーは残さない
   const logs = await prisma.apiAuditLog.findMany({ where: { keyId: k.id } });
   assert.ok(logs.length >= 5);
-  assert.ok(logs.every((l) => !JSON.stringify(l).includes(k.key.split("_")[2]) && !JSON.stringify(l).includes("API からの下書き")));
+  assert.ok(logs.every((l) => !JSON.stringify(l).includes(k.key.slice(16)) && !JSON.stringify(l).includes("API からの下書き")));
   assert.ok(logs.some((l) => l.status === 409));
 });
 

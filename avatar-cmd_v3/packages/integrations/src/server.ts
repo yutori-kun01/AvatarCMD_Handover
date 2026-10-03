@@ -22,3 +22,4 @@ export * from "./service/knowledge";
 export * from "./service/improvement";
 export * from "./service/api-keys";
 export * from "./service/api-v1";
+export * from "./service/youtube-learning";

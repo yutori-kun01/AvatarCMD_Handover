@@ -955,3 +955,66 @@ model ApiRateCounter {
   @@index([window])
   @@map("api_rate_counters")
 }
+
+// ==============================================
+// 22. YouTube Learning (v3.6) — 自分・他の人のチャンネルの新しい動画から学ぶ
+// ==============================================
+// 新動画の検知は公開 RSS フィード（クォータ不要）。本文（文字起こし）は
+//   自分のチャンネル: 公式 Captions API（動画の編集権限が必要）/ 他の人のチャンネル: 提供された文字起こしの登録
+// で取得し、本文が無い動画は「本文待ち／取得不可」のまま要約しない（説明文だけで動画全体を要約したことにしない）。
+
+model YoutubeChannel {
+  id              String    @id @default(uuid())
+  /// UC で始まるチャンネル ID
+  channelId       String    @unique @map("channel_id")
+  title           String?
+  /// own（自分のチャンネル）/ other（他の人のチャンネル）
+  ownership       String    @default("other")
+  /// 学んだ内容を入れるアバター
+  avatarIds       String[]  @map("avatar_ids")
+  /// 自分のチャンネルの字幕取得に使う YouTube アカウント（SnsAccount）
+  ownerAccountId  String?   @map("owner_account_id")
+  enabled         Boolean   @default(true)
+  /// 取得頻度（時間）
+  pollHours       Int       @default(24) @map("poll_hours")
+  /// 対象期間（公開から何日以内の動画を取り込むか）
+  lookbackDays    Int       @default(30) @map("lookback_days")
+  /// 1回に要約する上限
+  maxVideosPerRun Int       @default(3) @map("max_videos_per_run")
+  lastPolledAt    DateTime? @map("last_polled_at")
+  lastError       String?   @map("last_error")
+  videos          YoutubeVideo[]
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("youtube_channels")
+}
+
+model YoutubeVideo {
+  id               String         @id @default(uuid())
+  channelRowId     String         @map("channel_row_id")
+  videoId          String         @map("video_id")
+  url              String
+  title            String
+  publishedAt      DateTime?      @map("published_at")
+  /// 説明文（参考。要約の根拠にはしない）
+  description      String?        @db.Text
+  /// pending（本文待ち）/ available（本文あり・未要約）/ summarized（要約済み）/ unavailable（取得不可）
+  transcriptStatus String         @default("pending") @map("transcript_status")
+  /// captions_api / manual
+  transcriptMethod String?        @map("transcript_method")
+  transcript       String?        @db.Text
+  transcriptAt     DateTime?      @map("transcript_at")
+  summary          String?        @db.Text
+  /// 要約の根拠（要点ごとの本文からの抜粋）・使ったモデル
+  summaryEvidence  Json           @default("{}") @map("summary_evidence")
+  knowledgeIds     String[]       @map("knowledge_ids")
+  error            String?
+  channel          YoutubeChannel @relation(fields: [channelRowId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  @@unique([channelRowId, videoId])
+  @@index([transcriptStatus])
+  @@map("youtube_videos")
+}

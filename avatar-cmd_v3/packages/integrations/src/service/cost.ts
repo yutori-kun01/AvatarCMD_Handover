@@ -201,14 +201,30 @@ export async function estimateMonthly(now = new Date()) {
     items.push(price({ kind: "quote_scan", id: a.id, label: `引用候補の探索 ${a.accountName}（上限で見積もり）`, avatarId: a.avatarId, runsPerMonth: runs, calls, notes: [] }, prices, now));
   }
 
-  // 指標の取得: 直近 30 日の読み取り件数の実績をそのまま 1 か月分とする
-  const metrics = await prisma.usageLedger.groupBy({
-    by: ["provider", "purpose"],
-    where: { context: "metrics", occurredAt: { gte: new Date(now.getTime() - 30 * DAY) } },
-    _sum: { reads: true, requests: true },
+  // 指標の取得・動画の要約・改善処理: 回数が設定から決まらないため、直近 30 日の実績をそのまま 1 か月分とする
+  const CONTEXT_LABEL: Record<string, string> = { metrics: "投稿の反応の取得", youtube: "YouTube（字幕取得・要約）", improvement: "改善処理（14〜27日ごと）" };
+  const actual = await prisma.usageLedger.groupBy({
+    by: ["context", "provider", "model", "purpose"],
+    where: { context: { in: Object.keys(CONTEXT_LABEL) }, occurredAt: { gte: new Date(now.getTime() - 30 * DAY) } },
+    _sum: { reads: true, requests: true, inputTokens: true, outputTokens: true, quotaUnits: true },
   });
-  for (const m of metrics) {
-    items.push(price({ kind: "metrics", label: `投稿の反応の取得（${m.provider}・直近30日の実績）`, runsPerMonth: m._sum.requests ?? 0, calls: [{ provider: m.provider, model: null, purpose: m.purpose, requests: 0, inputTokens: 0, outputTokens: 0, reads: m._sum.reads ?? 0, basis: "actual" }], notes: [] }, prices, now));
+  for (const ctxName of Object.keys(CONTEXT_LABEL)) {
+    const rows = actual.filter((m) => m.context === ctxName);
+    if (!rows.length) continue;
+    const quota = rows.reduce((s, m) => s + (m._sum.quotaUnits ?? 0), 0);
+    items.push(
+      price(
+        {
+          kind: ctxName === "metrics" ? "metrics" : "other",
+          label: `${CONTEXT_LABEL[ctxName]}（直近30日の実績）`,
+          runsPerMonth: rows.reduce((s, m) => s + (m._sum.requests ?? 0), 0),
+          calls: rows.map((m) => ({ provider: m.provider, model: m.model, purpose: m.purpose, requests: m._sum.requests ?? 0, inputTokens: m._sum.inputTokens ?? 0, outputTokens: m._sum.outputTokens ?? 0, reads: m._sum.reads ?? 0, basis: "actual" as const })),
+          notes: quota ? [`YouTube クォータ ${quota} ユニット（金額とは別）`] : [],
+        },
+        prices,
+        now
+      )
+    );
   }
 
   return { items, totals: sumAmounts(items), unpricedItems: items.filter((i) => i.unpriced.length).length };
