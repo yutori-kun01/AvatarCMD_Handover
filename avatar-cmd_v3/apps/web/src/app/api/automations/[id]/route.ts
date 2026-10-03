@@ -1,26 +1,25 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@avatar-cmd/db";
-import { nextRunAfter, validateAction, validateTrigger, type ActionConfig, type TriggerConfig } from "@avatar-cmd/integrations/server";
+import { queuedPostsOfRule, updateRule, type RuleInput } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
+// 停止時の影響範囲: このルールで自動承認され、まだ送信されていない予約
+export const GET = route(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {
+  const { id } = await params;
+  const rows = await queuedPostsOfRule(id);
+  return NextResponse.json({
+    queued: rows.map((r) => ({ id: r.id, platform: r.platform, text: r.content.slice(0, 80), scheduledAt: r.scheduledPost?.scheduledAt ?? null })),
+  });
+});
+
+// 編集・停止/再開。停止時に holdQueued: true なら既存の予約も下書きに戻す
 export const PATCH = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const b = (await req.json()) as { name?: string; description?: string; isActive?: boolean; clearError?: boolean; trigger?: TriggerConfig; action?: ActionConfig };
-  const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id } });
-  const trigger = b.trigger ? validateTrigger(b.trigger) : (rule.triggerConfig as unknown as TriggerConfig);
-  const data: Record<string, unknown> = {};
-  if (b.name !== undefined) data.name = b.name.trim() || rule.name;
-  if (b.description !== undefined) data.description = b.description.trim() || null;
-  if (b.trigger) data.triggerConfig = trigger;
-  if (b.action) data.actionConfig = validateAction(b.action);
-  if (b.isActive !== undefined) data.isActive = b.isActive;
-  // 再開・スケジュール変更時は次回時刻を計算し直す
-  if (b.trigger || (b.isActive && !rule.isActive)) data.nextRunAt = nextRunAfter(validateTrigger(trigger), new Date());
-  if (b.isActive || b.clearError) data.lastError = null;
-  await prisma.automationRule.update({ where: { id }, data: data as any });
-  return NextResponse.json({ ok: true });
+  const { held } = await updateRule(id, (await req.json()) as RuleInput);
+  return NextResponse.json({ ok: true, held });
 });
 
 export const DELETE = route(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {

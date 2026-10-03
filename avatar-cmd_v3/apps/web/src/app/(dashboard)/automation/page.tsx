@@ -24,9 +24,9 @@ interface Rule {
 
 type Approval = "all" | "standard" | "strict";
 const APPROVAL: Record<Approval, { label: string; badge: string }> = {
-  all: { label: "すべて自動承認（チェック結果は記録のみ）", badge: "自動承認" },
-  standard: { label: "NG 判定のみ保留（注意レベルは投稿）", badge: "NGのみ保留" },
-  strict: { label: "チェック OK のみ投稿（それ以外は承認待ち）", badge: "OKのみ投稿" },
+  all: { label: "全自動：チェック結果に関わらず投稿（結果は記録のみ）", badge: "全自動" },
+  standard: { label: "条件付き：NG・Jev の保留・判定障害だけ承認待ち", badge: "NGのみ保留" },
+  strict: { label: "厳格：チェック OK かつ Jev 通過のみ投稿（判定障害も承認待ち）", badge: "OKのみ投稿" },
 };
 
 type Verdict = "continue" | "improve" | "stop" | "insufficient";
@@ -102,7 +102,8 @@ interface Draft {
   accountIds: string[];
   topics: string;
   mode: "draft" | "auto";
-  approval: Approval;
+  /** 新規作成時は未選択（""）。自動投稿では選択必須 */
+  approval: Approval | "";
   extraPrompt: string;
 }
 
@@ -117,7 +118,8 @@ function toDraft(r: Rule): Draft {
     accountIds: r.action.accountIds,
     topics: r.action.topics.join("\n"),
     mode: r.action.mode,
-    approval: r.action.approval ?? "all",
+    // 下書きモードから自動投稿に切り替えるときは、承認範囲を改めて選んでもらう
+    approval: r.action.mode === "auto" ? r.action.approval ?? "all" : "",
     extraPrompt: r.action.extraPrompt ?? "",
   };
 }
@@ -195,6 +197,24 @@ export default function AutomationPage() {
     }
   }
 
+  /** 停止: このルールで自動承認された予約があれば、件数を示して「一緒に止めるか」を選んでもらう */
+  async function stopRule(r: Rule) {
+    let queued: { id: string; platform: string; text: string; scheduledAt: string | null }[] = [];
+    try {
+      queued = (await api<{ queued: typeof queued }>(`/api/automations/${r.id}`)).queued;
+    } catch {
+      /* 取得できなくても停止はできる */
+    }
+    let holdQueued = false;
+    if (queued.length) {
+      const list = queued.slice(0, 5).map((q) => `・${q.text}`).join("\n");
+      holdQueued = confirm(
+        `「${r.name}」で自動承認され、まだ送信されていない予約が ${queued.length} 件あります。\n${list}${queued.length > 5 ? "\n…" : ""}\n\nOK: 予約も止める（下書きに戻す）\nキャンセル: 予約は残してルールだけ止める`
+      );
+    }
+    act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { isActive: false, holdQueued } }), holdQueued ? `停止し、予約 ${queued.length} 件を下書きに戻しました` : "停止しました");
+  }
+
   const avatarAccounts = draft ? accounts.filter((a) => a.avatarId === draft.avatarId && byId[a.platform]?.support !== "manual") : [];
 
   return (
@@ -259,13 +279,16 @@ export default function AutomationPage() {
                   key: "approval",
                   label: "自動承認の範囲",
                   type: "select",
-                  options: (Object.keys(APPROVAL) as Approval[]).map((k) => ({ value: k, label: APPROVAL[k].label })),
+                  options: [...(draft.approval ? [] : [{ value: "", label: "選択してください" }]), ...(Object.keys(APPROVAL) as Approval[]).map((k) => ({ value: k, label: APPROVAL[k].label }))],
                 }}
                 value={draft.approval}
                 onChange={(v) => setDraft({ ...draft, approval: v as Approval })}
               />
+              {draft.approval === "all" && (
+                <p className="mt-1 text-[11px] text-amber-300">全自動では、投稿前チェックが NG・失敗でも、Jev が保留と判定しても承認なしで投稿されます。</p>
+              )}
               <p className="mt-1 text-[11px] text-white/40">
-                投稿前チェック（AI）と Jev（gate モード時）の判定のうち、どこまでを承認なしで投稿するか。「すべて自動承認」では承認待ちになりません（指摘があった投稿はアクティビティに記録されます）。
+                投稿前チェック（AI）と Jev（gate モード時）の判定のうち、どこまでを承認なしで投稿するか。判定の障害（チェック失敗・Jev の失敗）は「条件付き」「厳格」では承認待ちになります。変更は次回の実行から反映され、すでに予約キューにある投稿も送信直前に新しい条件で再確認します。
               </p>
             </div>
           )}
@@ -302,7 +325,7 @@ export default function AutomationPage() {
           />
           <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
           <div className="flex gap-2">
-            <Button onClick={save} disabled={busy === "save" || !draft.name.trim()}>
+            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.mode === "auto" && !draft.approval)}>
               {busy === "save" ? "保存中…" : "保存"}
             </Button>
             <Button variant="ghost" onClick={() => setDraft(null)}>
@@ -315,7 +338,7 @@ export default function AutomationPage() {
           className="mb-6"
           disabled={!avatars.length}
           onClick={() =>
-            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", approval: "all", extraPrompt: "" })
+            setDraft({ avatarId: avatars[0]?.id ?? "", name: "", triggerType: "daily", times: "09:00", hours: "6", accountIds: [], topics: "", mode: "draft", approval: "", extraPrompt: "" })
           }
         >
           + 新しいルール
@@ -333,7 +356,7 @@ export default function AutomationPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold">{r.name}</span>
                     <Badge className="bg-white/5 text-white/50">{r.avatarName}</Badge>
-                    <Badge className={r.action.mode === "auto" ? "bg-violet-500/15 text-violet-300" : "bg-cyan-500/15 text-cyan-300"}>
+                    <Badge className={r.action.mode === "auto" ? ((r.action.approval ?? "all") === "all" ? "bg-amber-500/15 text-amber-300" : "bg-violet-500/15 text-violet-300") : "bg-cyan-500/15 text-cyan-300"}>
                       {r.action.mode === "auto" ? `自動投稿・${APPROVAL[r.action.approval ?? "all"].badge}` : "下書き→承認"}
                     </Badge>
                   </div>
@@ -355,7 +378,7 @@ export default function AutomationPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { isActive: !r.isActive } }), r.isActive ? "停止しました" : "再開しました")}
+                    onClick={() => (r.isActive ? stopRule(r) : act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { isActive: true } }), "再開しました"))}
                     className={`relative h-6 w-11 rounded-full transition ${r.isActive ? "bg-emerald-500" : "bg-white/15"}`}
                     title={r.isActive ? "停止" : "再開"}
                   >

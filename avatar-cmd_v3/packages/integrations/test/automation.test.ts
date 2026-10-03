@@ -33,6 +33,10 @@ test("自動承認: 自動投稿モードの approval は未指定なら all、�
   assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto", approval: "strict" }).approval, "strict");
   assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto", approval: "bogus" as any }).approval, "all");
   assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "draft", approval: "strict" }).approval, undefined);
+  // 画面・API からの作成/更新では、自動投稿の承認範囲は選択必須
+  assert.throws(() => validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto" }, { requireApproval: true }), /自動承認の範囲/);
+  assert.throws(() => validateAction({ accountIds: ["x"], topics: ["a"], mode: "auto", approval: "bogus" as any }, { requireApproval: true }), /自動承認の範囲/);
+  assert.equal(validateAction({ accountIds: ["x"], topics: ["a"], mode: "draft" }, { requireApproval: true }).mode, "draft");
 });
 
 test("自動承認: 範囲ごとに投稿するか下書きに回すか", () => {
@@ -49,7 +53,11 @@ test("自動承認: 範囲ごとに投稿するか下書きに回すか", () => 
 
   // standard: NG と Jev の hold だけ保留
   assert.equal(autoApprovalDecision("standard", caution).publish, true);
-  assert.equal(autoApprovalDecision("standard", err).publish, true);
+  // 判定障害（チェック失敗・Jev の失敗）は standard / strict では保留
+  assert.deepEqual(autoApprovalDecision("standard", err), { publish: false, reason: "チェック失敗（timeout）", gateApplied: false });
+  assert.equal(autoApprovalDecision("standard", ok, undefined, true).publish, false);
+  assert.match(autoApprovalDecision("strict", ok, undefined, true).reason!, /Jev の判定に失敗/);
+  assert.equal(autoApprovalDecision("all", err, undefined, true).publish, true);
   assert.equal(autoApprovalDecision("standard", ok, review).publish, true);
   assert.deepEqual(autoApprovalDecision("standard", ng), { publish: false, reason: "断定表現", gateApplied: false });
   assert.deepEqual(autoApprovalDecision("standard", ok, hold), { publish: false, reason: hold.reason, gateApplied: true });
