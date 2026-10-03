@@ -1,3 +1,4 @@
+import { appendInlineQuote, canonicalStatusUrl, checkInlineQuote, INLINE_QUOTE_WEIGHT, sentences, stripQuoteUrl } from "../src/post-text";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { charCount, cleanPostText, formatBullets, formatPostText, removeLineBreaks, stripBrackets, xLength } from "../src/post-text";
@@ -78,4 +79,30 @@ test("箇条書きは200文字以内でも改行を残して1件、「」は取�
   // 箇条書きでない短文は従来どおり改行を除く
   assert.deepEqual(formatPostText("「おはよう」\n今日も頑張ろう", { mode: "newline", limit: 280, measure: xLength }), ["おはよう今日も頑張ろう"]);
   assert.equal(cleanPostText("「見出し」\n- a\n- b", { article: true }), "見出し\n- a\n- b");
+});
+
+test("引用 URL: 正規化・本文中の重複除去・前後の半角スペース・1回だけ", () => {
+  assert.equal(canonicalStatusUrl("https://twitter.com/Alice_1/status/123456789?s=20&t=x#frag"), "https://x.com/Alice_1/status/123456789");
+  assert.equal(canonicalStatusUrl("https://mobile.x.com/i/web/status/123456789"), "https://x.com/i/status/123456789");
+  assert.equal(canonicalStatusUrl(undefined, "123456789"), "https://x.com/i/status/123456789");
+  assert.equal(canonicalStatusUrl("https://example.com/status/1"), null);
+  const url = "https://x.com/a/status/123456789";
+  const body = stripQuoteUrl("同意です https://x.com/a/status/123456789?s=20 本当に。\nhttps://twitter.com/a/status/123456789", "123456789");
+  assert.equal(body, "同意です 本当に。");
+  const t = appendInlineQuote(cleanPostText(body), url);
+  assert.equal(t, `同意です 本当に。 ${url} `);
+  assert.equal(checkInlineQuote(t, url), null);
+  assert.match(checkInlineQuote(`前${url} `, url)!, /前に半角スペース/);
+  assert.match(checkInlineQuote(` ${url}後`, url)!, /後ろに半角スペース/);
+  assert.match(checkInlineQuote(` ${url} ${url} `, url)!, /2 回/);
+  // 「」の除去・箇条書きの整形のあとで URL を入れるので、整形で URL やスペースが崩れない
+  const bullets = appendInlineQuote(cleanPostText("「ポイント」は2つ。・朝日 ・水"), url);
+  assert.equal(checkInlineQuote(bullets, url), null);
+  assert.equal(xLength(` ${url} `), INLINE_QUOTE_WEIGHT);
+});
+
+test("文の分割: URL の中の ? ! では分けない", () => {
+  assert.deepEqual(sentences("詳しくは https://example.com/a?b=1&c=2 を見て！次の文。"), ["詳しくは https://example.com/a?b=1&c=2 を見て！", "次の文。"]);
+  const parts = formatPostText(`${"あ".repeat(130)}。詳しくは https://example.com/page?x=1!y を見て。${"い".repeat(130)}。`, { mode: "newline", limit: 280, measure: xLength });
+  assert.ok(parts.some((p) => p.includes("https://example.com/page?x=1!y")));
 });

@@ -131,6 +131,7 @@ model Avatar {
   activityLogs    ActivityLog[]
   knowledgeItems  KnowledgeItem[]
   improvementCycles ImprovementCycle[]
+  improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
   collabPartners    Collaboration[] @relation("CollabPartner")
 
@@ -477,15 +478,46 @@ model ImprovementCycle {
   analysis    Json
   suggestions Json
   applied     Json?
-  status      String   @default("pending") // pending, reviewed, applied, dismissed
+  status      String   @default("pending") // pending, partially_applied, applied, dismissed（提案の扱い）
   impact      Json?
+
+  // v3.6 — 14〜27日周期の実行管理（再起動・並行実行・再試行で日程が変わらない／二重実行しない）
+  /// 予定日時（スケジュールの nextRunAt）。アバター×予定日時で一意
+  scheduledFor DateTime? @map("scheduled_for")
+  /// scheduled / running / completed / failed
+  runStatus    String    @default("completed") @map("run_status")
+  leaseUntil   DateTime? @map("lease_until")
+  attempt      Int       @default(0)
+  /// suggest（提案のみ）/ approve（承認後に適用）/ auto（自動適用）
+  mode         String    @default("suggest")
+  completedAt  DateTime? @map("completed_at")
+  error        String?
+  /// 完了時に決めた次回までの日数（14〜27）
+  nextIntervalDays Int?  @map("next_interval_days")
 
   avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@unique([avatarId, scheduledFor])
   @@map("improvement_cycles")
+}
+
+/// アバターごとの改善処理の予定（次回日時は完了時に一度だけ決める）
+model ImprovementSchedule {
+  avatarId    String    @id @map("avatar_id")
+  enabled     Boolean   @default(true)
+  /// suggest（提案のみ・既定）/ approve（承認後に適用）/ auto（自動適用）
+  mode        String    @default("suggest")
+  nextRunAt   DateTime  @map("next_run_at")
+  lastCycleId String?   @map("last_cycle_id")
+  avatar      Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([enabled, nextRunAt])
+  @@map("improvement_schedules")
 }
 
 // ==============================================
@@ -558,14 +590,47 @@ model KnowledgeItem {
   tags        Json     @default("[]")
   category    String   @default("general")
   freshness   DateTime @default(now()) // Last verified/updated
+  // isActive は status = active と同期（旧コード互換）
   isActive    Boolean  @default(true) @map("is_active")
 
+  // v3.6 — 種別・状態・出典・適用範囲・版
+  /// fact（出典付きの事実）/ persona（人格・文体の補足）/ learning（投稿成果から得た学び）
+  kind            String    @default("fact")
+  /// active / disabled / proposed（改善処理の提案で、承認待ち）
+  status          String    @default("active")
+  /// 出典を取得・確認した日時
+  sourceFetchedAt DateTime? @map("source_fetched_at")
+  /// 適用範囲 { platforms?: string[], topics?: string[], ruleIds?: string[] }。空なら全体
+  scope           Json      @default("{}")
+  version         Int       @default(1)
+  /// human / api:<keyId> / improvement:<cycleId> / youtube:<videoId>
+  createdBy       String    @default("human") @map("created_by")
+  /// 根拠（投稿 ID・動画 ID・要約の根拠など）と取り込み時の注意（命令文らしき記述の検出）
+  evidence        Json      @default("{}")
+
   avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  revisions   KnowledgeRevision[]
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  @@index([avatarId, status])
   @@map("knowledge_items")
+}
+
+/// ナレッジの変更履歴（変更前の版を保存。任意の版へ差し戻せる）
+model KnowledgeRevision {
+  id          String        @id @default(uuid())
+  knowledgeId String        @map("knowledge_id")
+  version     Int
+  snapshot    Json
+  changedBy   String        @map("changed_by")
+  reason      String?
+  knowledge   KnowledgeItem @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@unique([knowledgeId, version])
+  @@map("knowledge_revisions")
 }
 
 // ==============================================
@@ -759,4 +824,197 @@ model OAuthState {
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("oauth_states")
+}
+
+// ==============================================
+// 20. Usage Ledger (v3.6) — 外部 API の使用量の共通台帳（費用は料金表から読み出し時に計算）
+// ==============================================
+// 入力トークンはキャッシュ分を除いた値に正規化して保存する（各社の数え方の違いによる二重計上を防ぐ）。
+
+model UsageLedger {
+  id               String   @id @default(uuid())
+  occurredAt       DateTime @default(now()) @map("occurred_at")
+  provider         String   // anthropic / openai / gemini / typesafe / x / youtube
+  model            String?
+  avatarId         String?  @map("avatar_id")
+  /// 用途: post / article / review / rewrite / quote / tags / jev_post_gate / x_timeline / x_metrics / x_post / youtube_api / youtube_summary / improvement ...
+  purpose          String
+  /// 呼び出し元: automation / quote_scan / manual / api / metrics / improvement / youtube
+  context          String?
+  subjectId        String?  @map("subject_id")
+  inputTokens      Int      @default(0) @map("input_tokens")
+  outputTokens     Int      @default(0) @map("output_tokens")
+  cacheReadTokens  Int      @default(0) @map("cache_read_tokens")
+  cacheWriteTokens Int      @default(0) @map("cache_write_tokens")
+  requests         Int      @default(1)
+  /// 読み取り件数（X の Owned Reads など、件数課金）
+  reads            Int      @default(0)
+  /// YouTube Data API のクォータ（金額とは別に集計）
+  quotaUnits       Int      @default(0) @map("quota_units")
+  isRetry          Boolean  @default(false) @map("is_retry")
+  error            String?
+
+  @@index([occurredAt])
+  @@index([avatarId, occurredAt])
+  @@map("usage_ledger")
+}
+
+// 料金表（人が確認して登録する。単価が無い使用量は「未算定」として扱い、0 円にしない）
+model PriceEntry {
+  id            String   @id @default(uuid())
+  provider      String
+  /// "*" はそのプロバイダの全モデル（個別の登録が優先）
+  model         String   @default("*")
+  /// input_token / output_token / cache_read_token / cache_write_token / request / read
+  unit          String
+  /// per 単位あたりの価格（例: 100万トークンあたり 3.0 USD → price=3, per=1000000）
+  price         Float
+  per           Int      @default(1)
+  currency      String   @default("USD")
+  effectiveFrom DateTime @map("effective_from")
+  checkedAt     DateTime @map("checked_at")
+  note          String?
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([provider, unit, effectiveFrom])
+  @@map("price_entries")
+}
+
+// ==============================================
+// 21. External API (v3.6) — 外部 AI から操作するための API キー・監査ログ・二重実行防止・レート制限
+// ==============================================
+// キーの平文は保存しない（発行時に1回だけ表示）。hash は HMAC-SHA256（鍵は ENCRYPTION_KEY から派生）。
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  name        String
+  /// 表示・検索用の先頭部分（acmd_<prefix>_...）
+  prefix      String    @unique
+  hash        String
+  /// read / draft / publish / rules:write / knowledge:write
+  scopes      String[]
+  /// 操作できるアバター（allAvatars=false のときだけ使う）
+  avatarIds   String[]  @map("avatar_ids")
+  allAvatars  Boolean   @default(false) @map("all_avatars")
+  expiresAt   DateTime? @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("api_keys")
+}
+
+/// 外部 API の呼び出し記録。本文・Authorization ヘッダー・キーは記録しない
+model ApiAuditLog {
+  id             String   @id @default(uuid())
+  keyId          String?  @map("key_id")
+  method         String
+  path           String
+  avatarId       String?  @map("avatar_id")
+  status         Int
+  idempotencyKey String?  @map("idempotency_key")
+  latencyMs      Int?     @map("latency_ms")
+  ip             String?
+  error          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([keyId, createdAt])
+  @@index([createdAt])
+  @@map("api_audit_logs")
+}
+
+/// 書き込み系リクエストの二重実行防止（Idempotency-Key）
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  keyId          String   @map("key_id")
+  idemKey        String   @map("idem_key")
+  requestHash    String   @map("request_hash")
+  /// processing / done
+  status         String   @default("processing")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([keyId, idemKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+/// レート制限のカウンタ（キー × 1分の窓）
+model ApiRateCounter {
+  keyId   String   @map("key_id")
+  bucket  String
+  window  DateTime
+  count   Int      @default(0)
+
+  @@id([keyId, bucket, window])
+  @@index([window])
+  @@map("api_rate_counters")
+}
+
+// ==============================================
+// 22. YouTube Learning (v3.6) — 自分・他の人のチャンネルの新しい動画から学ぶ
+// ==============================================
+// 新動画の検知は公開 RSS フィード（クォータ不要）。本文（文字起こし）は
+//   自分のチャンネル: 公式 Captions API（動画の編集権限が必要）/ 他の人のチャンネル: 提供された文字起こしの登録
+// で取得し、本文が無い動画は「本文待ち／取得不可」のまま要約しない（説明文だけで動画全体を要約したことにしない）。
+
+model YoutubeChannel {
+  id              String    @id @default(uuid())
+  /// UC で始まるチャンネル ID
+  channelId       String    @unique @map("channel_id")
+  title           String?
+  /// own（自分のチャンネル）/ other（他の人のチャンネル）
+  ownership       String    @default("other")
+  /// 学んだ内容を入れるアバター
+  avatarIds       String[]  @map("avatar_ids")
+  /// 自分のチャンネルの字幕取得に使う YouTube アカウント（SnsAccount）
+  ownerAccountId  String?   @map("owner_account_id")
+  enabled         Boolean   @default(true)
+  /// 取得頻度（時間）
+  pollHours       Int       @default(24) @map("poll_hours")
+  /// 対象期間（公開から何日以内の動画を取り込むか）
+  lookbackDays    Int       @default(30) @map("lookback_days")
+  /// 1回に要約する上限
+  maxVideosPerRun Int       @default(3) @map("max_videos_per_run")
+  lastPolledAt    DateTime? @map("last_polled_at")
+  lastError       String?   @map("last_error")
+  videos          YoutubeVideo[]
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("youtube_channels")
+}
+
+model YoutubeVideo {
+  id               String         @id @default(uuid())
+  channelRowId     String         @map("channel_row_id")
+  videoId          String         @map("video_id")
+  url              String
+  title            String
+  publishedAt      DateTime?      @map("published_at")
+  /// 説明文（参考。要約の根拠にはしない）
+  description      String?        @db.Text
+  /// pending（本文待ち）/ available（本文あり・未要約）/ summarized（要約済み）/ unavailable（取得不可）
+  transcriptStatus String         @default("pending") @map("transcript_status")
+  /// captions_api / manual
+  transcriptMethod String?        @map("transcript_method")
+  transcript       String?        @db.Text
+  transcriptAt     DateTime?      @map("transcript_at")
+  summary          String?        @db.Text
+  /// 要約の根拠（要点ごとの本文からの抜粋）・使ったモデル
+  summaryEvidence  Json           @default("{}") @map("summary_evidence")
+  knowledgeIds     String[]       @map("knowledge_ids")
+  error            String?
+  channel          YoutubeChannel @relation(fields: [channelRowId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  @@unique([channelRowId, videoId])
+  @@index([transcriptStatus])
+  @@map("youtube_videos")
 }

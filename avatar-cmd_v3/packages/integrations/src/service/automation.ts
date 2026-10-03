@@ -5,19 +5,23 @@
 //   triggerConfig: { type: "daily", times: ["09:00","19:00"], timezone: "Asia/Tokyo" }
 //                | { type: "interval", hours: 6 }
 //   actionConfig:  { accountIds: string[], topics: string[], mode: "draft" | "auto", approval?: AutoApproval, extraPrompt?: string }
-//     approval（mode: "auto" のときの自動承認の範囲。未指定は "all"）:
+//     approval（mode: "auto" のときの自動承認の範囲）:
 //       all      … 投稿前チェック・Jev の結果に関わらず自動承認して投稿（結果は記録のみ）
 //       standard … NG（公開すべきでない）・Jev の hold だけ下書きに回し、それ以外は投稿
-//       strict   … 投稿前チェックが OK かつ Jev を通過したものだけ投稿（チェック失敗も下書き）
+//       strict   … 投稿前チェックが OK かつ Jev を通過したものだけ投稿
+//     standard / strict では、判定の障害（投稿前チェックの失敗・gate モードの Jev の失敗）は下書きに保留する。
+//     画面・API からの作成/更新では approval の指定が必須（未指定の旧ルールはマイグレーションで all を明示保存済み）。
 // worker が tick ごとに processDueRules() を呼び、nextRunAt を過ぎたルールを実行する。
 
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform } from "../platforms";
 import { generatePostText, reviewPost } from "./ai";
-import { createPosts, errorMessage } from "./publish";
-import { markApplied, recordHumanAction } from "./decision";
+import { createPosts, errorMessage, returnToDraft } from "./publish";
+import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
+import { assertBudget, withUsageContext } from "./usage";
+import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -25,6 +29,7 @@ export type TriggerConfig =
 
 export type AutoApproval = "all" | "standard" | "strict";
 export const AUTO_APPROVALS: AutoApproval[] = ["all", "standard", "strict"];
+export const APPROVAL_LABEL: Record<AutoApproval, string> = { all: "すべて自動承認", standard: "NGのみ保留", strict: "OKのみ投稿" };
 
 export interface ActionConfig {
   accountIds: string[];
@@ -42,11 +47,16 @@ export interface ActionConfig {
 export function autoApprovalDecision(
   approval: AutoApproval,
   review: { verdict: string; summary?: string; error?: string },
-  jev?: { mode: "shadow" | "gate"; action: string; publish: boolean; reason: string }
+  jev?: { mode: "shadow" | "gate"; action: string; publish: boolean; reason: string },
+  /** gate モードで Jev を呼んだが結果が返らなかった（障害） */
+  jevFailed = false
 ): { publish: boolean; reason?: string; gateApplied: boolean } {
   const reviewWhy = () => (review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : review.summary || review.verdict);
   const gate = jev?.mode === "gate" ? jev : undefined;
   if (approval === "all") return { publish: true, gateApplied: false };
+  // 判定の障害は、自動承認の範囲を絞っている（standard / strict）ルールでは保留する
+  if (review.verdict === "error") return { publish: false, reason: reviewWhy(), gateApplied: !!gate };
+  if (jevFailed) return { publish: false, reason: "Jev の判定に失敗（判定障害のため保留）", gateApplied: false };
   if (approval === "standard") {
     if (review.verdict === "ng") return { publish: false, reason: reviewWhy(), gateApplied: !!gate };
     if (gate?.action === "hold") return { publish: false, reason: gate.reason, gateApplied: true };
@@ -122,19 +132,130 @@ export function nextRunAfter(t: TriggerConfig, from: Date): Date {
   return new Date(from.getTime() + 24 * 3600_000);
 }
 
-export function validateAction(a: ActionConfig): ActionConfig {
+/**
+ * actionConfig の検証。requireApproval（画面・API からの作成/更新）では、自動投稿の承認範囲を明示しないとエラー。
+ * 実行時（保存済みの旧ルール）は従来どおり未指定・不正を all として扱う。
+ */
+export function validateAction(a: ActionConfig, opts: { requireApproval?: boolean } = {}): ActionConfig {
   const accountIds = [...new Set(a.accountIds ?? [])];
   if (!accountIds.length) throw new ConfigError("投稿先アカウントを選択してください");
   const topics = (a.topics ?? []).map((t) => t.trim()).filter(Boolean);
   if (!topics.length) throw new ConfigError("トピックを1つ以上入力してください");
   const mode = a.mode === "auto" ? "auto" : "draft";
-  const approval = mode === "auto" ? (AUTO_APPROVALS.includes(a.approval as AutoApproval) ? a.approval : "all") : undefined;
+  const valid = AUTO_APPROVALS.includes(a.approval as AutoApproval);
+  if (mode === "auto" && !valid && opts.requireApproval) throw new ConfigError("自動投稿では「自動承認の範囲」を選択してください");
+  const approval = mode === "auto" ? (valid ? a.approval : "all") : undefined;
   return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
 }
 
-/** ルールを1回実行する。作成した投稿数を返す */
+export type RuleActionType = "generate_post" | "quote_post";
+
+export interface RuleInput {
+  avatarId?: string;
+  /** generate_post = AI で投稿文を生成（既定）/ quote_post = X の引用投稿（タイムラインから探して引用案を作る） */
+  actionType?: RuleActionType;
+  name?: string;
+  description?: string;
+  isActive?: boolean;
+  clearError?: boolean;
+  trigger?: TriggerConfig;
+  action?: ActionConfig | QuoteActionConfig;
+  /** 停止時に、このルールで自動承認されて予約キューにある投稿も止める（下書きに戻す） */
+  holdQueued?: boolean;
+}
+
+/** ルールを作成する（画面・外部 API 共通） */
+export async function createRule(b: RuleInput) {
+  if (!b.avatarId) throw new ConfigError("アバターを選択してください");
+  if (!b.name?.trim()) throw new ConfigError("ルール名を入力してください");
+  if (!b.trigger || !b.action) throw new ConfigError("実行タイミングと動作を指定してください");
+  const trigger = validateTrigger(b.trigger);
+  const actionType: RuleActionType = b.actionType === "quote_post" ? "quote_post" : "generate_post";
+  const action = await validateRuleAction(actionType, b.avatarId, b.action);
+  return prisma.automationRule.create({
+    data: {
+      avatarId: b.avatarId,
+      name: b.name.trim(),
+      description: b.description?.trim() || null,
+      category: "posting",
+      triggerType: "schedule",
+      triggerConfig: trigger as object,
+      actionType,
+      actionConfig: action as object,
+      nextRunAt: nextRunAfter(trigger, new Date()),
+    },
+  });
+}
+
+/** 画面・API からの作成/更新時の actionConfig の検証（種類ごと） */
+async function validateRuleAction(actionType: RuleActionType, avatarId: string, raw: unknown): Promise<ActionConfig | QuoteActionConfig> {
+  if (actionType === "quote_post") {
+    const q = validateQuoteAction(raw as QuoteActionConfig, { requireApproval: true });
+    await assertAccountsOf(avatarId, [q.accountId]);
+    const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: q.accountId } });
+    if (acc.platform !== "x") throw new ConfigError("引用投稿ルールは X のアカウントだけに対応しています");
+    return q;
+  }
+  const action = validateAction(raw as ActionConfig, { requireApproval: true });
+  await assertAccountsOf(avatarId, action.accountIds);
+  return action;
+}
+
+async function assertAccountsOf(avatarId: string, accountIds: string[]) {
+  const accounts = await prisma.snsAccount.findMany({ where: { id: { in: accountIds } }, select: { avatarId: true } });
+  if (accounts.length !== accountIds.length || accounts.some((a) => a.avatarId !== avatarId)) throw new ConfigError("選択したアカウントはこのアバターのものではありません");
+}
+
+/** ルールを更新する（画面・外部 API 共通）。保存後のルールと、下書きに戻した予約の件数を返す */
+export async function updateRule(id: string, b: RuleInput) {
+  const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id } });
+  const trigger = b.trigger ? validateTrigger(b.trigger) : (rule.triggerConfig as unknown as TriggerConfig);
+  const data: Record<string, unknown> = {};
+  if (b.name !== undefined) data.name = b.name.trim() || rule.name;
+  if (b.description !== undefined) data.description = b.description.trim() || null;
+  if (b.trigger) data.triggerConfig = trigger;
+  if (b.action) data.actionConfig = await validateRuleAction(rule.actionType as RuleActionType, rule.avatarId, b.action);
+  if (b.isActive !== undefined) data.isActive = b.isActive;
+  // 再開・スケジュール変更時は次回時刻を計算し直す
+  if (b.trigger || (b.isActive && !rule.isActive)) data.nextRunAt = nextRunAfter(validateTrigger(trigger), new Date());
+  if (b.isActive || b.clearError) data.lastError = null;
+  const saved = await prisma.automationRule.update({ where: { id }, data: data as object });
+  const held = b.isActive === false && b.holdQueued ? await holdQueuedPosts(id, `自動化「${saved.name}」の停止に合わせて予約を止めました`) : 0;
+  return { rule: saved, held };
+}
+
+/** このルールで自動承認され、まだ送信されていない予約（pending）。停止時の影響範囲の表示用 */
+export async function queuedPostsOfRule(ruleId: string) {
+  return prisma.content.findMany({
+    where: { status: "SCHEDULED", scheduledPost: { status: "pending" }, metadata: { path: ["automationId"], equals: ruleId } },
+    select: { id: true, platform: true, content: true, scheduledPost: { select: { scheduledAt: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+}
+
+/** ルールの予約を下書き（承認待ち）に戻す。戻した件数を返す */
+export async function holdQueuedPosts(ruleId: string, reason: string): Promise<number> {
+  const rows = await queuedPostsOfRule(ruleId);
+  let n = 0;
+  for (const r of rows) if (await returnToDraft(r.id, reason)) n++;
+  return n;
+}
+
+/** ルールを1回実行する。作成した投稿数を返す。使用量は「自動化」としてアバター・ルールに紐付けて記録する */
 export async function runRule(ruleId: string): Promise<number> {
   const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: ruleId } });
+  await assertBudget(`自動化「${rule.name}」`);
+  if (rule.actionType === "quote_post") {
+    // 引用投稿ルール: タイムラインから探して引用案を作る（設定はルールの actionConfig）
+    const config = validateQuoteAction(rule.actionConfig as unknown as QuoteActionConfig);
+    const r = await scanQuoteCandidates(config.accountId, { config, ruleId: rule.id });
+    if (r.errors.length && !r.drafted) throw new Error(`引用案の作成に失敗: ${r.errors[0]}`);
+    return r.drafted;
+  }
+  return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));
+}
+
+async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRule.findUniqueOrThrow>>): Promise<number> {
   const action = validateAction(rule.actionConfig as unknown as ActionConfig);
   const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
   if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
@@ -149,9 +270,13 @@ export async function runRule(ruleId: string): Promise<number> {
   const held: string[] = [];
   const flagged: string[] = [];
   for (const [platform, accs] of byPlatform) {
-    const { text, model } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt });
+    let heldReason: string;
+    const { text, model, knowledgeIds } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt, ruleId: rule.id });
     // Jev の判定（キーが無ければ null → 既存の流れのみ）。shadow は記録だけ、gate は自動投稿の可否に反映
+    const jevCfg = await jevConfig();
     const jev = await judgePost({ avatarId: rule.avatarId, platform, text, topic });
+    // gate モードで Jev を呼んだのに結果が無い = 判定障害（キー未設定・off なら jevCfg が null）
+    const jevFailed = jevCfg?.mode === "gate" && !jev;
     const jevMeta = jev ? { action: jev.action, confidence: jev.confidence, mode: jev.mode, model: jev.model, ...postGatePolicy(jev) } : undefined;
     let review: { verdict: string; summary: string; model?: string; error?: string } | undefined;
     if (action.mode === "auto") {
@@ -163,7 +288,7 @@ export async function runRule(ruleId: string): Promise<number> {
         review = { verdict: "error", summary: "", error: errorMessage(e) };
       }
       const approval = action.approval ?? "all";
-      const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined);
+      const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined, jevFailed);
       if (jev && d.gateApplied) await markApplied(jev.eventId);
       if (d.publish) {
         const posted = await createPosts({
@@ -171,7 +296,7 @@ export async function runRule(ruleId: string): Promise<number> {
           text,
           title: topic,
           category: "automation",
-          extraMetadata: { automationId: rule.id, model, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
+          extraMetadata: { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
         });
         if (jev && posted[0]) await linkDecision(jev.eventId, posted[0].id);
         queued += posted.length;
@@ -180,6 +305,9 @@ export async function runRule(ruleId: string): Promise<number> {
         continue;
       }
       held.push(`${getPlatform(platform)?.name ?? platform}: ${d.reason}`);
+      heldReason = `自動投稿ルール（${APPROVAL_LABEL[approval]}）で保留: ${d.reason ?? ""}`;
+    } else {
+      heldReason = "下書きモードのルールで作成（承認すると投稿）";
     }
     for (const [i, a] of accs.entries()) {
       const c = await prisma.content.create({
@@ -190,7 +318,7 @@ export async function runRule(ruleId: string): Promise<number> {
           content: text,
           status: "DRAFT",
           category: "automation",
-          metadata: { title: topic, media: [], options: {}, automationId: rule.id, model, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
         },
       });
       if (jev && i === 0) await linkDecision(jev.eventId, c.id);
@@ -243,7 +371,7 @@ export async function processDueRules(): Promise<number> {
   const now = new Date();
   const due = await prisma.automationRule.findMany({
     // 一時停止中のアバターのルールは実行しない
-    where: { isActive: true, actionType: "generate_post", nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
+    where: { isActive: true, actionType: { in: ["generate_post", "quote_post"] }, nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
     take: 5,
   });
   let n = 0;
@@ -287,6 +415,8 @@ export async function approveDraft(contentId: string, text?: string, scheduledAt
     where: { id: contentId },
     data: {
       status: "SCHEDULED",
+      // 人が承認した投稿は、送信直前の再確認でルールの状態を見ない（アカウント・アバターのみ確認）
+      metadata: { ...((c.metadata ?? {}) as object), humanApprovedAt: new Date().toISOString() },
       ...(text?.trim() ? { content: text } : {}),
       scheduledPost: { create: { scheduledAt: scheduledAt ?? new Date(), status: "pending" } },
     },

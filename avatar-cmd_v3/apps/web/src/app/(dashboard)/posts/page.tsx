@@ -62,6 +62,7 @@ const VERDICT: Record<ReviewResult["verdict"], { label: string; cls: string }> =
 
 interface PostRow {
   id: string;
+  platform: string;
   platformName: string;
   accountName: string;
   text: string;
@@ -639,6 +640,7 @@ export default function PostsPage() {
                             </a>
                           )}
                           <span className="mt-0.5 line-clamp-2 block">{p.quote.text}</span>
+                          {p.platform === "x" && p.status !== "PUBLISHED" && <span className="mt-0.5 block text-[10px] text-white/35">投稿時に元投稿の URL を本文の末尾に入れます（前後に半角スペース）</span>}
                         </div>
                       )}
                       {p.metrics && (

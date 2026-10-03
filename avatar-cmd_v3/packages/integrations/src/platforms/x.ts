@@ -9,7 +9,7 @@
 //              POST /2/media/upload/initialize → /{id}/append → /{id}/finalize（動画・GIF: 分割）
 //              GET  /2/media/upload?command=STATUS&media_id=（処理待ち）
 //   - スコープ: tweet.read tweet.write users.read media.write offline.access
-//   - 引用:   POST /2/tweets { quote_tweet_id }
+//   - 引用:   元投稿の URL を本文に入れる（quote_tweet_id は自分の投稿・メンションされた投稿しか引用できないため使わない）
 //   - 自分の投稿の反応: GET /2/users/{id}/tweets?tweet.fields=public_metrics
 //   - ホームタイムライン: GET /2/users/{id}/timelines/reverse_chronological
 //   料金（従量課金）: 上の2つは「Owned Reads」で 1件 $0.001（認証ユーザー＝開発者アプリの所有者のとき）。
@@ -17,7 +17,7 @@
 
 import type { MediaFile, PlatformDefinition, PostMetrics, PublishContext, TimelinePost } from "../types";
 import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
-import { formatPostText, LONG_POST_MODE_FIELD, longPostMode, xLength, xPostLimit } from "../post-text";
+import { appendInlineQuote, canonicalStatusUrl, formatPostText, INLINE_QUOTE_WEIGHT, LONG_POST_MODE_FIELD, longPostMode, stripQuoteUrl, xLength, xPostLimit } from "../post-text";
 
 const API = "https://api.x.com";
 const SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"];
@@ -238,28 +238,25 @@ export const x: PlatformDefinition = {
     const videos = post.media.filter((m) => m.mimeType.startsWith("video/") || m.mimeType === "image/gif");
     if (videos.length && post.media.length > 1) throw new ConfigError("X: 動画・GIF は1件のみ添付できます（画像との混在不可）");
 
+    // 引用（X）は最初から「元投稿の URL を本文に入れる」方式（quote_tweet_id は使わない。失敗時の切り替えもしない）
+    const quoteUrl = post.quotePostUrl || post.quotePostId ? canonicalStatusUrl(post.quotePostUrl, post.quotePostId) : null;
+    if ((post.quotePostUrl || post.quotePostId) && !quoteUrl) throw new ConfigError(`X: 引用する投稿の URL が不正です (${post.quotePostUrl ?? post.quotePostId})`);
     // 200文字以内は改行なし、超える場合は設定に従って改行あり1件 or ツリー（上限を超えるなら必ずツリー）
-    const full = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
-    const parts = formatPostText(full, { mode: longPostMode(ctx.settings), limit: xPostLimit(ctx.settings), measure: xLength });
+    const base = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
+    const full = quoteUrl ? stripQuoteUrl(base, quoteUrl.split("/").at(-1)!) : base;
+    // 整形（改行の除去・ツリー分割）は URL を入れる前に行い、URL ぶん（前後のスペース含む）の長さを空けておく
+    const limit = xPostLimit(ctx.settings) - (quoteUrl ? INLINE_QUOTE_WEIGHT : 0);
+    const parts = formatPostText(full, { mode: longPostMode(ctx.settings), limit, measure: xLength });
+    if (quoteUrl) parts[0] = appendInlineQuote(parts[0], quoteUrl);
 
     const mediaIds: string[] = [];
     for (const m of post.media.slice(0, 4)) mediaIds.push(await uploadMedia(token, m));
 
     const body: Record<string, unknown> = { text: parts[0] };
     if (mediaIds.length) body.media = { media_ids: mediaIds };
-    if (post.quotePostId) body.quote_tweet_id = post.quotePostId;
     const send = (json: Record<string, unknown>) =>
       requestJson("x", `${API}/2/tweets`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, json });
-    const d = await send(body)
-      .catch((e) => {
-        // X API は「自分が投稿者か、メンションされている投稿」しか引用できない。
-        // 拒否されたら引用元の URL を本文の末尾に入れて通常の投稿として送り直す（X 上では引用カードとして表示される）
-        if (!(post.quotePostId && e instanceof ApiError && e.status === 403 && e.body.includes("not-authorized-for-resource"))) throw e;
-        const url = post.quotePostUrl || `https://x.com/i/status/${post.quotePostId}`;
-        const { quote_tweet_id: _, ...rest } = body;
-        return send({ ...rest, text: `${body.text}\n${url}` });
-      })
-      .catch(postError);
+    const d = await send(body).catch(postError);
     const username = (ctx.credentials.username as string) || ctx.account.accountName.replace(/^@/, "");
     const first: string = d.data.id;
 

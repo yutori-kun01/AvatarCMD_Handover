@@ -12,6 +12,7 @@ import { getPlatform } from "../platforms";
 import { loadFreshCredentials } from "./accounts";
 import { errorMessage } from "./publish";
 import { getSystemConfig } from "./store";
+import { recordUsage } from "./usage";
 
 const HOUR = 3600_000;
 export const METRICS_WINDOW_DAYS = 14;
@@ -70,6 +71,9 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       const msg = errorMessage(e).slice(0, 300);
       results = Object.fromEntries(rows.map((r) => [r.externalPostId!, { error: msg }]));
     }
+    // 読み取り件数の概算（取得できた投稿数。X はページ単位で余分に読むことがあるため実際より少なめになりうる）
+    const got = Object.values(results).filter((m) => !("error" in m)).length;
+    await recordUsage({ provider: acc.platform, purpose: `${acc.platform}_metrics`, avatarId: acc.avatarId, context: "metrics", reads: got, error: got ? null : Object.values(results)[0] && "error" in Object.values(results)[0] ? (Object.values(results)[0] as { error: string }).error : null });
     for (const r of rows) {
       const m = results[r.externalPostId!];
       if (!m) continue;

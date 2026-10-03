@@ -10,6 +10,7 @@ import { getSystemConfig } from "./store";
 import { toMediaFile, type MediaRef } from "./media";
 import { cleanPostText } from "../post-text";
 import { taskForPlatform } from "./ai";
+import { recordUsage } from "./usage";
 
 export interface ContentMetadata {
   title?: string;
@@ -111,6 +112,8 @@ export async function publishContent(contentId: string) {
     { app, credentials, settings: (acc.settings ?? {}) as Record<string, unknown>, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system },
     post
   );
+  // 投稿 API の呼び出し回数（ツリー投稿は件数分）。単価は料金表で登録したときだけ費用になる
+  await recordUsage({ provider: acc.platform, purpose: "post_publish", avatarId: content.avatarId, context: "publish", subjectId: contentId, requests: Math.max(1, Number(/ツリー投稿（(\d+)件）/.exec(result.note ?? "")?.[1]) || 1) });
   const now = new Date();
   await prisma.$transaction([
     prisma.content.update({
@@ -136,6 +139,53 @@ export async function publishContent(contentId: string) {
     }),
   ]);
   return result;
+}
+
+/**
+ * 予約中の投稿を下書き（承認待ち）に戻す。予約キューの行は消し、理由を metadata.heldReason に残す。
+ * 既に送信中・送信済みなら何もしない（false）。
+ */
+export async function returnToDraft(contentId: string, reason: string): Promise<boolean> {
+  const c = await prisma.content.findUnique({ where: { id: contentId }, include: { scheduledPost: true } });
+  if (!c || c.status !== "SCHEDULED" || (c.scheduledPost && c.scheduledPost.status !== "pending")) return false;
+  const meta = (c.metadata ?? {}) as Record<string, unknown>;
+  // 同時に worker が取り出していないことを条件付きで確認してから戻す
+  const removed = await prisma.scheduledPost.deleteMany({ where: { contentId, status: "pending" } });
+  if (c.scheduledPost && !removed.count) return false;
+  await prisma.content.update({ where: { id: contentId }, data: { status: "DRAFT", metadata: { ...meta, heldReason: reason, heldAt: new Date().toISOString() } as object } });
+  await prisma.activityLog.create({
+    data: { avatarId: c.avatarId, action: "post_held", category: "sns", level: "warning", description: `予約を下書きに戻しました: ${reason}`, metadata: { contentId } },
+  });
+  return true;
+}
+
+/**
+ * 投稿直前の再確認。送信してよければ null、止めるべきなら理由を返す。
+ * - アカウントが停止・削除されている / アバターが ACTIVE でない
+ * - 自動承認された投稿で、ルールが削除・停止された、下書きモードに変わった、承認範囲が厳しくなって条件を満たさない
+ * 人が承認した投稿は、ルールの状態にかかわらず送信する（アカウント・アバターの確認のみ）。
+ */
+export async function prePublishCheck(contentId: string): Promise<string | null> {
+  const c = await prisma.content.findUniqueOrThrow({ where: { id: contentId }, include: { snsAccount: true, avatar: { select: { status: true } } } });
+  if (!c.snsAccount) return "投稿先アカウントが削除されています";
+  if (!c.snsAccount.isActive) return "投稿先アカウントが停止中です";
+  if (c.avatar.status !== "ACTIVE") return `アバターが稼働中ではありません（${c.avatar.status}）`;
+  const meta = (c.metadata ?? {}) as Record<string, any>;
+  if (!meta.automationId || !meta.autoApproved || meta.humanApprovedAt) return null;
+  const rule = await prisma.automationRule.findUnique({ where: { id: String(meta.automationId) } });
+  if (!rule) return "自動化ルールが削除されています";
+  if (!rule.isActive) return `自動化「${rule.name}」が停止中です`;
+  const action = (rule.actionConfig ?? {}) as { mode?: string; approval?: string };
+  if (action.mode !== "auto") return `自動化「${rule.name}」が下書きモードに変更されています`;
+  const order = ["all", "standard", "strict"];
+  const now = order.indexOf(action.approval ?? "all");
+  if (now > order.indexOf(String(meta.autoApproved))) {
+    // 承認範囲が厳しくなった: 作成時の判定結果で、今の条件を満たすかを確かめる
+    const { autoApprovalDecision } = await import("./automation");
+    const d = autoApprovalDecision(action.approval as "standard" | "strict", meta.review ?? { verdict: "error", error: "判定結果なし" }, meta.jev ? { ...meta.jev, publish: !!meta.jev.publish, reason: meta.jev.reason ?? "" } : undefined);
+    if (!d.publish) return `自動化「${rule.name}」の承認範囲が変更され、条件を満たしません（${d.reason ?? ""}）`;
+  }
+  return null;
 }
 
 export function errorMessage(e: unknown): string {
@@ -176,6 +226,12 @@ export async function processDuePosts({ limit = 10, maxRetries = 3 } = {}): Prom
     });
     if (claimed.count === 0) continue;
     processed++;
+    const stop = await prePublishCheck(job.contentId).catch((e) => `再確認に失敗: ${errorMessage(e)}`);
+    if (stop) {
+      await prisma.scheduledPost.update({ where: { id: job.id }, data: { status: "pending" } });
+      await returnToDraft(job.contentId, `投稿直前の確認で保留: ${stop}`);
+      continue;
+    }
     try {
       await publishContent(job.contentId);
       await prisma.scheduledPost.update({ where: { id: job.id }, data: { status: "published", publishedAt: new Date(), lastError: null } });

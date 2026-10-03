@@ -168,7 +168,9 @@ export async function evaluateRulePerformance(ruleId: string): Promise<Performan
   const base = ruleVerdict(stats);
 
   const action = rule.actionConfig as unknown as ActionConfig;
-  const sorted = [...ruleRows].sort((a, b) => b.engagements - a.engagements);
+  // 良い・悪い投稿の例は、比較に使った基準（反応率 or 反応数）で並べる
+  const useRate = stats.basis === "rate";
+  const sorted = [...ruleRows].sort((a, b) => scoreOf(b, useRate) - scoreOf(a, useRate));
   const sample = (rows: MetricRow[]) =>
     rows.map((r) => ({ text: r.text.slice(0, 400), topic: r.topic ?? null, platform: getPlatform(r.platform)?.name ?? r.platform, views: r.views ?? null, engagements: r.engagements, engagementRate: r.engagementRate }));
   const state = {

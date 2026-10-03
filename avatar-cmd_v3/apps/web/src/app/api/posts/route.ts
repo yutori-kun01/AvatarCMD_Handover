@@ -66,7 +66,8 @@ export const POST = route(async (req: Request) => {
 
 /** 下書きになった理由（投稿前チェック・Jev の判定・引用の判定） */
 function draftNote(meta: any): string | undefined {
-  const parts = [reviewNote(meta?.review)];
+  // 自動化ルールが下書きにした理由（下書きモード / 自動投稿で保留 / 投稿直前の確認で保留）を先頭に出す
+  const parts = [typeof meta?.heldReason === "string" ? meta.heldReason : undefined, reviewNote(meta?.review)];
   if (meta?.jev && meta.jev.publish === false) parts.push(`${meta.jev.reason}${meta.jev.mode === "shadow" ? "（記録のみ）" : ""}`);
   if (meta?.quoteJudgement) parts.push(`引用判定（${meta.quoteJudgement.engine === "jev" ? "Jev" : "AI"}）: ${meta.quoteJudgement.reason ?? ""}`);
   const s = parts.filter(Boolean).join(" ／ ");
