@@ -13,6 +13,7 @@ import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 import { ConfigError } from "../http";
 import { getSetting, mask, setSetting, SETTING_KEYS } from "./store";
+import { normalizeAnthropicUsage, normalizeGeminiUsage, normalizeOpenAIUsage, recordUsage, type TokenUsage } from "./usage";
 
 export type AiProvider = "anthropic" | "openai" | "gemini";
 
@@ -200,13 +201,21 @@ export interface CompleteInput {
   json?: { name: string; schema: Record<string, unknown> };
 }
 
-/** 用途に割り当てたプロバイダで生成する。model は実際に応答したモデル名 */
+/** 用途に割り当てたプロバイダで生成する。model は実際に応答したモデル名。使用量は共通台帳（usage.ts）に記録する */
 export async function completeText(input: CompleteInput): Promise<{ text: string; model: string; provider: AiProvider }> {
   const r = await resolveAi(input.task);
   if (!r.provider || !r.model) throw new ConfigError("AI の API キーが未設定です（設定 > システム > AI で Claude / OpenAI / Gemini のいずれかを入力）");
   const apiKey = await providerKey(r.provider);
   if (!apiKey) throw new ConfigError(`${AI_PROVIDERS[r.provider].name} の API キーが未設定です（設定 > システム > AI）`);
-  const out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json });
+  let out: ProviderResult;
+  try {
+    out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json });
+  } catch (e) {
+    // 失敗した呼び出しも回数として残す（トークンは不明のため 0。断られた場合など課金されることがある点は料金表の注記で扱う）
+    await recordUsage({ provider: r.provider, model: r.model, purpose: input.task, ...((e as { usage?: TokenUsage }).usage ?? {}), error: e instanceof Error ? e.message : String(e) });
+    throw e;
+  }
+  await recordUsage({ provider: r.provider, model: out.model, purpose: input.task, ...out.usage });
   const text = out.text.trim();
   if (!text) throw new Error(`${AI_PROVIDERS[r.provider].name} (${r.model}) から本文が返りませんでした`);
   return { text, model: out.model, provider: r.provider };
@@ -233,12 +242,19 @@ export interface ProviderRequest {
   json?: CompleteInput["json"];
 }
 
+export interface ProviderResult {
+  text: string;
+  model: string;
+  /** キャッシュ分を除いた入力トークンに正規化した使用量 */
+  usage: TokenUsage;
+}
+
 /** プロバイダ API を直接呼ぶ（設定の解決はしない） */
-export function callProvider(provider: AiProvider, req: ProviderRequest): Promise<{ text: string; model: string }> {
+export function callProvider(provider: AiProvider, req: ProviderRequest): Promise<ProviderResult> {
   return provider === "anthropic" ? callClaude(req) : provider === "openai" ? callOpenAI(req) : callGemini(req);
 }
 
-async function callClaude({ apiKey, model, system, user, maxTokens, json }: ProviderRequest) {
+async function callClaude({ apiKey, model, system, user, maxTokens, json }: ProviderRequest): Promise<ProviderResult> {
   const client = new Anthropic({ apiKey });
   // Opus 5 / Fable 5 系は安全分類器で断られることがあるため、サーバー側フォールバックを有効にする
   const fallback = /^claude-(opus-5|fable-5)/.test(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {};
@@ -253,15 +269,17 @@ async function callClaude({ apiKey, model, system, user, maxTokens, json }: Prov
       ...fallback,
     })
     .finalMessage();
+  const usage = normalizeAnthropicUsage(msg.usage);
   if (msg.stop_reason === "refusal") {
-    throw new Error(`Claude (${model}) が生成を断りました${msg.stop_details?.explanation ? `: ${msg.stop_details.explanation}` : ""}`);
+    // 断られた場合も使用量は発生しうるため、例外に載せて記録させる
+    throw Object.assign(new Error(`Claude (${model}) が生成を断りました${msg.stop_details?.explanation ? `: ${msg.stop_details.explanation}` : ""}`), { usage });
   }
   const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
   if (msg.stop_reason === "max_tokens") console.warn(`[ai] Claude (${model}) の出力が max_tokens で途切れました`);
-  return { text, model: msg.model };
+  return { text, model: msg.model, usage };
 }
 
-async function callOpenAI({ apiKey, model, system, user, json }: ProviderRequest) {
+async function callOpenAI({ apiKey, model, system, user, json }: ProviderRequest): Promise<ProviderResult> {
   const client = new OpenAI({ apiKey });
   const res = await client.responses.create({
     model,
@@ -269,10 +287,10 @@ async function callOpenAI({ apiKey, model, system, user, json }: ProviderRequest
     input: user,
     ...(json ? { text: { format: { type: "json_schema" as const, name: json.name, schema: json.schema, strict: true } } } : {}),
   });
-  return { text: res.output_text ?? "", model: res.model || model };
+  return { text: res.output_text ?? "", model: res.model || model, usage: normalizeOpenAIUsage(res.usage) };
 }
 
-async function callGemini({ apiKey, model, system, user, json }: ProviderRequest) {
+async function callGemini({ apiKey, model, system, user, json }: ProviderRequest): Promise<ProviderResult> {
   // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
   const baseUrl = process.env.GEMINI_BASE_URL;
   const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
@@ -285,5 +303,5 @@ async function callGemini({ apiKey, model, system, user, json }: ProviderRequest
       ...(json ? { responseMimeType: "application/json", responseJsonSchema: json.schema } : {}),
     },
   });
-  return { text: res.text ?? "", model };
+  return { text: res.text ?? "", model, usage: normalizeGeminiUsage(res.usageMetadata) };
 }

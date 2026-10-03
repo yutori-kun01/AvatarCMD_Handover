@@ -760,3 +760,59 @@ model OAuthState {
 
   @@map("oauth_states")
 }
+
+// ==============================================
+// 20. Usage Ledger (v3.6) — 外部 API の使用量の共通台帳（費用は料金表から読み出し時に計算）
+// ==============================================
+// 入力トークンはキャッシュ分を除いた値に正規化して保存する（各社の数え方の違いによる二重計上を防ぐ）。
+
+model UsageLedger {
+  id               String   @id @default(uuid())
+  occurredAt       DateTime @default(now()) @map("occurred_at")
+  provider         String   // anthropic / openai / gemini / typesafe / x / youtube
+  model            String?
+  avatarId         String?  @map("avatar_id")
+  /// 用途: post / article / review / rewrite / quote / tags / jev_post_gate / x_timeline / x_metrics / x_post / youtube_api / youtube_summary / improvement ...
+  purpose          String
+  /// 呼び出し元: automation / quote_scan / manual / api / metrics / improvement / youtube
+  context          String?
+  subjectId        String?  @map("subject_id")
+  inputTokens      Int      @default(0) @map("input_tokens")
+  outputTokens     Int      @default(0) @map("output_tokens")
+  cacheReadTokens  Int      @default(0) @map("cache_read_tokens")
+  cacheWriteTokens Int      @default(0) @map("cache_write_tokens")
+  requests         Int      @default(1)
+  /// 読み取り件数（X の Owned Reads など、件数課金）
+  reads            Int      @default(0)
+  /// YouTube Data API のクォータ（金額とは別に集計）
+  quotaUnits       Int      @default(0) @map("quota_units")
+  isRetry          Boolean  @default(false) @map("is_retry")
+  error            String?
+
+  @@index([occurredAt])
+  @@index([avatarId, occurredAt])
+  @@map("usage_ledger")
+}
+
+// 料金表（人が確認して登録する。単価が無い使用量は「未算定」として扱い、0 円にしない）
+model PriceEntry {
+  id            String   @id @default(uuid())
+  provider      String
+  /// "*" はそのプロバイダの全モデル（個別の登録が優先）
+  model         String   @default("*")
+  /// input_token / output_token / cache_read_token / cache_write_token / request / read
+  unit          String
+  /// per 単位あたりの価格（例: 100万トークンあたり 3.0 USD → price=3, per=1000000）
+  price         Float
+  per           Int      @default(1)
+  currency      String   @default("USD")
+  effectiveFrom DateTime @map("effective_from")
+  checkedAt     DateTime @map("checked_at")
+  note          String?
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([provider, unit, effectiveFrom])
+  @@map("price_entries")
+}

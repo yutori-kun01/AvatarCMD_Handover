@@ -13,6 +13,7 @@
 import { TypeSafeClient, type Questions, type SystemOneResult } from "@typesafe-ai/sdk";
 import { prisma } from "@avatar-cmd/db";
 import { getSetting, mask, SETTING_KEYS } from "./store";
+import { normalizeGenericUsage, recordUsage } from "./usage";
 
 export type JevMode = "off" | "shadow" | "gate";
 export const JEV_MODES: JevMode[] = ["off", "shadow", "gate"];
@@ -126,6 +127,7 @@ export async function decideWithJev<const Q extends Questions>(
         usage: toJson(res.usage),
       },
     });
+    await recordUsage({ provider: "typesafe", model: res.model || cfg.model, purpose: `jev_${meta.decisionType}`, avatarId: meta.avatarId ?? undefined, ...normalizeGenericUsage(res.usage) });
     return { eventId: ev.id, model: res.model || cfg.model, mode: cfg.mode, answers: res.answers };
   } catch (e) {
     await prisma.decisionEvent.create({
@@ -141,6 +143,7 @@ export async function decideWithJev<const Q extends Questions>(
         error: (e instanceof Error ? e.message : String(e)).slice(0, 1000),
       },
     });
+    await recordUsage({ provider: "typesafe", model: cfg.model, purpose: `jev_${meta.decisionType}`, avatarId: meta.avatarId ?? undefined, error: e instanceof Error ? e.message : String(e) });
     console.warn("[jev] 判定に失敗したため既存の流れで続行します:", e instanceof Error ? e.message : e);
     return null;
   }

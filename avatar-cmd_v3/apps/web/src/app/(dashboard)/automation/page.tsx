@@ -137,6 +137,7 @@ export default function AutomationPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
+  const [estimate, setEstimate] = useState<{ amounts: Record<string, number>; unpriced: string[]; runsPerMonth: number; notes: string[] } | null>(null);
 
   const load = useCallback(async () => {
     const [r, i] = await Promise.all([
@@ -159,18 +160,33 @@ export default function AutomationPage() {
     return a ? `${byId[a.platform]?.name ?? ""} ${a.accountName}` : "(削除済み)";
   };
 
-  async function save() {
-    if (!draft) return;
-    setBusy("save");
-    const body = {
+  // 編集中の設定で、このルールの月額の増分（概算）を見積もる
+  useEffect(() => {
+    if (!draft || !draft.accountIds.length || !draft.topics.trim()) return setEstimate(null);
+    const t = setTimeout(() => {
+      api<{ item: NonNullable<typeof estimate> }>("/api/costs/estimate", { method: "POST", json: ruleBody(draft) })
+        .then((d) => setEstimate(d.item))
+        .catch(() => setEstimate(null));
+    }, 600);
+    return () => clearTimeout(t);
+  }, [draft]);
+
+  function ruleBody(draft: Draft) {
+    return {
       avatarId: draft.avatarId,
       name: draft.name,
       trigger:
         draft.triggerType === "daily"
           ? { type: "daily", times: draft.times.split(/[,、\s]+/).filter(Boolean), timezone: "Asia/Tokyo" }
           : { type: "interval", hours: Number(draft.hours) },
-      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval: draft.approval, extraPrompt: draft.extraPrompt },
+      action: { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval: draft.approval || undefined, extraPrompt: draft.extraPrompt },
     };
+  }
+
+  async function save() {
+    if (!draft) return;
+    setBusy("save");
+    const body = ruleBody(draft);
     try {
       if (draft.id) await api(`/api/automations/${draft.id}`, { method: "PATCH", json: body });
       else await api("/api/automations", { method: "POST", json: body });
@@ -324,6 +340,15 @@ export default function AutomationPage() {
             onChange={(v) => setDraft({ ...draft, topics: v })}
           />
           <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
+          {estimate && (
+            <p className="text-[11px] text-white/45">
+              このルールの API 費用の目安（月 {estimate.runsPerMonth.toFixed(0)} 回）:{" "}
+              {Object.entries(estimate.amounts).filter(([, v]) => v > 0).map(([c, v]) => `${v.toFixed(2)} ${c}`).join(" + ") || "0"}
+              {estimate.unpriced.length > 0 && <span className="text-amber-300">（単価未登録の分は未算定）</span>}
+              {estimate.notes.length > 0 && <span className="text-amber-300"> {estimate.notes.join(" ／ ")}</span>}
+              ・概算です。<Link href="/costs" className="underline">API コスト</Link>
+            </p>
+          )}
           <div className="flex gap-2">
             <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.mode === "auto" && !draft.approval)}>
               {busy === "save" ? "保存中…" : "保存"}

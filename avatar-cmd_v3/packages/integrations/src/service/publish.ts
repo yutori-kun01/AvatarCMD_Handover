@@ -10,6 +10,7 @@ import { getSystemConfig } from "./store";
 import { toMediaFile, type MediaRef } from "./media";
 import { cleanPostText } from "../post-text";
 import { taskForPlatform } from "./ai";
+import { recordUsage } from "./usage";
 
 export interface ContentMetadata {
   title?: string;
@@ -111,6 +112,8 @@ export async function publishContent(contentId: string) {
     { app, credentials, settings: (acc.settings ?? {}) as Record<string, unknown>, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system },
     post
   );
+  // 投稿 API の呼び出し回数（ツリー投稿は件数分）。単価は料金表で登録したときだけ費用になる
+  await recordUsage({ provider: acc.platform, purpose: "post_publish", avatarId: content.avatarId, context: "publish", subjectId: contentId, requests: Math.max(1, Number(/ツリー投稿（(\d+)件）/.exec(result.note ?? "")?.[1]) || 1) });
   const now = new Date();
   await prisma.$transaction([
     prisma.content.update({

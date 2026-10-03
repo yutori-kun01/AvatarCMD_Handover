@@ -16,3 +16,5 @@ export * from "./service/quotes";
 export * from "./service/automation";
 export * from "./service/stats";
 export * from "./service/analytics";
+export * from "./service/usage";
+export * from "./service/cost";

@@ -4,7 +4,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
-const PROTECTED_PAGES = ["/dashboard", "/avatars", "/activity", "/sns", "/revenue", "/automation", "/settings", "/posts"];
+const PROTECTED_PAGES = ["/dashboard", "/avatars", "/activity", "/sns", "/revenue", "/automation", "/settings", "/posts", "/costs"];
 
 function isPublicApi(pathname: string) {
   // OAuth コールバックは別ブラウザ（未ログイン）からも戻ってくる。1回限りの state で検証するのでログイン不要

@@ -22,6 +22,7 @@ import { completeJson, completeText } from "./llm";
 import { errorMessage } from "./publish";
 import { cleanPostText } from "../post-text";
 import { getSystemConfig } from "./store";
+import { assertBudget, recordUsage, withUsageContext } from "./usage";
 
 const HOUR = 3600_000;
 
@@ -215,6 +216,11 @@ export interface ScanResult {
 /** X アカウントのホームタイムラインから引用候補を探し、通過したものを下書きにする */
 export async function scanQuoteCandidates(snsAccountId: string, opts: { maxResults?: number } = {}): Promise<ScanResult> {
   const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: snsAccountId } });
+  await assertBudget("引用候補の探索");
+  return withUsageContext({ avatarId: acc.avatarId, context: "quote_scan", subjectId: acc.id }, () => scanInner(acc, opts));
+}
+
+async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUniqueOrThrow>>, opts: { maxResults?: number }): Promise<ScanResult> {
   const def = getPlatform(acc.platform);
   if (!def?.fetchTimeline || !def.supportsQuote) throw new ConfigError(`${def?.name ?? acc.platform} はタイムラインからの引用候補に対応していません`);
   if (!acc.isActive) throw new ConfigError("停止中のアカウントです");
@@ -229,6 +235,8 @@ export async function scanQuoteCandidates(snsAccountId: string, opts: { maxResul
     { app, credentials, settings, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system },
     { maxResults, sinceId }
   );
+  // 読み取り件数（X は返ってきた投稿の件数で課金される）
+  await recordUsage({ provider: acc.platform, purpose: "x_timeline", reads: timeline.length });
   const newest = [sinceId, ...timeline.map((p) => p.id)].filter((x): x is string => !!x).sort(compareIds).at(-1);
   await prisma.snsAccount.update({
     where: { id: acc.id },

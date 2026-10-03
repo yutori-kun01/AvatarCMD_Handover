@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Send,
+  Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -31,6 +32,7 @@ const navItems: {
   { icon: MessageSquare, label: "SNS運用", href: "/sns" },
   { icon: TrendingUp, label: "収益分析", href: "/revenue" },
   { icon: Zap, label: "自動化ルール", href: "/automation" },
+  { icon: Wallet, label: "API コスト", href: "/costs" },
 ]
 
 interface SidebarProps {

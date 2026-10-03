@@ -20,6 +20,7 @@ import { generatePostText, reviewPost } from "./ai";
 import { createPosts, errorMessage, returnToDraft } from "./publish";
 import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
+import { assertBudget, withUsageContext } from "./usage";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -225,9 +226,14 @@ export async function holdQueuedPosts(ruleId: string, reason: string): Promise<n
   return n;
 }
 
-/** ルールを1回実行する。作成した投稿数を返す */
+/** ルールを1回実行する。作成した投稿数を返す。使用量は「自動化」としてアバター・ルールに紐付けて記録する */
 export async function runRule(ruleId: string): Promise<number> {
   const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: ruleId } });
+  await assertBudget(`自動化「${rule.name}」`);
+  return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));
+}
+
+async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRule.findUniqueOrThrow>>): Promise<number> {
   const action = validateAction(rule.actionConfig as unknown as ActionConfig);
   const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
   if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
