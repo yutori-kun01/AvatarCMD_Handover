@@ -88,6 +88,12 @@ Idempotency-Key: 2026-10-03-draft-0001   # 8〜128文字の英数字・_-.:
 | POST | `/knowledge` | knowledge:write | 追加 `{ avatarId, kind: "fact"\|"persona"\|"learning", title, summary?, content?, sourceUrl?, source?, tags?, scope?: { platforms?, topics? } }`。`fact` は出典必須 |
 | PATCH | `/knowledge/{id}` | knowledge:write | 編集・無効化 `{ ...変更する項目, status?: "active"\|"disabled", reason? }`（変更前の版は履歴に残る） |
 | POST | `/knowledge/{id}/revert` | knowledge:write | 差し戻し `{ version }` |
+| GET | `/learning/videos?status=&channelId=` | read | YouTube 学習の動画一覧（`status`: pending 本文待ち / available / summarized / unavailable） |
+| GET | `/learning/videos/{id}` | read | 動画の詳細（取得済みの文字起こし `transcript` を含む） |
+| POST | `/learning/videos/{id}/summarize` | knowledge:write | 文字起こし・要約の登録 `{ transcript?, summary?: { summary, points: [{ point, quote }], tags? }, summarize?: false }`（下記 4-2） |
+| GET | `/learning/articles?status=&feedId=` | read | RSS 学習の記事一覧 |
+| GET | `/learning/articles/{id}` | read | 記事の詳細（取得済みの本文 `content` を含む） |
+| POST | `/learning/articles/{id}/summarize` | knowledge:write | 本文・要約の登録 `{ content?, summary?, summarize?: false }`（下記 4-2） |
 | GET | `/rules` / `/rules/{id}` | read | 自動化ルール（最新の「改善か継続か」判定付き） |
 | POST | `/rules` | rules:write | 作成。管理画面と同じ形式（`action.mode: "auto"` なら `approval` 必須） |
 | PATCH | `/rules/{id}` | rules:write | 変更・停止 `{ isActive: false, holdQueued?: true }`（`holdQueued` で既存の予約も下書きに戻す） |
@@ -149,6 +155,31 @@ curl -s -X POST "$BASE/drafts/generate" \
   }
 }
 ```
+
+### 4-2. 動画・記事の本文と要約を AI 側で登録する
+
+YouTube 学習・RSS 学習で「本文待ち」になった動画・記事に、AI エージェントが本文（文字起こし）と要約を登録できます。
+要約まで AI 側で作れば、Avatar CMD 側のモデルは呼ばれません（API コストがかかりません）。
+
+1. `GET /learning/videos?status=pending`（記事は `/learning/articles?status=pending`）で対象を探す
+2. `POST /learning/videos/{id}/summarize` に本文と要約を送る
+
+```json
+{
+  "transcript": "（文字起こしの全文。50 文字以上）",
+  "summary": {
+    "summary": "300 文字以内の要約",
+    "points": [{ "point": "要点", "quote": "その根拠になる本文の一部（20〜80 文字。言い換えずにそのまま）" }],
+    "tags": ["朝", "集中"]
+  }
+}
+```
+
+- `summary` を省くと Avatar CMD 側のモデルで要約します（設定 > システム > AI の「動画・記事の要約」。予算の停止設定に従う）
+- `summarize: false` なら本文の登録だけ（要約はあとで）。本文がすでにあれば `transcript` / `content` は省略できます
+- **根拠の照合:** `quote` が本文に見つからない要点は捨てます（句読点・空白の違いは無視）。1 件も残らなければ 400 で、本文だけ保存されます
+- 要約は紐付いたアバター全員のナレッジ（出典付きの事実）になるため、**そのアバター全員を操作できるキー**でだけ見え・登録できます
+- 本文は、利用してよいもの（自分の動画、提供された文字起こし、購入済みの記事など）だけを登録してください。要約済みの動画・記事には登録できません（二重取り込みの防止）
 
 ### 注意
 

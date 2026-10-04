@@ -17,7 +17,7 @@
 import { prisma } from "@avatar-cmd/db";
 import { ApiError, ConfigError, request, requestJson, sleep } from "../http";
 import { loadFreshCredentials } from "./accounts";
-import { summarizeSourceToKnowledge } from "./learning-summary";
+import { summarizeSourceToKnowledge, type ProvidedSummary } from "./learning-summary";
 import { errorMessage } from "./publish";
 import { recordUsage } from "./usage";
 
@@ -349,7 +349,7 @@ export async function markUnavailable(videoRowId: string, reason: string) {
  * 本文（文字起こし）がある動画を要約し、紐付いたアバターごとにナレッジとして保存する。
  * 要点ごとに文字起こしからの抜粋（根拠）を付け、抜粋が本文に無い要点は捨てる。
  */
-export async function summarizeVideo(videoRowId: string) {
+export async function summarizeVideo(videoRowId: string, provided?: ProvidedSummary) {
   const v = await prisma.youtubeVideo.findUniqueOrThrow({ where: { id: videoRowId }, include: { channel: true } });
   if (v.transcriptStatus === "summarized") return v;
   if (v.transcriptStatus !== "available" || !v.transcript) throw new ConfigError("本文（文字起こし）が無い動画は要約しません（本文待ち／取得不可）");
@@ -371,7 +371,7 @@ export async function summarizeVideo(videoRowId: string) {
       knowledgeTitle: `動画: ${v.title}`,
       fetchedAt: v.transcriptAt ?? new Date(),
       evidence: { videoId: v.videoId, videoUrl: v.url, method: v.transcriptMethod, transcriptAt: v.transcriptAt?.toISOString() ?? null },
-    });
+    }, provided);
     return prisma.youtubeVideo.update({ where: { id: v.id }, data: { summary: r.summary, summaryEvidence: r.evidence as object, knowledgeIds: r.knowledgeIds, transcriptStatus: "summarized", error: null } });
   } catch (e) {
     await prisma.youtubeVideo.update({ where: { id: v.id }, data: { transcriptStatus: "available", error: errorMessage(e).slice(0, 500) } });
