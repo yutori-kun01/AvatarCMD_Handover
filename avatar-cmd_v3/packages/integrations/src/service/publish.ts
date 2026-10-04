@@ -4,7 +4,7 @@
 import { prisma } from "@avatar-cmd/db";
 import type { PostInput } from "../types";
 import { getPlatform } from "../platforms";
-import { ApiError, ConfigError } from "../http";
+import { ApiError, ConfigError, describeBody } from "../http";
 import { loadFreshCredentials } from "./accounts";
 import { getSystemConfig } from "./store";
 import { toMediaFile, type MediaRef } from "./media";
@@ -189,7 +189,7 @@ export async function prePublishCheck(contentId: string): Promise<string | null>
 }
 
 export function errorMessage(e: unknown): string {
-  if (e instanceof ApiError) return `${e.platform} API ${e.status}: ${e.body.slice(0, 400)}`;
+  if (e instanceof ApiError) return `${e.platform} API ${e.status}: ${describeBody(e.body).slice(0, 400)}`;
   return e instanceof Error ? e.message : String(e);
 }
 

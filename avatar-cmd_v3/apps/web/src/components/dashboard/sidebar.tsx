@@ -18,6 +18,7 @@ import {
   Wallet,
   BookOpen,
   Youtube,
+  Rss,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -36,6 +37,7 @@ const navItems: {
   { icon: Zap, label: "自動化ルール", href: "/automation" },
   { icon: BookOpen, label: "ナレッジ・改善", href: "/knowledge" },
   { icon: Youtube, label: "YouTube 学習", href: "/youtube" },
+  { icon: Rss, label: "RSS 学習", href: "/rss" },
   { icon: Wallet, label: "API コスト", href: "/costs" },
 ]
 

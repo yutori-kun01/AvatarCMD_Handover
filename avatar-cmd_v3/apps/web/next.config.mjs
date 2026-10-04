@@ -9,7 +9,7 @@ if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 const nextConfig = {
   output: "standalone", // Docker multi-stage build に必要
   transpilePackages: ["@avatar-cmd/core", "@avatar-cmd/db", "@avatar-cmd/integrations"],
-  serverExternalPackages: ["@prisma/client", "@atproto/api"],
+  serverExternalPackages: ["@prisma/client", "@atproto/api", "jsdom"],
   outputFileTracingRoot: resolve(import.meta.dirname, "../../"),
   experimental: {
     serverActions: { bodySizeLimit: "10mb" },

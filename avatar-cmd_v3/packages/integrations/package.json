@@ -14,10 +14,13 @@
     "@avatar-cmd/core": "workspace:*",
     "@avatar-cmd/db": "workspace:*",
     "@google/genai": "^2.24.0",
+    "@mozilla/readability": "^0.6.0",
     "@typesafe-ai/sdk": "0.6.0",
+    "jsdom": "^26.1.0",
     "openai": "^7.23.0"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.13.11",
     "tsx": "^4.19.0",
     "typescript": "^5.7.3"

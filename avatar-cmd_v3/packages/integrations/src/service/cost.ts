@@ -202,7 +202,7 @@ export async function estimateMonthly(now = new Date()) {
   }
 
   // 指標の取得・動画の要約・改善処理: 回数が設定から決まらないため、直近 30 日の実績をそのまま 1 か月分とする
-  const CONTEXT_LABEL: Record<string, string> = { metrics: "投稿の反応の取得", youtube: "YouTube（字幕取得・要約）", improvement: "改善処理（14〜27日ごと）" };
+  const CONTEXT_LABEL: Record<string, string> = { metrics: "投稿の反応の取得", youtube: "YouTube（字幕取得・要約）", rss: "RSS（記事の要約）", improvement: "改善処理（14〜27日ごと）" };
   const actual = await prisma.usageLedger.groupBy({
     by: ["context", "provider", "model", "purpose"],
     where: { context: { in: Object.keys(CONTEXT_LABEL) }, occurredAt: { gte: new Date(now.getTime() - 30 * DAY) } },

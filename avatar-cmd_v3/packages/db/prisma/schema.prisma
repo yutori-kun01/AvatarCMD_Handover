@@ -1018,3 +1018,68 @@ model YoutubeVideo {
   @@index([transcriptStatus])
   @@map("youtube_videos")
 }
+
+// ==============================================
+// 23. RSS Learning (v3.7) — ブログ・ニュース・note などの RSS / Atom フィードの新着記事から学ぶ
+// ==============================================
+// フィードで新着記事を検知し、本文はフィードの全文（content:encoded 等）か、記事ページから本文だけを抽出して取得する。
+// 本文が取れない記事は「本文待ち／取得不可」のまま要約しない（見出しや抜粋だけで記事全体を要約したことにしない）。
+
+model RssFeed {
+  id              String       @id @default(uuid())
+  /// フィードの URL（RSS 2.0 / Atom / RSS 1.0）
+  url             String       @unique
+  title           String?
+  /// サイトの URL（フィードの <link>）
+  siteUrl         String?      @map("site_url")
+  /// 学んだ内容を入れるアバター
+  avatarIds       String[]     @map("avatar_ids")
+  enabled         Boolean      @default(true)
+  /// 取得頻度（時間）
+  pollHours       Int          @default(6) @map("poll_hours")
+  /// 対象期間（公開から何日以内の記事を取り込むか）
+  lookbackDays    Int          @default(7) @map("lookback_days")
+  /// 1回に要約する上限
+  maxItemsPerRun  Int          @default(3) @map("max_items_per_run")
+  /// 記事ページから本文を抽出するか（false ならフィード内の本文だけを使う）
+  fetchFullText   Boolean      @default(true) @map("fetch_full_text")
+  lastPolledAt    DateTime?    @map("last_polled_at")
+  lastError       String?      @map("last_error")
+  articles        RssArticle[]
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@map("rss_feeds")
+}
+
+model RssArticle {
+  id              String    @id @default(uuid())
+  feedRowId       String    @map("feed_row_id")
+  /// フィード内の識別子（guid / id。無ければ URL）
+  guid            String
+  url             String
+  title           String
+  publishedAt     DateTime? @map("published_at")
+  /// フィードの抜粋（参考。本文が短い場合は要約の根拠にしない）
+  excerpt         String?   @db.Text
+  /// pending（本文待ち）/ available（本文あり・未要約）/ summarizing / summarized（要約済み）/ unavailable（取得不可）
+  status          String    @default("pending")
+  /// feed（フィード内の全文）/ page（記事ページから抽出）/ manual
+  contentMethod   String?   @map("content_method")
+  content         String?   @db.Text
+  contentAt       DateTime? @map("content_at")
+  summary         String?   @db.Text
+  /// 要約の根拠（要点ごとの本文からの抜粋）・使ったモデル
+  summaryEvidence Json      @default("{}") @map("summary_evidence")
+  knowledgeIds    String[]  @map("knowledge_ids")
+  /// 本文の取得を試した回数（一時的な失敗の再試行の上限に使う）
+  attempts        Int       @default(0)
+  error           String?
+  feed            RssFeed   @relation(fields: [feedRowId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([feedRowId, guid])
+  @@index([status])
+  @@map("rss_articles")
+}

@@ -101,8 +101,8 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
     maxTokens: 16000,
   },
   summary: {
-    label: "動画の要約",
-    help: "YouTube 動画の文字起こしを要約してナレッジにする（文字起こしが無い動画は要約しない）",
+    label: "動画・記事の要約",
+    help: "YouTube 動画の文字起こし・RSS 記事の本文を要約してナレッジにする（本文が無いものは要約しない）",
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     maxTokens: 16000,
   },

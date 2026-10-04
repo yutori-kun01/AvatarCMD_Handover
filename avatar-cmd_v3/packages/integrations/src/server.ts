@@ -23,3 +23,6 @@ export * from "./service/improvement";
 export * from "./service/api-keys";
 export * from "./service/api-v1";
 export * from "./service/youtube-learning";
+export * from "./service/rss-learning";
+export * from "./service/learning-summary";
+export { assertPublicUrl, extractArticle, fetchArticle, htmlToText } from "./service/web-extract";
