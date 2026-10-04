@@ -30,6 +30,9 @@ import { returnToDraft } from "./publish";
 import { assertBudget, summarizeUsage, usageMonthRange, withUsageContext } from "./usage";
 import * as knowledge from "./knowledge";
 import { listImprovementCycles } from "./improvement";
+import { parseProvidedSummary } from "./learning-summary";
+import { submitTranscript, summarizeVideo } from "./youtube-learning";
+import { submitArticleContent, summarizeArticle } from "./rss-learning";
 
 interface Ctx {
   p: ApiPrincipal;
@@ -216,6 +219,75 @@ const ROUTES: RouteDef[] = [
       requireAvatar(c.p, k?.avatarId);
       c.avatarId = k!.avatarId;
       return { body: { item: await knowledge.revertKnowledge(k!.id, Number(c.body?.version), `api:${c.p.id}`) } };
+    },
+  },
+  // --- 学習ソース（YouTube 動画・RSS 記事）: 本文と要約を AI 側から登録する ---
+  {
+    method: "GET",
+    path: "learning/videos",
+    scope: "read",
+    handler: async (c) => {
+      const rows = await prisma.youtubeVideo.findMany({
+        where: { ...(c.query.get("status") ? { transcriptStatus: c.query.get("status")! } : {}), ...(c.query.get("channelId") ? { channel: { channelId: c.query.get("channelId")! } } : {}) },
+        orderBy: [{ publishedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+        take: 500,
+        include: { channel: true },
+      });
+      const items = rows.filter((v) => learningAccessible(c, v.channel.avatarIds)).slice(0, limitOf(c.query)).map((v) => videoView(v));
+      return { body: { videos: items } };
+    },
+  },
+  {
+    method: "GET",
+    path: "learning/videos/:id",
+    scope: "read",
+    handler: async (c) => ({ body: { video: videoView(await ownedVideo(c, c.params[0]), true) } }),
+  },
+  {
+    method: "POST",
+    path: "learning/videos/:id/summarize",
+    scope: "knowledge:write",
+    handler: async (c) => {
+      const v = await ownedVideo(c, c.params[0]);
+      const b = c.body ?? {};
+      const provided = parseProvidedSummary(b.summary, `api:${c.p.id}`);
+      if (b.transcript !== undefined) await submitTranscript(v.id, String(b.transcript), `api:${c.p.id}`);
+      if (b.summarize !== false) await summarizeVideo(v.id, provided);
+      return { body: { video: videoView(await ownedVideo(c, v.id)) } };
+    },
+  },
+  {
+    method: "GET",
+    path: "learning/articles",
+    scope: "read",
+    handler: async (c) => {
+      const rows = await prisma.rssArticle.findMany({
+        where: { ...(c.query.get("status") ? { status: c.query.get("status")! } : {}), ...(c.query.get("feedId") ? { feedRowId: c.query.get("feedId")! } : {}) },
+        orderBy: [{ publishedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+        take: 500,
+        include: { feed: true },
+      });
+      const items = rows.filter((a) => learningAccessible(c, a.feed.avatarIds)).slice(0, limitOf(c.query)).map((a) => articleView(a));
+      return { body: { articles: items } };
+    },
+  },
+  {
+    method: "GET",
+    path: "learning/articles/:id",
+    scope: "read",
+    handler: async (c) => ({ body: { article: articleView(await ownedArticle(c, c.params[0]), true) } }),
+  },
+  {
+    method: "POST",
+    path: "learning/articles/:id/summarize",
+    scope: "knowledge:write",
+    handler: async (c) => {
+      const a = await ownedArticle(c, c.params[0]);
+      const b = c.body ?? {};
+      const provided = parseProvidedSummary(b.summary, `api:${c.p.id}`);
+      if (b.content !== undefined) await submitArticleContent(a.id, String(b.content), `api:${c.p.id}`);
+      if (b.summarize !== false) await summarizeArticle(a.id, provided);
+      return { body: { article: articleView(await ownedArticle(c, a.id)) } };
     },
   },
   // --- 自動化ルール ---
@@ -427,6 +499,68 @@ const ROUTES: RouteDef[] = [
     },
   },
 ];
+
+/** 学習ソースの要約は紐付いたアバター全員のナレッジになるため、全員を操作できるキーに限る */
+function learningAccessible(c: Ctx, avatarIds: string[]) {
+  return avatarIds.length > 0 && avatarIds.every((id) => canAccessAvatar(c.p, id));
+}
+
+function requireLearning(c: Ctx, avatarIds: string[]) {
+  if (!learningAccessible(c, avatarIds)) throw new ApiV1Error(404, "not_found", "対象が見つかりません（このキーで操作できるアバターではない可能性があります）");
+  c.avatarId = avatarIds[0];
+}
+
+async function ownedVideo(c: Ctx, id: string) {
+  const v = await prisma.youtubeVideo.findUnique({ where: { id }, include: { channel: true } });
+  if (!v) throw new ApiV1Error(404, "not_found", "対象が見つかりません");
+  requireLearning(c, v.channel.avatarIds);
+  return v;
+}
+
+async function ownedArticle(c: Ctx, id: string) {
+  const a = await prisma.rssArticle.findUnique({ where: { id }, include: { feed: true } });
+  if (!a) throw new ApiV1Error(404, "not_found", "対象が見つかりません");
+  requireLearning(c, a.feed.avatarIds);
+  return a;
+}
+
+function videoView(v: any, withText = false) {
+  return {
+    id: v.id,
+    videoId: v.videoId,
+    url: v.url,
+    title: v.title,
+    publishedAt: v.publishedAt,
+    channel: { id: v.channel.id, channelId: v.channel.channelId, title: v.channel.title, ownership: v.channel.ownership, avatarIds: v.channel.avatarIds },
+    status: v.transcriptStatus,
+    transcriptMethod: v.transcriptMethod,
+    hasTranscript: !!v.transcript,
+    ...(withText ? { transcript: v.transcript ?? null, description: v.description ?? null } : {}),
+    summary: v.summary,
+    points: (v.summaryEvidence as { points?: unknown })?.points ?? [],
+    knowledgeIds: v.knowledgeIds,
+    error: v.error,
+  };
+}
+
+function articleView(a: any, withText = false) {
+  return {
+    id: a.id,
+    url: a.url,
+    title: a.title,
+    publishedAt: a.publishedAt,
+    feed: { id: a.feed.id, url: a.feed.url, title: a.feed.title, avatarIds: a.feed.avatarIds },
+    status: a.status,
+    contentMethod: a.contentMethod,
+    hasContent: !!a.content,
+    excerpt: a.excerpt,
+    ...(withText ? { content: a.content ?? null } : {}),
+    summary: a.summary,
+    points: (a.summaryEvidence as { points?: unknown })?.points ?? [],
+    knowledgeIds: a.knowledgeIds,
+    error: a.error,
+  };
+}
 
 function avatarView(a: any) {
   return {

@@ -10,7 +10,7 @@
 
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
-import { summarizeSourceToKnowledge } from "./learning-summary";
+import { summarizeSourceToKnowledge, type ProvidedSummary } from "./learning-summary";
 import { errorMessage } from "./publish";
 import { fetchArticle, fetchPublicText, htmlToText } from "./web-extract";
 import { JSDOM, VirtualConsole } from "jsdom";
@@ -287,7 +287,7 @@ export async function markArticleUnavailable(articleId: string, reason: string) 
 }
 
 /** 本文がある記事を要約し、紐付いたアバターごとにナレッジとして保存する */
-export async function summarizeArticle(articleId: string) {
+export async function summarizeArticle(articleId: string, provided?: ProvidedSummary) {
   const a = await prisma.rssArticle.findUniqueOrThrow({ where: { id: articleId }, include: { feed: true } });
   if (a.status === "summarized") return a;
   if (a.status !== "available" || !a.content) throw new ConfigError("本文が無い記事は要約しません（本文待ち／取得不可）");
@@ -308,7 +308,7 @@ export async function summarizeArticle(articleId: string) {
       knowledgeTitle: `記事: ${a.title}`,
       fetchedAt: a.contentAt ?? new Date(),
       evidence: { articleId: a.id, feed: a.feed.title ?? a.feed.url, method: a.contentMethod, publishedAt: a.publishedAt?.toISOString() ?? null },
-    });
+    }, provided);
     return prisma.rssArticle.update({ where: { id: a.id }, data: { summary: r.summary, summaryEvidence: r.evidence as object, knowledgeIds: r.knowledgeIds, status: "summarized", error: null } });
   } catch (e) {
     await prisma.rssArticle.update({ where: { id: a.id }, data: { status: "available", error: errorMessage(e).slice(0, 500) } });

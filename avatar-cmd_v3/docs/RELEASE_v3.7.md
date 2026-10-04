@@ -176,6 +176,11 @@ YouTube のフィードは、チャンネル ID の誤りのほか、YouTube 側
 - 安全: 内部ネットワーク（localhost・プライベート IP・クラウドのメタデータ IP など）の URL には接続しません（リダイレクト先も確認）。5MB・20 秒の上限
 - 使用量は API コスト画面の「RSS（記事の要約）」に集計
 
+#### 外部 AI からの登録（API）
+
+`/api/v1/learning/...` で、AI エージェントが「本文待ち」の動画・記事に本文と要約を登録できます（`knowledge:write` 権限）。
+要約まで AI 側で作ればこちらのモデルは呼ばず、要点の抜粋（quote）を本文と照合してから保存します。詳細は [API_V1.md](API_V1.md) の 4-2。
+
 ### 4. DB 移行
 
 `packages/db/prisma/migrations/20261006020000_rss_learning`（`rss_feeds` / `rss_articles` の追加のみ。既存テーブルは変更なし）。
