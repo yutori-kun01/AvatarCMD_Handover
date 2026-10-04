@@ -48,6 +48,14 @@ YouTube のフィードは、チャンネル ID の誤りのほか、YouTube 側
 `/api/v1/learning/...` で、AI エージェントが「本文待ち」の動画・記事に本文と要約を登録できます（`knowledge:write` 権限）。
 要約まで AI 側で作ればこちらのモデルは呼ばず、要点の抜粋（quote）を本文と照合してから保存します。詳細は [API_V1.md](API_V1.md) の 4-2。
 
+### Gemini の「401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED」
+
+要約で Gemini を使ったときのこのエラーは、**設定 > システム > AI の Gemini 欄に、Gemini API キーではない認証情報が入っている**ときに出ます
+（Google の OAuth トークン・クライアントシークレット、Google Cloud / Vertex AI 用の認証情報など）。アプリは正しく `x-goog-api-key` ヘッダーで送っています。
+
+- 対処: Google AI Studio（https://aistudio.google.com/apikey）で API キー（通常は `AIza` で始まる）を発行して入れ直す。環境変数 `GEMINI_API_KEY` を使っている場合はそちらも確認
+- 変更: OAuth のトークン等は保存時に弾く。呼び出し時の 401 / 403 / 無効なキーは、原因と直し方（登録キーの先頭 4 文字付き）を表示する
+
 ## 4. DB 移行
 
 `packages/db/prisma/migrations/20261004010000_rss_learning`（`rss_feeds` / `rss_articles` の追加のみ。既存テーブルは変更なし）。

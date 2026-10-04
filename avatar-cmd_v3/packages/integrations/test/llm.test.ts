@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claudeSse, mockFetch } from "./helpers";
-import { AI_PROVIDERS, AI_TASKS, callProvider, type AiProvider } from "../src/service/llm";
+import { AI_PROVIDERS, AI_TASKS, callProvider, geminiKeyProblem, type AiProvider } from "../src/service/llm";
 
 const SCHEMA = { type: "object", properties: { tags: { type: "array", items: { type: "string" } } }, required: ["tags"], additionalProperties: false };
 
@@ -85,6 +85,29 @@ test("Gemini: systemInstruction と JSON スキーマ", async () => {
     assert.equal(c.json.systemInstruction.parts[0].text, "S");
     assert.equal(c.json.generationConfig.responseMimeType, "application/json");
     assert.deepEqual(c.json.generationConfig.responseJsonSchema, SCHEMA);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Gemini: API キーではない認証情報は送らずに理由を示す。401 ACCESS_TOKEN_TYPE_UNSUPPORTED は直し方の分かるエラーにする", async () => {
+  const UNAUTH = {
+    error: {
+      code: 401,
+      message: "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential.",
+      status: "UNAUTHENTICATED",
+      details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_TYPE_UNSUPPORTED" }],
+    },
+  };
+  const m = mockFetch([["POST", /generativelanguage\.googleapis\.com/, () => ({ status: 401, json: UNAUTH })]]);
+  try {
+    const req = { model: "gemini-3.8-flash", system: "S", user: "U", maxTokens: 4000 };
+    await assert.rejects(callProvider("gemini", { ...req, apiKey: "ya29.a0AfB_byC" }), (e: Error) => e.name === "ConfigError" && /OAuth アクセストークン/.test(e.message) && /aistudio\.google\.com\/apikey/.test(e.message));
+    await assert.rejects(callProvider("gemini", { ...req, apiKey: "GOCSPX-abcdef" }), /クライアントシークレット/);
+    assert.equal(m.calls.length, 0); // 送っていない
+    await assert.rejects(callProvider("gemini", { ...req, apiKey: "AQ.Ab8RN6Ixxxx" }), (e: Error) => e.name === "ConfigError" && /認証情報の種類が違います/.test(e.message) && /「AQ\.A…」/.test(e.message));
+    assert.equal(m.calls[0].headers["x-goog-api-key"], "AQ.Ab8RN6Ixxxx");
+    assert.equal(geminiKeyProblem("AIzaSyD-example"), null);
   } finally {
     m.restore();
   }

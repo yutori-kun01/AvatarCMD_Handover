@@ -1,6 +1,6 @@
 // システム設定（公開URL・APIバージョン・AIキー・用途ごとの AI 割り当て）
 import { NextResponse } from "next/server";
-import { AI_PROVIDERS, isAiProvider, isAiTask, JEV_MODES, saveAiTask, setSetting, SETTING_KEYS, type AiProvider, type AiTask } from "@avatar-cmd/integrations/server";
+import { AI_PROVIDERS, geminiKeyProblem, isAiProvider, isAiTask, JEV_MODES, saveAiTask, setSetting, SETTING_KEYS, type AiProvider, type AiTask } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";
 
 export const runtime = "nodejs";
@@ -51,6 +51,10 @@ export const PUT = route(async (req: Request) => {
   for (const [provider, raw] of Object.entries(b.aiKeys ?? {})) {
     const v = raw?.trim();
     if (!isAiProvider(provider) || !v) continue;
+    if (provider === "gemini" && v !== "-") {
+      const problem = geminiKeyProblem(v);
+      if (problem) return NextResponse.json({ error: `Gemini のキーとして使えません（${problem}）。Google AI Studio（https://aistudio.google.com/apikey）で発行した API キーを入力してください` }, { status: 400 });
+    }
     await setSetting(AI_PROVIDERS[provider].keySetting, v === "-" ? null : v);
   }
   for (const [task, provider, model] of tasks) await saveAiTask(task, provider, model);

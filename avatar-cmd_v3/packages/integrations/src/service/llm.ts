@@ -303,18 +303,59 @@ async function callOpenAI({ apiKey, model, system, user, json }: ProviderRequest
   return { text: res.output_text ?? "", model: res.model || model, usage: normalizeOpenAIUsage(res.usage) };
 }
 
+/**
+ * Gemini API（Google AI Studio）のキーとして使えない認証情報を見分ける。
+ * Google の OAuth トークン・クライアントシークレットなどを入れると、Gemini は
+ * 「401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED」を返すため、保存時・呼び出し前に理由を示す。
+ */
+export function geminiKeyProblem(key: string): string | null {
+  const k = key.trim();
+  if (/^ya29\./.test(k)) return "Google の OAuth アクセストークン（ya29.…）です";
+  if (/^1\/\//.test(k)) return "Google の OAuth リフレッシュトークン（1//…）です";
+  if (/^GOCSPX-/.test(k)) return "Google の OAuth クライアントシークレット（GOCSPX-…）です";
+  if (/^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(k)) return "Google の OAuth クライアント ID です";
+  if (/^\s*\{/.test(k) && k.includes("private_key")) return "Google Cloud のサービスアカウントの鍵（JSON）です";
+  return null;
+}
+
+const GEMINI_KEY_GUIDE = "Google AI Studio（https://aistudio.google.com/apikey）で発行した API キー（通常は「AIza」で始まる）を、設定 > システム > AI の Gemini に入れ直してください。YouTube 連携などの OAuth の認証情報や、Google Cloud（Vertex AI）用の認証情報は使えません";
+
+/** Gemini の認証エラーを、原因と直し方が分かる文にする */
+export function explainGeminiError(e: unknown, apiKey: string): Error {
+  const msg = e instanceof Error ? e.message : String(e);
+  const status = (e as { status?: number }).status;
+  const head = apiKey.trim().slice(0, 4);
+  if (/ACCESS_TOKEN_TYPE_UNSUPPORTED|UNAUTHENTICATED/.test(msg) || status === 401) {
+    return new ConfigError(`Gemini が API キーを受け付けませんでした（401: 認証情報の種類が違います。登録されているキーは「${head}…」で始まります）。${GEMINI_KEY_GUIDE}`);
+  }
+  if (/API_KEY_INVALID|API key not valid/i.test(msg)) {
+    return new ConfigError(`Gemini の API キーが無効です（削除済み・入力ミスの可能性。「${head}…」で始まるキー）。${GEMINI_KEY_GUIDE}`);
+  }
+  if (/SERVICE_DISABLED|API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED/.test(msg) || status === 403) {
+    return new ConfigError(`Gemini API を使う権限がありません（キーの API 制限で Generative Language API が許可されていない、またはプロジェクトで無効）。${GEMINI_KEY_GUIDE}`);
+  }
+  return e instanceof Error ? e : new Error(msg);
+}
+
 async function callGemini({ apiKey, model, system, user, json }: ProviderRequest): Promise<ProviderResult> {
+  const problem = geminiKeyProblem(apiKey);
+  if (problem) throw new ConfigError(`Gemini に登録されているキーは API キーではありません（${problem}）。${GEMINI_KEY_GUIDE}`);
   // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
   const baseUrl = process.env.GEMINI_BASE_URL;
-  const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
-  const res = await ai.models.generateContent({
-    model,
-    contents: user,
-    config: {
-      systemInstruction: system,
-      temperature: json ? 0.2 : 0.8,
-      ...(json ? { responseMimeType: "application/json", responseJsonSchema: json.schema } : {}),
-    },
-  });
+  const ai = new GoogleGenAI({ apiKey: apiKey.trim(), ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
+  let res;
+  try {
+    res = await ai.models.generateContent({
+      model,
+      contents: user,
+      config: {
+        systemInstruction: system,
+        temperature: json ? 0.2 : 0.8,
+        ...(json ? { responseMimeType: "application/json", responseJsonSchema: json.schema } : {}),
+      },
+    });
+  } catch (e) {
+    throw explainGeminiError(e, apiKey);
+  }
   return { text: res.text ?? "", model, usage: normalizeGeminiUsage(res.usageMetadata) };
 }
