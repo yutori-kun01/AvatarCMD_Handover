@@ -2,6 +2,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Embedded, EmptyState, relTime, Shell } from "@/components/dashboard/shell";
+import { RssSection } from "@/components/sections/rss-section";
 import { YoutubeSection } from "@/components/sections/youtube-section";
 import { api, Badge, Button, Card, Field, inputCls, Notice } from "@/components/settings/ui";
 
@@ -406,14 +407,16 @@ function KnowledgeMain() {
 const TABS = [
   { key: "knowledge", label: "ナレッジ・改善" },
   { key: "youtube", label: "YouTube 学習" },
+  { key: "rss", label: "RSS 学習" },
 ] as const;
 
 function KnowledgeTabs() {
   const params = useSearchParams();
   const router = useRouter();
-  const tab = params.get("tab") === "youtube" ? "youtube" : "knowledge";
+  const raw = params.get("tab");
+  const tab = raw === "youtube" || raw === "rss" ? raw : "knowledge";
   return (
-    <Shell title="ナレッジ・学習" description="アバターの知識（出典付きの事実・人格・成果からの学び）、14〜27日ごとの改善処理、YouTube からの学習" wide>
+    <Shell title="ナレッジ・学習" description="アバターの知識（出典付きの事実・人格・成果からの学び）、14〜27日ごとの改善処理、YouTube・RSS からの学習" wide>
       <div className="mb-5 flex gap-1 rounded-xl border border-white/[0.08] bg-white/[0.02] p-1 w-fit">
         {TABS.map((t) => (
           <button
@@ -427,6 +430,8 @@ function KnowledgeTabs() {
       </div>
       {tab === "youtube" ? (
         <YoutubeSection />
+      ) : tab === "rss" ? (
+        <RssSection />
       ) : (
         <Embedded>
           <KnowledgeMain />

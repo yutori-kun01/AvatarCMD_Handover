@@ -10,9 +10,19 @@ export class ApiError extends Error {
     public readonly body: string,
     message?: string
   ) {
-    super(message ?? `${platform} API error ${status}: ${body.slice(0, 500)}`);
+    super(message ?? `${platform} API error ${status}: ${describeBody(body)}`);
     this.name = "ApiError";
   }
+}
+
+/** エラー応答の本文を短くする（HTML のエラーページはそのまま表示せず <title> だけにする） */
+export function describeBody(body: string): string {
+  const s = body.trim();
+  if (/^(<!doctype html|<html)/i.test(s)) {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(s)?.[1]?.replace(/\s+/g, " ").trim();
+    return `(HTML のエラーページ${title ? `: ${title.slice(0, 120)}` : ""})`;
+  }
+  return s.slice(0, 500);
 }
 
 /** 利用者が設定を直せば解決するエラー（再試行しても無駄なもの） */

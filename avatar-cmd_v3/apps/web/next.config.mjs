@@ -9,7 +9,7 @@ if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 const nextConfig = {
   output: "standalone", // Docker multi-stage build に必要
   transpilePackages: ["@avatar-cmd/db", "@avatar-cmd/integrations"],
-  serverExternalPackages: ["@prisma/client", "@atproto/api", "@resvg/resvg-js", "sharp"],
+  serverExternalPackages: ["@prisma/client", "@atproto/api", "@resvg/resvg-js", "sharp", "jsdom"],
   outputFileTracingRoot: resolve(import.meta.dirname, "../../"),
   // 図解のアイコン（SVG ファイルを実行時に読む）と resvg のネイティブモジュールを standalone 出力に含める
   outputFileTracingIncludes: {
@@ -26,6 +26,7 @@ const nextConfig = {
       { source: "/sns", destination: "/settings?tab=platforms", permanent: false },
       { source: "/costs", destination: "/settings?tab=costs", permanent: false },
       { source: "/youtube", destination: "/knowledge?tab=youtube", permanent: false },
+      { source: "/rss", destination: "/knowledge?tab=rss", permanent: false },
       { source: "/activity", destination: "/dashboard#activity", permanent: false },
     ];
   },
