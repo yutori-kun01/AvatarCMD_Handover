@@ -31,3 +31,6 @@ export * from "./service/icons";
 export * from "./service/style";
 export * from "./service/article";
 export * from "./service/x-policy";
+export * from "./service/rss-learning";
+export * from "./service/learning-summary";
+export { assertPublicUrl, extractArticle, fetchArticle, htmlToText } from "./service/web-extract";

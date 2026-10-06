@@ -2,6 +2,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { redact } from "../src/service/api-keys";
+import { mockFetch } from "./helpers";
 
 test("ログ用の伏せ字: API キー・Bearer トークンを残さない", () => {
   assert.equal(redact("auth failed for acmd_AbCdEfGhIj_secretsecretsecretsecret"), "auth failed for acmd_***");
@@ -40,6 +41,8 @@ after(async () => {
   await prisma.idempotencyRecord.deleteMany({ where: { keyId: { in: keyIds } } });
   await prisma.apiRateCounter.deleteMany({ where: { keyId: { in: keyIds } } });
   await prisma.apiKey.deleteMany({ where: { id: { in: keyIds } } });
+  await prisma.youtubeChannel.deleteMany({ where: { channelId: { in: [YT_MINE, YT_OTHER] } } });
+  await prisma.rssFeed.deleteMany({ where: { url: RSS_URL } });
   await prisma.avatar.deleteMany({ where: { userId } });
   await prisma.user.delete({ where: { id: userId } });
   await prisma.$disconnect();
@@ -167,4 +170,61 @@ test("レート制限: 書き込みは 1 分あたり上限を超えると 429�
   }
   assert.equal(last!.status, 429);
   assert.ok(Number(last!.headers.get("retry-after")) >= 1);
+});
+
+const YT_MINE = "UCapiv1apiv1apiv1apiv1m1";
+const YT_OTHER = "UCapiv1apiv1apiv1apiv1o1";
+const RSS_URL = "https://apiv1.example.com/feed";
+const BODY = "今日は朝の集中について話します。朝起きたらまず窓を開けて光を浴びてください。光を浴びると体内時計が整って、午前中の集中が続きやすくなります。もう一つは、最初の30分はスマホを見ないことです。これだけで作業に入るまでの時間が短くなります。";
+
+test("学習ソース: AI が API で本文と要約を登録（要約はモデルを呼ばずに根拠を照合して保存）。操作できないアバターの動画は 404", opts, async () => {
+  await prisma.youtubeChannel.deleteMany({ where: { channelId: { in: [YT_MINE, YT_OTHER] } } });
+  await prisma.rssFeed.deleteMany({ where: { url: RSS_URL } });
+  const chMine = await prisma.youtubeChannel.create({ data: { channelId: YT_MINE, ownership: "other", avatarIds: [mine] } });
+  const chOther = await prisma.youtubeChannel.create({ data: { channelId: YT_OTHER, ownership: "other", avatarIds: [mine, other] } });
+  const v = await prisma.youtubeVideo.create({ data: { channelRowId: chMine.id, videoId: "apiv1vid01", url: "https://www.youtube.com/watch?v=apiv1vid01", title: "朝の集中" } });
+  const vo = await prisma.youtubeVideo.create({ data: { channelRowId: chOther.id, videoId: "apiv1vid02", url: "https://www.youtube.com/watch?v=apiv1vid02", title: "他のアバターにも入る動画" } });
+  const feed = await prisma.rssFeed.create({ data: { url: RSS_URL, avatarIds: [mine] } });
+  const art = await prisma.rssArticle.create({ data: { feedRowId: feed.id, guid: "a1", url: "https://apiv1.example.com/a1", title: "朝の記事", excerpt: "抜粋" } });
+  const m = mockFetch([]); // モデルを呼んだら失敗する
+  try {
+    const r = await issue(["read"]);
+    const w = await issue(["read", "knowledge:write"]);
+    const list = await (await call(r.key, "GET", "learning/videos?status=pending")).json();
+    assert.deepEqual(list.videos.map((x: any) => x.id).filter((id: string) => [v.id, vo.id].includes(id)), [v.id]); // 他のアバターにも入る動画は見えない
+    assert.equal((await call(r.key, "GET", `learning/videos/${vo.id}`)).status, 404);
+    assert.equal((await call(r.key, "POST", `learning/videos/${v.id}/summarize`, { transcript: BODY }, "learn-key-0-"+Date.now())).status, 403);
+
+    // 根拠を照合できない要約は 400（本文は保存され、あとで要約し直せる）
+    const bad = await call(w.key, "POST", `learning/videos/${v.id}/summarize`, { transcript: BODY, summary: { summary: "要約", points: [{ point: "嘘", quote: "本文に無い文をここに書いています" }] } }, "learn-key-1-"+Date.now());
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error.message, /quote/);
+    assert.equal((await prisma.youtubeVideo.findUniqueOrThrow({ where: { id: v.id } })).transcriptStatus, "available");
+
+    const ok = await call(w.key, "POST", `learning/videos/${v.id}/summarize`, {
+      summary: { summary: "朝に光を浴びると午前の集中が続く", points: [{ point: "光で体内時計が整う", quote: "光を浴びると、体内時計が整って" }, { point: "根拠なし", quote: "本文に無い文をここに書いています" }], tags: ["朝"] },
+    }, "learn-key-2-"+Date.now());
+    assert.equal(ok.status, 200);
+    const done = (await ok.json()).video;
+    assert.equal(done.status, "summarized");
+    assert.equal(done.points.length, 1);
+    assert.equal(done.knowledgeIds.length, 1);
+    const k = await prisma.knowledgeItem.findUniqueOrThrow({ where: { id: done.knowledgeIds[0] } });
+    assert.equal(k.createdBy, "youtube:apiv1vid01");
+    assert.equal((k.evidence as any).model, `api:${w.id}`);
+    assert.equal((k.evidence as any).method, `manual:api:${w.id}`);
+    const detail = await (await call(r.key, "GET", `learning/videos/${v.id}`)).json();
+    assert.match(detail.video.transcript, /体内時計/);
+
+    // 記事: 本文だけ先に登録 → 要約を登録
+    const a1 = await call(w.key, "POST", `learning/articles/${art.id}/summarize`, { content: BODY, summarize: false }, "learn-key-3-"+Date.now());
+    assert.equal((await a1.json()).article.status, "available");
+    const a2 = await call(w.key, "POST", `learning/articles/${art.id}/summarize`, { summary: { summary: "最初の30分はスマホを見ない", points: [{ point: "スマホを見ない", quote: "最初の30分はスマホを見ないことです" }] } }, "learn-key-4-"+Date.now());
+    const ad = (await a2.json()).article;
+    assert.equal(ad.status, "summarized");
+    assert.equal((await prisma.knowledgeItem.findUniqueOrThrow({ where: { id: ad.knowledgeIds[0] } })).source, "rss");
+    assert.equal(m.calls.length, 0);
+  } finally {
+    m.restore();
+  }
 });

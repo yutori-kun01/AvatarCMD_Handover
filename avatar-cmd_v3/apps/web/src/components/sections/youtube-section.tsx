@@ -127,7 +127,7 @@ function YoutubeSectionInner() {
             <Field def={{ key: "look", label: "対象期間（公開から何日以内）" }} value={form.lookbackDays} onChange={(v) => setForm({ ...form, lookbackDays: v })} />
             <Field def={{ key: "max", label: "1回に要約する上限" }} value={form.maxVideosPerRun} onChange={(v) => setForm({ ...form, maxVideosPerRun: v })} />
           </div>
-          <p className="text-[11px] text-white/40">要約に使うモデルは 設定 &gt; システム &gt; AI の「動画の要約」で選べます。</p>
+          <p className="text-[11px] text-white/40">要約に使うモデルは 設定 &gt; システム &gt; AI の「動画・記事の要約」で選べます。</p>
           <div className="flex gap-2">
             <Button
               disabled={busy === "add" || !form.channel.trim() || !form.avatarIds.length}

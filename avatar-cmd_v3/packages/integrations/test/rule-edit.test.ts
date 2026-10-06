@@ -170,6 +170,8 @@ test("判定障害: gate モードで Jev が失敗したら、条件付き・�
 
 test("投稿直前の再確認: ルールの停止・下書きモード化・承認範囲の厳格化・アカウント停止で予約を下書きに戻す", opts, async () => {
   const rule = await svc.createRule({ avatarId, name: "直前確認", trigger: { type: "interval", hours: 24 }, action: { ...base(), mode: "auto", approval: "all" } });
+  // X の通常投稿は X API モードの時刻の枠に予約される。既定（1 日 2 枠）だと実行する時刻によっては枠が埋まり下書きになるので、枠を十分に用意する
+  await svc.saveXPolicy(avatarId, { mode: "custom", custom: { postsPerDay: 10, postTimes: ["00:00", "02:30", "05:00", "07:30", "10:00", "12:30", "15:00", "17:30", "20:00", "22:30"] } as any });
   const m = mocks();
   const runAndDue = async () => {
     await svc.runRule(rule.id);
