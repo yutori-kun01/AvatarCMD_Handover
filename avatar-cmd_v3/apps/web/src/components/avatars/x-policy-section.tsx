@@ -5,6 +5,8 @@ import { api, Badge, Button, Card, inputCls } from "@/components/settings/ui";
 
 type Mode = "eco" | "balanced" | "aggressive" | "custom";
 interface Params {
+  postsPerDay: number;
+  postTimes: string[];
   metricsCheckpoints: number[];
   scanTimes: string[];
   scanPosts: number;
@@ -27,11 +29,13 @@ interface Pricing {
   usdJpy: number;
 }
 interface View {
-  setting: { mode: Mode; custom: Params; degradeAtYen: number; capYen: number };
+  setting: { mode: Mode; custom: Params; degradeAtYen: number; capYen: number; times: { post: string[]; scan: string[] } };
   pricing: Pricing;
   usage: Estimate;
   level: "normal" | "reduced" | "stopped";
   params: Params;
+  /** モード（と利用者の時刻）の値。予算による縮小の前 */
+  base: Params;
   modes: Record<Exclude<Mode, "custom">, { label: string; help: string; params: Params; estimate: Estimate }>;
   customEstimate: Estimate;
 }
@@ -45,6 +49,7 @@ const MODE_ORDER: Mode[] = ["eco", "balanced", "aggressive", "custom"];
 
 function describe(p: Params) {
   return [
+    `通常投稿 ${p.postsPerDay ? `${p.postTimes.join("・")}（1日${p.postsPerDay}回）` : "しない"}`,
     `指標 ${p.metricsCheckpoints.map((h) => `${h}h`).join(" / ") || "取らない"}`,
     `探索 ${p.scanTimes.length ? `${p.scanTimes.join("・")} × ${p.scanPosts}件` : "しない"}`,
     `引用 月${p.quotesPerMonth}件まで`,
@@ -57,10 +62,13 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
   const [budget, setBudget] = useState({ degradeAtYen: "", capYen: "" });
   const [pricing, setPricing] = useState<Record<keyof Pricing, string> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [times, setTimes] = useState<{ post: string[]; scan: string[] }>({ post: [], scan: [] });
 
   const apply = (d: View) => {
     setV(d);
     setCustom(d.setting.custom);
+    // 画面の時刻は「いま使っている値」（モードの回数に合わせた時刻）から始める
+    setTimes({ post: d.setting.mode === "custom" ? d.setting.custom.postTimes : d.base.postTimes, scan: d.setting.mode === "custom" ? d.setting.custom.scanTimes : d.base.scanTimes });
     setBudget({ degradeAtYen: String(d.setting.degradeAtYen), capYen: String(d.setting.capYen) });
     setPricing({ postRead: String(d.pricing.postRead), userRead: String(d.pricing.userRead), postCreate: String(d.pricing.postCreate), usdJpy: String(d.pricing.usdJpy) });
   };
@@ -155,6 +163,60 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
         <p className="text-[11px] text-white/40">月額は 1 日 2 投稿・引用は上限まで作った場合の見積もりです（単価・為替は下の設定）。AGGRESSIVE は月 5,000 円の商品では原価率が高くなります。</p>
       </Card>
 
+      <Card className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">時刻（日本時間）</h3>
+          <p className="text-xs text-white/50">
+            {v.setting.mode === "custom" ? "回数はカスタマイズで変えられます。" : "回数はモードで固定です。時刻だけ変えられます。"}
+            自動化ルールが X に作る通常投稿は、この時刻の空いている枠に予約されます（今日・明日の枠が埋まっていれば下書きにします）。
+          </p>
+        </div>
+        {(
+          [
+            ["post", "通常投稿の時刻", v.setting.mode === "custom" ? custom.postsPerDay : v.base.postsPerDay],
+            ["scan", "引用探索の時刻", v.setting.mode === "custom" ? custom.scanTimes.length : v.base.scanTimes.length],
+          ] as const
+        ).map(([k, label, n]) => (
+          <div key={k} className="flex flex-wrap items-center gap-2 text-xs text-white/60">
+            <span className="w-28">
+              {label}
+              <span className="ml-1 text-white/35">{n}回</span>
+            </span>
+            {n === 0 ? (
+              <span className="text-white/35">{k === "post" ? "通常投稿をしない設定です" : "引用探索をしない設定です"}</span>
+            ) : (
+              Array.from({ length: n }, (_, i) => (
+                <input
+                  key={i}
+                  type="time"
+                  value={times[k][i] ?? ""}
+                  onChange={(e) => setTimes({ ...times, [k]: Array.from({ length: n }, (_, j) => (j === i ? e.target.value : times[k][j] ?? "")) })}
+                  className={`${inputCls} !w-32 py-1.5`}
+                  aria-label={`${label} ${i + 1}`}
+                />
+              ))
+            )}
+          </div>
+        ))}
+        <div className="flex gap-2">
+          <Button
+            disabled={busy}
+            onClick={() =>
+              v.setting.mode === "custom"
+                ? save({ custom: { ...custom, postTimes: times.post.filter(Boolean), scanTimes: times.scan.filter(Boolean) } }, "時刻を保存しました")
+                : save({ times: { post: times.post.filter(Boolean), scan: times.scan.filter(Boolean) } }, "時刻を保存しました")
+            }
+          >
+            時刻を保存
+          </Button>
+          {v.setting.mode !== "custom" && (
+            <Button variant="ghost" disabled={busy} onClick={() => save({ times: { post: [], scan: [] } }, "モードの既定の時刻に戻しました")}>
+              既定に戻す
+            </Button>
+          )}
+        </div>
+      </Card>
+
       {v.setting.mode === "custom" && (
         <Card className="space-y-3">
           <h3 className="text-sm font-semibold">カスタマイズ</h3>
@@ -164,8 +226,30 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
               <input defaultValue={custom.metricsCheckpoints.join(", ")} onChange={(e) => setCustom({ ...custom, metricsCheckpoints: numList(e.target.value).map(Number) })} className={`${inputCls} mt-1`} placeholder="1, 6, 24" />
             </label>
             <label>
-              引用探索の時刻（日本時間・カンマ区切り。空なら探索しない）
-              <input defaultValue={custom.scanTimes.join(", ")} onChange={(e) => setCustom({ ...custom, scanTimes: numList(e.target.value) })} className={`${inputCls} mt-1`} placeholder="08:00, 18:00" />
+              1 日の通常投稿の回数（0〜10）
+              <input
+                type="number"
+                value={custom.postsPerDay}
+                onChange={(e) => {
+                  const n = Math.max(0, Math.min(10, Number(e.target.value)));
+                  setCustom({ ...custom, postsPerDay: n });
+                  setTimes({ ...times, post: Array.from({ length: n }, (_, i) => times.post[i] ?? "") });
+                }}
+                className={`${inputCls} mt-1`}
+              />
+            </label>
+            <label>
+              1 日の引用探索の回数（0〜12）
+              <input
+                type="number"
+                value={times.scan.length}
+                onChange={(e) => {
+                  const n = Math.max(0, Math.min(12, Number(e.target.value)));
+                  setTimes({ ...times, scan: Array.from({ length: n }, (_, i) => times.scan[i] ?? "") });
+                  setCustom({ ...custom, scanTimes: Array.from({ length: n }, (_, i) => custom.scanTimes[i] ?? "") });
+                }}
+                className={`${inputCls} mt-1`}
+              />
             </label>
             {(
               [
@@ -182,7 +266,8 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
               </label>
             ))}
           </div>
-          <Button disabled={busy} onClick={() => save({ mode: "custom", custom }, "カスタマイズを保存しました")}>
+          <p className="text-[11px] text-white/40">回数を変えたら、上の「時刻」で各回の時刻を入れてから保存してください（通常投稿の時刻が回数と合わない場合は既定の時刻、引用探索は未入力の回を除きます）。</p>
+          <Button disabled={busy} onClick={() => save({ mode: "custom", custom: { ...custom, postTimes: times.post.filter(Boolean), scanTimes: times.scan.filter(Boolean) } }, "カスタマイズを保存しました")}>
             保存して見積もり
           </Button>
         </Card>

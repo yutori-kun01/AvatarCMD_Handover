@@ -22,6 +22,7 @@ import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
 import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
+import { effectiveXPolicy, nextPostSlot } from "./x-policy";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -291,15 +292,40 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
       const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined, jevFailed);
       if (jev && d.gateApplied) await markApplied(jev.eventId);
       if (d.publish) {
-        const posted = await createPosts({
-          accountIds: accs.map((a) => a.id),
-          text,
-          title: topic,
-          category: "automation",
-          extraMetadata: { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) },
-        });
-        if (jev && posted[0]) await linkDecision(jev.eventId, posted[0].id);
-        queued += posted.length;
+        const extraMetadata = { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) };
+        // X は、アバターの X API モードの回数・時刻の枠に予約する（1 日の回数はモードで固定、時刻は利用者が設定）
+        const groups: { ids: string[]; scheduledAt?: Date }[] = [];
+        const slotHeld: { acc: (typeof accs)[number]; reason: string }[] = [];
+        if (platform === "x") {
+          for (const a of accs) {
+            const slot = await xPostSlot(a.id, a.avatarId);
+            if (slot === "none" || slot === null) {
+              slotHeld.push({ acc: a, reason: slot === "none" ? "X API のモードで通常投稿が 0 回のため、下書きにしました" : "今日・明日の投稿時刻の枠が埋まっているため、下書きにしました（予約を先へ積み上げない）" });
+              continue;
+            }
+            groups.push({ ids: [a.id], scheduledAt: slot });
+          }
+        } else groups.push({ ids: accs.map((a) => a.id) });
+        for (const h of slotHeld) {
+          held.push(`${getPlatform(platform)?.name ?? platform}: ${h.reason}`);
+          await prisma.content.create({
+            data: {
+              avatarId: h.acc.avatarId,
+              platform,
+              snsAccountId: h.acc.id,
+              content: text,
+              status: "DRAFT",
+              category: "automation",
+              metadata: { title: topic, media: [], options: {}, ...extraMetadata, autoApproved: undefined, ruleMode: action.mode, heldReason: h.reason } as object,
+            },
+          });
+          drafted++;
+        }
+        for (const g of groups) {
+          const posted = await createPosts({ accountIds: g.ids, text, title: topic, category: "automation", scheduledAt: g.scheduledAt, extraMetadata });
+          if (jev && posted[0] && !queued) await linkDecision(jev.eventId, posted[0].id);
+          queued += posted.length;
+        }
         // チェックで指摘があっても自動承認した場合は、後から確認できるよう記録しておく
         if (review.verdict !== "ok") flagged.push(`${getPlatform(platform)?.name ?? platform}: ${review.error ? `チェック失敗（${review.error.slice(0, 80)}）` : `${review.verdict} ${review.summary}`.trim()}`);
         continue;
@@ -334,7 +360,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
         action: "automation_review_held",
         category: "content",
         level: "warning",
-        description: `自動化「${rule.name}」: 投稿前チェックで保留し、下書きに回しました — ${held.join(" / ")}`,
+        description: `自動化「${rule.name}」: 保留して下書きに回しました — ${held.join(" / ")}`,
         metadata: { ruleId: rule.id },
       },
     });
@@ -364,6 +390,27 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
     },
   });
   return created;
+}
+
+/**
+ * X の通常投稿を予約する時刻。モードの時刻の空いている枠（そのアカウントの自動化の予約・投稿と重ならない）。
+ * "none" = モードで通常投稿が 0 回。null = 今日・明日の枠が埋まっている（予約を先へ積み上げない）
+ */
+export async function xPostSlot(accountId: string, avatarId: string, now = new Date()): Promise<Date | null | "none"> {
+  const { params } = await effectiveXPolicy(avatarId, now);
+  if (params.postsPerDay <= 0) return "none";
+  const since = new Date(now.getTime() - 24 * 3600_000);
+  const rows = await prisma.content.findMany({
+    where: {
+      snsAccountId: accountId,
+      category: "automation",
+      status: { in: ["SCHEDULED", "PUBLISHING", "PUBLISHED"] },
+      OR: [{ scheduledPost: { scheduledAt: { gte: since } } }, { publishedAt: { gte: since } }],
+    },
+    select: { publishedAt: true, scheduledPost: { select: { scheduledAt: true } } },
+  });
+  const taken = rows.map((r) => r.scheduledPost?.scheduledAt ?? r.publishedAt).filter((d): d is Date => !!d);
+  return nextPostSlot(params.postTimes, taken, now);
 }
 
 /** 期限の来たルールを実行（worker から定期実行）。二重実行しないよう nextRunAt を条件付き更新で確保する */

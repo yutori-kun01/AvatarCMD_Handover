@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers";
 import { candidateScore } from "../src/service/quotes";
-import { degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
+import { defaultTimes, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
 
 test("モード: 既定は BALANCED。カスタマイズは範囲内に丸め、無い項目は BALANCED の値", () => {
   const d = normalizeSetting(null);
@@ -54,6 +54,23 @@ test("時刻と時点: 探索は決まった時刻を過ぎたときだけ。指
   assert.equal(dueCheckpoint(pub, [1], [1, 6, 24], at(5)), null);
   assert.equal(dueCheckpoint(pub, [1], [1, 6, 24], at(30)), 24); // 止まっていた間の 6h はさかのぼらない
   assert.equal(dueCheckpoint(pub, [1, 24], [1, 6, 24], at(40)), null);
+});
+
+test("通常投稿の時刻: 回数はモードで固定・時刻は利用者が設定。空いている枠（今日・明日）に入れる", () => {
+  // プリセット: 件数が合う時刻だけ使う
+  const s = normalizeSetting({ mode: "balanced", times: { post: ["07:15", "21:45"], scan: ["06:00"] } } as any);
+  assert.deepEqual(paramsOf(s).postTimes, ["07:15", "21:45"]);
+  assert.deepEqual(paramsOf(s).scanTimes, X_MODES.balanced.params.scanTimes); // 探索は 2 回のモードなので 1 個は使わない
+  assert.equal(paramsOf(s).postsPerDay, 2);
+  assert.deepEqual(defaultTimes(3), ["09:00", "15:00", "21:00"]);
+  assert.deepEqual(normalizeParams({ postsPerDay: 3, postTimes: ["10:00"] }).postTimes, ["09:00", "15:00", "21:00"]);
+  const now = new Date("2026-10-06T01:00:00Z"); // 10:00 JST
+  const times = ["09:00", "19:00"];
+  assert.equal(nextPostSlot(times, [], now)!.toISOString(), "2026-10-06T10:00:00.000Z"); // 今日 19:00
+  const taken = [new Date("2026-10-06T10:00:00Z")];
+  assert.equal(nextPostSlot(times, taken, now)!.toISOString(), "2026-10-07T00:00:00.000Z"); // 明日 9:00
+  taken.push(new Date("2026-10-07T00:05:00Z"), new Date("2026-10-07T10:00:00Z"));
+  assert.equal(nextPostSlot(times, taken, now), null); // 今日・明日が埋まっている
 });
 
 test("引用候補の採点: ジャンルが近く・反応があり・新しい投稿が上", () => {
@@ -121,6 +138,28 @@ test("指標: X は決まった時点の投稿だけ ids 指定で読み、時�
   } finally {
     m.restore();
   }
+});
+
+test("自動化ルールの X 投稿: モードの時刻の枠に予約し、枠が埋まったら下書きにする。プリセットでは回数と違う個数の時刻は保存できない", opts, async () => {
+  await assert.rejects(svc.saveXPolicy(avatarId, { mode: "balanced", times: { post: ["08:00"], scan: [] } as any }), /通常投稿の時刻は 2 個/);
+  await svc.saveXPolicy(avatarId, { mode: "balanced", times: { post: ["08:30", "20:30"], scan: [] } as any });
+  const p = (await svc.effectiveXPolicy(avatarId)).params;
+  assert.deepEqual(p.postTimes, ["08:30", "20:30"]);
+  const slots: Date[] = [];
+  for (let i = 0; i < 5; i++) {
+    const s = await svc.xPostSlot(accId, avatarId);
+    if (!(s instanceof Date)) break;
+    slots.push(s);
+    // 予約を作ったことにする
+    await prisma.content.create({ data: { avatarId, platform: "x", snsAccountId: accId, content: "s", status: "SCHEDULED", category: "automation", scheduledPost: { create: { scheduledAt: s, status: "pending" } } } });
+  }
+  assert.ok(slots.length >= 2 && slots.length <= 4, `今日・明日の枠は最大 4 つ（${slots.length}）`);
+  for (const s of slots) assert.ok(["08:30", "20:30"].includes(new Date(s.getTime() + 9 * 3600_000).toISOString().slice(11, 16)));
+  assert.equal(await svc.xPostSlot(accId, avatarId), null);
+  await svc.saveXPolicy(avatarId, { mode: "custom", custom: { postsPerDay: 0 } as any });
+  assert.equal(await svc.xPostSlot(accId, avatarId), "none");
+  await prisma.content.deleteMany({ where: { avatarId, content: "s" } });
+  await svc.saveXPolicy(avatarId, { mode: "balanced" });
 });
 
 test("予算: 今月の X 費用で縮小・停止し、停止中は引用探索を読まない。カスタマイズの保存", opts, async () => {

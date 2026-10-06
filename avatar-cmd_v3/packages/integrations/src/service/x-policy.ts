@@ -12,6 +12,10 @@ import { ConfigError } from "../http";
 import { getSetting, setSetting } from "./store";
 
 export interface XPolicyParams {
+  /** 1 日の通常投稿の回数（自動化ルールが X に予約する回数）。プリセットのモードでは固定 */
+  postsPerDay: number;
+  /** 通常投稿の時刻（日本時間 "HH:MM"。件数 = postsPerDay） */
+  postTimes: string[];
   /** 自分の投稿の指標を取る時点（公開からの時間） */
   metricsCheckpoints: number[];
   /** 引用探索の時刻（日本時間 "HH:MM"） */
@@ -34,17 +38,17 @@ export const X_MODES: Record<Exclude<XMode, "custom">, { label: string; help: st
   eco: {
     label: "ECO",
     help: "費用最小。引用探索は朝 1 回、指標は 6h / 24h",
-    params: { metricsCheckpoints: [6, 24], scanTimes: ["08:00"], scanPosts: 10, shortlist: 2, quotesPerMonth: 10, profileEveryDays: 2, userCacheDays: 7 },
+    params: { postsPerDay: 2, postTimes: ["09:00", "19:00"], metricsCheckpoints: [6, 24], scanTimes: ["08:00"], scanPosts: 10, shortlist: 2, quotesPerMonth: 10, profileEveryDays: 2, userCacheDays: 7 },
   },
   balanced: {
     label: "BALANCED",
     help: "標準。引用探索は朝夕 2 回 × 12 件、指標は 1h / 6h / 24h",
-    params: { metricsCheckpoints: [1, 6, 24], scanTimes: ["08:00", "18:00"], scanPosts: 12, shortlist: 3, quotesPerMonth: 20, profileEveryDays: 1, userCacheDays: 7 },
+    params: { postsPerDay: 2, postTimes: ["09:00", "19:00"], metricsCheckpoints: [1, 6, 24], scanTimes: ["08:00", "18:00"], scanPosts: 12, shortlist: 3, quotesPerMonth: 20, profileEveryDays: 1, userCacheDays: 7 },
   },
   aggressive: {
     label: "AGGRESSIVE",
     help: "反応重視。引用探索は 1 日 4 回 × 20 件、指標は 1h / 3h / 12h / 24h",
-    params: { metricsCheckpoints: [1, 3, 12, 24], scanTimes: ["08:00", "12:00", "17:00", "21:00"], scanPosts: 20, shortlist: 3, quotesPerMonth: 30, profileEveryDays: 1, userCacheDays: 3 },
+    params: { postsPerDay: 2, postTimes: ["09:00", "19:00"], metricsCheckpoints: [1, 3, 12, 24], scanTimes: ["08:00", "12:00", "17:00", "21:00"], scanPosts: 20, shortlist: 3, quotesPerMonth: 30, profileEveryDays: 1, userCacheDays: 3 },
   },
 };
 export const DEFAULT_X_MODE: XMode = "balanced";
@@ -52,6 +56,11 @@ export const DEFAULT_X_BUDGET = { degradeAtYen: 800, capYen: 1000 };
 
 export interface XPolicySetting {
   mode: XMode;
+  /**
+   * 利用者が決めた時刻（日本時間）。プリセットのモードでは回数はモードで固定で、時刻だけ変えられる
+   * （件数がモードの回数と合わない場合はモードの既定の時刻を使う）。カスタマイズでは custom の値を使う
+   */
+  times: { post: string[]; scan: string[] };
   /** カスタマイズの値（mode = custom のとき使う。無い項目は BALANCED の値） */
   custom: XPolicyParams;
   degradeAtYen: number;
@@ -59,6 +68,23 @@ export interface XPolicySetting {
 }
 
 // --- 検証 ------------------------------------------------------------------------------
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** 時刻の一覧（重複なし・昇順） */
+export function normalizeTimes(raw: unknown, max = 12): string[] {
+  return Array.isArray(raw) ? [...new Set(raw.map((t) => String(t).trim()).filter((t) => TIME_RE.test(t)))].sort().slice(0, max) : [];
+}
+
+/** n 回分の既定の時刻（9:00〜21:00 に均等） */
+export function defaultTimes(n: number): string[] {
+  if (n <= 0) return [];
+  if (n === 1) return ["09:00"];
+  if (n === 2) return ["09:00", "19:00"];
+  return Array.from({ length: n }, (_, i) => {
+    const m = Math.round(9 * 60 + (i * 12 * 60) / (n - 1));
+    return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  });
+}
 
 const int = (v: unknown, min: number, max: number, def: number) => {
   const n = Math.round(Number(v));
@@ -68,10 +94,12 @@ const int = (v: unknown, min: number, max: number, def: number) => {
 export function normalizeParams(raw: Partial<XPolicyParams> | null | undefined, base: XPolicyParams = X_MODES.balanced.params): XPolicyParams {
   const r = raw ?? {};
   const cps = Array.isArray(r.metricsCheckpoints) ? [...new Set(r.metricsCheckpoints.map(Number).filter((h) => Number.isFinite(h) && h >= 1).map((h) => int(h, 1, 336, 1)))].sort((a, b) => a - b).slice(0, 6) : base.metricsCheckpoints;
-  const times = Array.isArray(r.scanTimes)
-    ? [...new Set(r.scanTimes.map((t) => String(t).trim()).filter((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t)))].sort().slice(0, 12)
-    : base.scanTimes;
+  const times = Array.isArray(r.scanTimes) ? normalizeTimes(r.scanTimes) : base.scanTimes;
+  const postsPerDay = int(r.postsPerDay, 0, 10, base.postsPerDay);
+  const postTimes = normalizeTimes(r.postTimes, 10);
   return {
+    postsPerDay,
+    postTimes: postTimes.length === postsPerDay ? postTimes : defaultTimes(postsPerDay),
     metricsCheckpoints: cps,
     scanTimes: times,
     scanPosts: int(r.scanPosts, 5, 100, base.scanPosts),
@@ -88,14 +116,22 @@ export function normalizeSetting(raw: Partial<XPolicySetting> | null | undefined
   const capYen = int(r.capYen, 0, 1_000_000, DEFAULT_X_BUDGET.capYen);
   return {
     mode,
+    times: { post: normalizeTimes(r.times?.post, 10), scan: normalizeTimes(r.times?.scan) },
     custom: normalizeParams(r.custom),
     degradeAtYen: Math.min(capYen, int(r.degradeAtYen, 0, 1_000_000, DEFAULT_X_BUDGET.degradeAtYen)),
     capYen,
   };
 }
 
+/** モードの値に、利用者が決めた時刻を当てはめる（回数はモードのまま。件数が合わない時刻は使わない） */
 export function paramsOf(s: XPolicySetting): XPolicyParams {
-  return s.mode === "custom" ? s.custom : X_MODES[s.mode].params;
+  if (s.mode === "custom") return s.custom;
+  const p = X_MODES[s.mode].params;
+  return {
+    ...p,
+    postTimes: s.times.post.length === p.postsPerDay ? s.times.post : p.postTimes,
+    scanTimes: s.times.scan.length === p.scanTimes.length ? s.times.scan : p.scanTimes,
+  };
 }
 
 // --- 単価・為替 ----------------------------------------------------------------------------
@@ -148,8 +184,8 @@ export interface XEstimate {
   yen: number;
 }
 
-/** 1 か月（30 日）の見積もり。postsPerDay は通常投稿（ツリーは 1 件）の数 */
-export function estimateXMonthly(p: XPolicyParams, pricing: XPricing = DEFAULT_X_PRICING, postsPerDay = 2): XEstimate {
+/** 1 か月（30 日）の見積もり。通常投稿（ツリーは 1 件）の数はモードの postsPerDay */
+export function estimateXMonthly(p: XPolicyParams, pricing: XPricing = DEFAULT_X_PRICING, postsPerDay = p.postsPerDay): XEstimate {
   const postReads = postsPerDay * 30 * p.metricsCheckpoints.length + p.scanTimes.length * p.scanPosts * 30;
   // プロフィール + 引用案の投稿者名（上位だけ・キャッシュ）。キャッシュ期間で割り引いた概算
   const userReads = Math.ceil(30 / p.profileEveryDays) + Math.ceil((p.shortlist * p.scanTimes.length * 30) / Math.max(1, p.userCacheDays * 2));
@@ -210,7 +246,19 @@ export async function getXPolicy(avatarId: string): Promise<XPolicySetting> {
 
 export async function saveXPolicy(avatarId: string, input: Partial<XPolicySetting>): Promise<XPolicySetting> {
   const cur = await getXPolicy(avatarId);
-  const next = normalizeSetting({ ...cur, ...input, custom: input.custom ? { ...cur.custom, ...input.custom } : cur.custom });
+  const next = normalizeSetting({
+    ...cur,
+    ...input,
+    times: input.times ? { ...cur.times, ...input.times } : cur.times,
+    custom: input.custom ? { ...cur.custom, ...input.custom } : cur.custom,
+  });
+  // プリセットのモードで、回数と合わない時刻は保存しない（回数はモードで固定）
+  if (next.mode !== "custom" && input.times) {
+    const p = X_MODES[next.mode].params;
+    // 空の一覧は「モードの既定の時刻に戻す」
+    if (input.times.post?.length && next.times.post.length !== p.postsPerDay) throw new ConfigError(`通常投稿の時刻は ${p.postsPerDay} 個にしてください（${X_MODES[next.mode].label} の回数）`);
+    if (input.times.scan?.length && next.times.scan.length !== p.scanTimes.length) throw new ConfigError(`引用探索の時刻は ${p.scanTimes.length} 個にしてください（${X_MODES[next.mode].label} の回数）`);
+  }
   await prisma.avatar.update({ where: { id: avatarId }, data: { xPolicy: next as object } });
   return next;
 }
@@ -257,4 +305,24 @@ export function dueCheckpoint(publishedAt: Date, done: number[], checkpoints: nu
   const latest = passed[passed.length - 1];
   const lastDone = done.length ? Math.max(...done) : 0;
   return latest > lastDone ? latest : null;
+}
+
+/**
+ * 自動化ルールが X に予約する通常投稿の時刻。モードの時刻のうち、まだ埋まっていない最も早い枠（既定は今日・明日）。
+ * 1 日の回数は時刻の数（= モードの回数）を超えない。taken はそのアカウントの予約・投稿済みの時刻。
+ */
+export function nextPostSlot(postTimes: string[], taken: Date[], now = new Date(), days = 2): Date | null {
+  if (!postTimes.length) return null;
+  const j = new Date(now.getTime() + JST);
+  for (let d = 0; d < days; d++) {
+    for (const t of postTimes) {
+      const [h, m] = t.split(":").map(Number);
+      const slot = new Date(Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate() + d, h, m) - JST);
+      if (slot.getTime() <= now.getTime()) continue;
+      // 同じ枠（前後 30 分）に予約・投稿があれば埋まっている
+      if (taken.some((x) => Math.abs(x.getTime() - slot.getTime()) < 30 * 60_000)) continue;
+      return slot;
+    }
+  }
+  return null;
 }
