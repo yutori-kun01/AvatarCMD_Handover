@@ -5,6 +5,8 @@
 // ・「スタイルを分析」で、画像を読めるモデル（用途: 画像スタイル分析）に参考画像を渡し、配色・タッチ・構図などの
 //   スタイル定義（VisualStyle）を作って Avatar.imageStyle に保存する。定義は画面で直せる。
 // ・イメージ画像の生成では、スタイル定義の言葉と参考画像（最大 4 枚）を一緒に渡す。
+// ・v3.7: スタイル定義は「デザイン DNA」として 1 つにまとめ、イメージ画像と図解の両方で使う
+//   （画像生成 AI の画像とテンプレートの図解がかけ離れないように）。参考画像の種類（image / infographic）は分析の材料の区別だけ。
 
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
@@ -64,18 +66,25 @@ export async function referenceImages(avatarId: string, kind: StyleKind, max = 4
 
 export type AvatarStyles = Record<StyleKind, VisualStyle>;
 
-export async function getAvatarStyles(avatarId: string): Promise<AvatarStyles> {
+/** デザイン DNA（イメージ画像・図解で共通）。旧形式（image / infographic を別々に保存）も読む */
+export async function getDesignDna(avatarId: string): Promise<VisualStyle> {
   const a = await prisma.avatar.findUnique({ where: { id: avatarId }, select: { imageStyle: true } });
   if (!a) throw new ConfigError("アバターが見つかりません");
-  const raw = (a.imageStyle ?? {}) as Partial<Record<StyleKind, Partial<VisualStyle>>>;
-  return { image: normalizeStyle(raw.image), infographic: normalizeStyle(raw.infographic ?? raw.image) };
+  const raw = (a.imageStyle ?? {}) as Partial<Record<"dna" | StyleKind, Partial<VisualStyle>>>;
+  return normalizeStyle(raw.dna ?? raw.image ?? raw.infographic);
 }
 
-export async function saveAvatarStyle(avatarId: string, kind: string, style: Partial<VisualStyle>) {
-  const k = checkKind(kind);
+/** 用途別の取り出し（どちらも同じデザイン DNA） */
+export async function getAvatarStyles(avatarId: string): Promise<AvatarStyles> {
+  const dna = await getDesignDna(avatarId);
+  return { image: dna, infographic: dna };
+}
+
+/** デザイン DNA を保存する（kind は互換のため受け取るが、保存先は 1 つ） */
+export async function saveAvatarStyle(avatarId: string, _kind: string | null, style: Partial<VisualStyle>) {
   const a = await prisma.avatar.findUniqueOrThrow({ where: { id: avatarId }, select: { imageStyle: true } });
   const saved = normalizeStyle(style);
-  const next = { ...((a.imageStyle ?? {}) as Record<string, unknown>), [k]: saved };
+  const next = { ...((a.imageStyle ?? {}) as Record<string, unknown>), dna: saved };
   await prisma.avatar.update({ where: { id: avatarId }, data: { imageStyle: next as object } });
   return saved;
 }
@@ -83,8 +92,14 @@ export async function saveAvatarStyle(avatarId: string, kind: string, style: Par
 const STYLE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["palette", "background", "text", "muted", "corner", "iconStyle", "mood", "illustration", "composition", "avoid"],
+  required: ["dna", "palette", "background", "text", "muted", "corner", "iconStyle", "mood", "illustration", "composition", "avoid"],
   properties: {
+    dna: {
+      type: "string",
+      description:
+        "デザイン DNA: 画像生成 AI にそのまま渡すスタイルプロンプト（英語・60〜120 語）。画風・線・形の角丸・質感・光・色の使い方・構図・余白・アイコンの塗り/線を含め、" +
+        "同じ作風のインフォグラフィック（フラットな図形・アイコン・グラフ）と並べても違和感がないように書く。画像の中の文字・人物・ブランドは含めない",
+    },
     palette: { type: "array", items: { type: "string", description: "#rrggbb" }, description: "よく使われている色を 3〜6 色。目立つ色から順に" },
     background: { type: "string", description: "背景色 #rrggbb" },
     text: { type: "string", description: "文字色 #rrggbb" },
@@ -98,19 +113,19 @@ const STYLE_SCHEMA = {
   },
 };
 
-/** 参考画像からスタイル定義を作って保存する */
-export async function analyzeStyle(avatarId: string, kind: string): Promise<VisualStyle> {
-  const k = checkKind(kind);
-  const images = await referenceImages(avatarId, k, 6);
+/** 参考画像（イメージ画像用・図解用の両方）からデザイン DNA を作って保存する */
+export async function analyzeStyle(avatarId: string, _kind?: string | null): Promise<VisualStyle> {
+  const images = [...(await referenceImages(avatarId, "image", 4)), ...(await referenceImages(avatarId, "infographic", 3))];
   if (!images.length) throw new ConfigError("参考画像を登録してください");
-  const notes = (await prisma.styleReference.findMany({ where: { avatarId, kind: k, isActive: true, note: { not: null } }, select: { note: true } })).map((r) => r.note);
+  const notes = (await prisma.styleReference.findMany({ where: { avatarId, isActive: true, note: { not: null } }, select: { note: true } })).map((r) => r.note);
   const { data } = await completeJson<Partial<VisualStyle>>({
     task: "style",
     system:
       "あなたはアートディレクターです。渡された参考画像に共通する作風を読み取り、別の画像や図解を同じ作風で作るためのスタイル定義を作ります。" +
       "画像の中の文章・人物・ブランド名をそのまま写すのではなく、色・形・タッチ・構図の特徴だけを抽出してください。",
     user: [
-      `参考画像 ${images.length} 枚の共通する作風を、${k === "infographic" ? "インフォグラフィック図解（アイコン・図形・グラフ）" : "記事のイメージ画像"}に使うスタイル定義にしてください。`,
+      `参考画像 ${images.length} 枚の共通する作風を、記事のイメージ画像とインフォグラフィック図解（フラットな図形・アイコン・グラフ）の両方に使う 1 つのデザイン DNA にしてください。`,
+      "図解はテンプレートで描くため、色（palette・background・text）・角丸（corner）・アイコンの塗り/線（iconStyle）は図解にそのまま使われます。イメージ画像がこの図解と並んでも同じシリーズに見えるよう、dna を書いてください。",
       notes.length ? `利用者のメモ: ${notes.join(" / ")}` : "",
     ]
       .filter(Boolean)
@@ -119,6 +134,6 @@ export async function analyzeStyle(avatarId: string, kind: string): Promise<Visu
     json: { name: "visual_style", schema: STYLE_SCHEMA },
   });
   const style = normalizeStyle(data);
-  await saveAvatarStyle(avatarId, k, style);
+  await saveAvatarStyle(avatarId, null, style);
   return style;
 }

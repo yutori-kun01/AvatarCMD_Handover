@@ -8,6 +8,7 @@ type Provider = "openai" | "gemini";
 interface Settings {
   provider: Provider | null;
   quality: "low" | "medium" | "high";
+  format: "png" | "webp";
   models: Record<Provider, string>;
   keys: Record<Provider, boolean>;
 }
@@ -38,8 +39,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
   const [info, setInfo] = useState<Record<Provider, ProviderInfo> | null>(null);
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState("朝の光が差し込むデスクで、ノートに今日の3つのタスクを書き出している人。落ち着いた雰囲気");
-  const [aspect, setAspect] = useState("16:9");
-  const [quality, setQuality] = useState<"low" | "medium" | "high">("medium");
+  const [quality, setQuality] = useState<"low" | "medium" | "high">("high");
   const [avatarId, setAvatarId] = useState("");
   const [useStyle, setUseStyle] = useState(true);
   const [results, setResults] = useState<CompareResult[] | null>(null);
@@ -56,7 +56,9 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function save(next: Partial<{ provider: string | null; quality: string; models: Partial<Record<Provider, string>> }>) {
+  const [target, setTarget] = useState<"section" | "eyecatch">("section");
+
+  async function save(next: Partial<{ provider: string | null; quality: string; format: string; models: Partial<Record<Provider, string>> }>) {
     setBusy(true);
     try {
       const d = await api<{ settings: Settings }>("/api/images/settings", { method: "PUT", json: next });
@@ -73,7 +75,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
     setTesting(true);
     setResults(null);
     try {
-      const d = await api<{ results: CompareResult[] }>("/api/images/compare", { method: "POST", json: { prompt, aspect, quality, avatarId: avatarId || undefined, useStyle } });
+      const d = await api<{ results: CompareResult[] }>("/api/images/compare", { method: "POST", json: { prompt, target, quality, avatarId: avatarId || undefined, useStyle } });
       setResults(d.results);
     } catch (e) {
       onChanged((e as Error).message, false);
@@ -120,14 +122,27 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
           <label className="text-xs text-white/60">
             画質（OpenAI）
             <select value={s.quality} onChange={(e) => save({ quality: e.target.value })} className={`${inputCls} mt-1 w-40`}>
-              <option value="low" className="bg-[#111]">low（安い）</option>
+              <option value="high" className="bg-[#111]">high（推奨）</option>
               <option value="medium" className="bg-[#111]">medium</option>
-              <option value="high" className="bg-[#111]">high（高い）</option>
+              <option value="low" className="bg-[#111]">low（安い）</option>
+            </select>
+          </label>
+          <label className="text-xs text-white/60">
+            形式
+            <select value={s.format} onChange={(e) => save({ format: e.target.value })} className={`${inputCls} mt-1 w-40`}>
+              <option value="png" className="bg-[#111]">PNG（推奨・note で確実）</option>
+              <option value="webp" className="bg-[#111]">WebP（容量が小さい）</option>
             </select>
           </label>
           <Button disabled={busy} onClick={() => save({ models: s.models })}>
             モデルを保存
           </Button>
+        </div>
+        <div className="rounded-lg border border-white/[0.06] p-3 text-xs text-white/60">
+          <div className="mb-1 font-semibold text-white/80">出力サイズ（生成後に中央基準で切り抜き）</div>
+          <div>見出し画像（note のサムネイル）: 1280 × 670（note 推奨）</div>
+          <div>見出しの下の画像・図解: 1280 × 720（16:9。本文の表示幅 620px の 2 倍強で高解像度の画面でもきれい）</div>
+          <div className="mt-1 text-white/40">OpenAI へは 1536 × 1024 で生成を依頼し、主役が切れないよう中央に寄せる指示をプロンプトに入れています。</div>
         </div>
         <p className="text-[11px] text-white/40">
           費用は 設定 &gt; API コスト の料金表に単価（出力トークン・リクエスト）を登録すると計算されます。使用量は用途「image_generate」で記録され、月の予算を超えると止まります。
@@ -142,13 +157,10 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
         <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} className={inputCls} />
         <div className="flex flex-wrap items-end gap-3 text-xs text-white/60">
           <label>
-            比率
-            <select value={aspect} onChange={(e) => setAspect(e.target.value)} className={`${inputCls} mt-1 w-28`}>
-              {["16:9", "4:3", "1:1"].map((a) => (
-                <option key={a} value={a} className="bg-[#111]">
-                  {a}
-                </option>
-              ))}
+            用途
+            <select value={target} onChange={(e) => setTarget(e.target.value as typeof target)} className={`${inputCls} mt-1 w-44`}>
+              <option value="section" className="bg-[#111]">見出しの下 1280×720</option>
+              <option value="eyecatch" className="bg-[#111]">見出し画像 1280×670</option>
             </select>
           </label>
           <label>

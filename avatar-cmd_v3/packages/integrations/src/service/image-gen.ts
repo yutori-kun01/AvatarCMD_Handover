@@ -6,7 +6,10 @@
 // ・参考画像（アバターのスタイル参照）を一緒に渡し、作風を寄せる。
 // ・使用量は共通台帳に記録し（purpose: image_generate）、月の予算を超えていれば止める（assertBudget）。
 // ・compareImageProviders(): 同じプロンプトで両方を生成し、時間・使用量・料金表での費用を並べる（品質とコストの比較用）。
+// ・v3.7: 既定は OpenAI・品質 high。生成した画像は用途ごとの note 向けサイズに切り抜いて png / webp で保存する
+//   （見出し画像 1280×670 = note 推奨、本文の見出し下の画像 1280×720）。図解も同じサイズ・形式にそろえる。
 
+import sharp from "sharp";
 import { ConfigError, requestJson } from "../http";
 import { providerKey, type InputImage } from "./llm";
 import { saveMedia, type MediaRef } from "./media";
@@ -16,12 +19,33 @@ import { assertBudget, costOfRow, loadPrices, normalizeGeminiUsage, normalizeOpe
 export type ImageProvider = "openai" | "gemini";
 export type ImageAspect = "16:9" | "1:1" | "4:3";
 export type ImageQuality = "low" | "medium" | "high";
+export type ImageFormat = "png" | "webp";
+
+/**
+ * 用途ごとの出力サイズ。生成は API の横長サイズで行い、中央を基準に切り抜いて縮小する。
+ * eyecatch: note の見出し画像（記事一覧のサムネイル。note 推奨 1280×670）
+ * section:  本文の大見出し・小見出しの下に入れる画像・図解（16:9。本文の表示幅 620px の 2 倍強）
+ */
+export const IMAGE_TARGETS = {
+  eyecatch: { width: 1280, height: 670, label: "見出し画像（サムネイル）" },
+  section: { width: 1280, height: 720, label: "見出しの下の画像・図解" },
+} as const;
+export type ImageTarget = keyof typeof IMAGE_TARGETS;
+
+/** 画像を用途のサイズに切り抜き（中央基準）、指定の形式に変換する */
+export async function fitImage(bytes: Uint8Array, target: ImageTarget | null, format: ImageFormat): Promise<{ bytes: Uint8Array; mimeType: string }> {
+  let img = sharp(Buffer.from(bytes));
+  if (target) img = img.resize(IMAGE_TARGETS[target].width, IMAGE_TARGETS[target].height, { fit: "cover", position: "attention" });
+  const out = format === "webp" ? await img.webp({ quality: 92 }).toBuffer() : await img.png({ compressionLevel: 9 }).toBuffer();
+  return { bytes: new Uint8Array(out), mimeType: format === "webp" ? "image/webp" : "image/png" };
+}
 
 export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel: string; modelHelp: string; pricingUrl: string }> = {
   openai: {
     name: "OpenAI",
-    defaultModel: "gpt-image-1-mini",
-    modelHelp: "gpt-image-1-mini（低価格）/ gpt-image-1（高品質）など。最新は platform.openai.com/docs/models",
+    // 推奨（2026-10 決定）。モデル名は設定画面で変えられる
+    defaultModel: "gpt-image2.5-sunburst",
+    modelHelp: "推奨: gpt-image2.5-sunburst（品質 high）。最新のモデル名は platform.openai.com/docs/models",
     pricingUrl: "https://platform.openai.com/docs/pricing",
   },
   gemini: {
@@ -35,20 +59,23 @@ export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel
 export const IMAGE_SETTING_KEYS = {
   provider: "image_provider",
   quality: "image_quality",
+  format: "image_format",
   model: (p: ImageProvider) => `image_model_${p}`,
 };
 
 export interface ImageSettings {
   provider: ImageProvider | null;
   quality: ImageQuality;
+  format: ImageFormat;
   models: Record<ImageProvider, string>;
   keys: Record<ImageProvider, boolean>;
 }
 
 export async function getImageSettings(): Promise<ImageSettings> {
-  const [p, q, mo, mg, ko, kg] = await Promise.all([
+  const [p, q, f, mo, mg, ko, kg] = await Promise.all([
     getSetting(IMAGE_SETTING_KEYS.provider),
     getSetting(IMAGE_SETTING_KEYS.quality),
+    getSetting(IMAGE_SETTING_KEYS.format),
     getSetting(IMAGE_SETTING_KEYS.model("openai")),
     getSetting(IMAGE_SETTING_KEYS.model("gemini")),
     providerKey("openai"),
@@ -57,15 +84,21 @@ export async function getImageSettings(): Promise<ImageSettings> {
   const keys = { openai: !!ko, gemini: !!kg };
   const selected = p === "openai" || p === "gemini" ? p : null;
   return {
-    // 未選択なら、キーがある方（両方あれば Gemini → OpenAI。比較テストの結果で選び直す）
-    provider: selected ?? (keys.gemini ? "gemini" : keys.openai ? "openai" : null),
-    quality: q === "low" || q === "high" ? q : "medium",
+    // 未選択なら OpenAI（2026-10 決定）。OpenAI のキーが無く Gemini だけある場合は Gemini
+    provider: selected ?? (keys.openai ? "openai" : keys.gemini ? "gemini" : null),
+    quality: q === "low" || q === "medium" ? q : "high",
+    // note は PNG を確実に受け付けるため既定は png。webp は容量が小さい
+    format: f === "webp" ? "webp" : "png",
     models: { openai: mo || IMAGE_PROVIDERS.openai.defaultModel, gemini: mg || IMAGE_PROVIDERS.gemini.defaultModel },
     keys,
   };
 }
 
-export async function saveImageSettings(input: { provider?: string | null; quality?: string | null; models?: Partial<Record<ImageProvider, string>> }) {
+export async function saveImageSettings(input: { provider?: string | null; quality?: string | null; format?: string | null; models?: Partial<Record<ImageProvider, string>> }) {
+  if (input.format !== undefined) {
+    if (input.format && !["png", "webp"].includes(input.format)) throw new ConfigError("画像の形式は png か webp です");
+    await setSetting(IMAGE_SETTING_KEYS.format, input.format || null);
+  }
   if (input.provider !== undefined) {
     if (input.provider && !(input.provider in IMAGE_PROVIDERS)) throw new ConfigError("画像生成のプロバイダが不正です");
     await setSetting(IMAGE_SETTING_KEYS.provider, input.provider || null);
@@ -91,6 +124,10 @@ export interface ImageRequest {
   avatarId?: string | null;
   /** 台帳の purpose（既定: image_generate） */
   purpose?: string;
+  /** 用途のサイズに切り抜く（指定なしは生成したサイズのまま） */
+  target?: ImageTarget;
+  /** 出力形式（指定なしは設定の形式） */
+  format?: ImageFormat;
 }
 
 export interface ImageResult {
@@ -108,7 +145,8 @@ async function callOpenAIImage(apiKey: string, model: string, req: ImageRequest)
   const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const headers = { Authorization: `Bearer ${apiKey}` };
   const size = OPENAI_SIZE[req.aspect ?? "16:9"];
-  const quality = req.quality ?? "medium";
+  const quality = req.quality ?? "high";
+  const format = req.format ?? "png";
   let d: any;
   if (req.references?.length) {
     // 参考画像あり: images/edits（複数画像を入力にできる）
@@ -117,14 +155,15 @@ async function callOpenAIImage(apiKey: string, model: string, req: ImageRequest)
     form.append("prompt", req.prompt);
     form.append("size", size);
     form.append("quality", quality);
+    form.append("output_format", format);
     req.references.slice(0, 4).forEach((r, i) => form.append("image[]", new Blob([Buffer.from(r.data, "base64")], { type: r.mimeType }), `ref-${i}.${r.mimeType.split("/")[1] ?? "png"}`));
     d = await requestJson("openai", `${base}/images/edits`, { method: "POST", headers, body: form });
   } else {
-    d = await requestJson("openai", `${base}/images/generations`, { method: "POST", headers, json: { model, prompt: req.prompt, size, quality, n: 1 } });
+    d = await requestJson("openai", `${base}/images/generations`, { method: "POST", headers, json: { model, prompt: req.prompt, size, quality, output_format: format, n: 1 } });
   }
   const b64 = d.data?.[0]?.b64_json;
   if (typeof b64 !== "string") throw new Error(`OpenAI (${model}) から画像が返りませんでした`);
-  return { bytes: new Uint8Array(Buffer.from(b64, "base64")), mimeType: "image/png", usage: normalizeOpenAIUsage(d.usage) };
+  return { bytes: new Uint8Array(Buffer.from(b64, "base64")), mimeType: format === "webp" ? "image/webp" : "image/png", usage: normalizeOpenAIUsage(d.usage) };
 }
 
 async function callGeminiImage(apiKey: string, model: string, req: ImageRequest): Promise<Omit<ImageResult, "provider" | "model" | "ms">> {
@@ -166,10 +205,13 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
   await assertBudget("画像生成");
   const started = Date.now();
   const purpose = req.purpose ?? "image_generate";
+  const format = req.format ?? s.format;
   try {
-    const out = provider === "openai" ? await callOpenAIImage(apiKey, model, { ...req, quality: req.quality ?? s.quality }) : await callGeminiImage(apiKey, model, req);
+    const out = provider === "openai" ? await callOpenAIImage(apiKey, model, { ...req, quality: req.quality ?? s.quality, format }) : await callGeminiImage(apiKey, model, req);
     await recordUsage({ provider, model, purpose, avatarId: req.avatarId, ...out.usage, requests: 1 });
-    return { ...out, provider, model, ms: Date.now() - started };
+    // 用途のサイズに切り抜き・形式をそろえる（Gemini は形式を指定できないのでここで変換）
+    const fitted = req.target || out.mimeType !== `image/${format}` ? await fitImage(out.bytes, req.target ?? null, format) : { bytes: out.bytes, mimeType: out.mimeType };
+    return { ...out, ...fitted, provider, model, ms: Date.now() - started };
   } catch (e) {
     await recordUsage({ provider, model, purpose, avatarId: req.avatarId, error: e instanceof Error ? e.message : String(e) });
     throw e;
@@ -200,7 +242,7 @@ export interface CompareResult {
  * 同じプロンプト・参考画像で、キーのあるプロバイダすべてで生成して比べる（品質は画像を見て判断する）。
  * models を指定すると、そのプロバイダはそのモデルで試す。
  */
-export async function compareImageProviders(input: { prompt: string; aspect?: ImageAspect; references?: InputImage[]; quality?: ImageQuality; models?: Partial<Record<ImageProvider, string>>; avatarId?: string | null }): Promise<CompareResult[]> {
+export async function compareImageProviders(input: { prompt: string; aspect?: ImageAspect; target?: ImageTarget; references?: InputImage[]; quality?: ImageQuality; models?: Partial<Record<ImageProvider, string>>; avatarId?: string | null }): Promise<CompareResult[]> {
   const s = await getImageSettings();
   const targets = (Object.keys(IMAGE_PROVIDERS) as ImageProvider[]).filter((p) => s.keys[p]);
   if (!targets.length) throw new ConfigError("比較には OpenAI か Gemini の API キーが必要です（設定 > システム > AI）");
@@ -209,7 +251,7 @@ export async function compareImageProviders(input: { prompt: string; aspect?: Im
     targets.map(async (provider): Promise<CompareResult> => {
       const model = input.models?.[provider] || s.models[provider];
       try {
-        const r = await generateImage({ prompt: input.prompt, aspect: input.aspect, references: input.references, quality: input.quality, provider, model, avatarId: input.avatarId, purpose: "image_compare" });
+        const r = await generateImage({ prompt: input.prompt, aspect: input.aspect, target: input.target, references: input.references, quality: input.quality, provider, model, avatarId: input.avatarId, purpose: "image_compare" });
         const ref = await saveMedia(r.bytes, `compare-${provider}`, r.mimeType);
         const c = costOfRow({ provider, model: r.model, occurredAt: new Date(), ...r.usage, requests: 1, reads: 0, error: null }, prices);
         return { provider, model: r.model, ok: true, ms: r.ms, mediaName: ref.name, usage: r.usage, cost: c.amounts, unpriced: c.unpriced };

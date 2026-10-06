@@ -9,7 +9,7 @@ if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 const nextConfig = {
   output: "standalone", // Docker multi-stage build に必要
   transpilePackages: ["@avatar-cmd/db", "@avatar-cmd/integrations"],
-  serverExternalPackages: ["@prisma/client", "@atproto/api", "@resvg/resvg-js"],
+  serverExternalPackages: ["@prisma/client", "@atproto/api", "@resvg/resvg-js", "sharp"],
   outputFileTracingRoot: resolve(import.meta.dirname, "../../"),
   // 図解のアイコン（SVG ファイルを実行時に読む）と resvg のネイティブモジュールを standalone 出力に含める
   outputFileTracingIncludes: {
@@ -17,6 +17,7 @@ const nextConfig = {
       "../../node_modules/.pnpm/bootstrap-icons@*/node_modules/bootstrap-icons/icons/*.svg",
       "../../node_modules/.pnpm/lucide-static@*/node_modules/lucide-static/icons/*.svg",
       "../../node_modules/.pnpm/@resvg+resvg-js-*/node_modules/@resvg/**",
+      "../../node_modules/.pnpm/@img+sharp-*/node_modules/@img/**",
     ],
   },
   // v3.7 — 画面の統合（旧 URL は統合先へ）

@@ -14,7 +14,7 @@
 import { ConfigError } from "../http";
 import { MARKER_RE } from "../markdown";
 import { generatePostText } from "./ai";
-import { generateAndSaveImage, type ImageAspect } from "./image-gen";
+import { fitImage, generateAndSaveImage, getImageSettings, IMAGE_TARGETS, type ImageAspect, type ImageTarget } from "./image-gen";
 import { INFOGRAPHIC_TYPES, LIMITS, normalizeSpec, renderInfographic, type InfographicSpec, type VisualStyle } from "./infographic";
 import { completeJson } from "./llm";
 import { saveMedia, type MediaRef } from "./media";
@@ -193,12 +193,21 @@ export async function designInfographic(input: { description: string; context: s
   return last;
 }
 
-/** イメージ画像のプロンプト（画像内に文字を入れない・スタイル定義を反映） */
-export function imagePrompt(description: string, context: string, style: VisualStyle): string {
+/**
+ * イメージ画像のプロンプト（画像内に文字を入れない・デザイン DNA を反映）。
+ * 図解と同じ色・角丸・アイコンの塗り/線をプロンプトにも入れ、同じシリーズに見えるようにする。
+ */
+export function imagePrompt(description: string, context: string, style: VisualStyle, target: ImageTarget = "section"): string {
+  const size = IMAGE_TARGETS[target];
   return [
-    `Create an editorial illustration for a section of a Japanese blog article (note.com).`,
+    target === "eyecatch"
+      ? `Create a cover image (thumbnail) for a Japanese blog article on note.com.`
+      : `Create an editorial illustration for a section of a Japanese blog article (note.com).`,
     `What to depict: ${description}`,
     context && `Section summary (Japanese, for context only): ${context.slice(0, 400)}`,
+    style.dna && `Design DNA (follow strictly): ${style.dna}`,
+    `It must look like the same series as flat infographics drawn with: background ${style.background}, palette ${style.palette.join(", ")}, ${style.corner}px rounded corners, ${style.iconStyle === "outline" ? "outlined line icons" : "solid filled icons"}.`,
+    `The final image is cropped to ${size.width}x${size.height} (${(size.width / size.height).toFixed(2)}:1). Keep the main subject centered with generous margins so nothing important is cut off.`,
     style.illustration && `Art style: ${style.illustration}`,
     style.mood && `Mood: ${style.mood}`,
     style.composition && `Composition: ${style.composition}`,
@@ -225,11 +234,14 @@ export async function renderVisual(input: { avatarId: string; kind: "image" | "i
   if (input.kind === "infographic") {
     const designed = input.spec ? { spec: input.spec, issues: [] as string[] } : await designInfographic({ description: input.description, context: input.context ?? "" });
     const r = renderInfographic(designed.spec, styles.infographic);
-    const media = await saveMedia(r.png, "infographic.png", "image/png");
+    // 図解もイメージ画像と同じサイズ（1280×720）・形式にそろえる
+    const { format } = await getImageSettings();
+    const out = format === "png" ? { bytes: r.png, mimeType: "image/png" } : await fitImage(r.png, null, format);
+    const media = await saveMedia(out.bytes, `infographic.${format}`, out.mimeType);
     return { kind: "infographic", description: input.description, media: { ...media, alt: input.description }, issues: r.issues };
   }
   const refs = await referenceImages(input.avatarId, "image", 4);
-  const media = await generateAndSaveImage({ prompt: imagePrompt(input.description, input.context ?? "", styles.image), references: refs, aspect: input.aspect ?? "16:9", avatarId: input.avatarId, filename: "image.png" });
+  const media = await generateAndSaveImage({ prompt: imagePrompt(input.description, input.context ?? "", styles.image, "section"), references: refs, aspect: input.aspect ?? "16:9", target: "section", avatarId: input.avatarId, filename: "image" });
   return { kind: "image", description: input.description, media: { name: media.name, mimeType: media.mimeType, size: media.size, filename: media.filename, alt: input.description } };
 }
 
@@ -268,11 +280,12 @@ export async function generateEyecatch(input: { avatarId: string; title: string;
   const styles = await getAvatarStyles(input.avatarId);
   const refs = await referenceImages(input.avatarId, "image", 4);
   const m = await generateAndSaveImage({
-    prompt: imagePrompt(`記事の見出し画像（アイキャッチ）。記事タイトル: ${input.title}`, input.summary ?? "", styles.image),
+    prompt: imagePrompt(`記事の見出し画像（アイキャッチ）。記事タイトル: ${input.title}`, input.summary ?? "", styles.image, "eyecatch"),
     references: refs,
     aspect: "16:9",
+    target: "eyecatch",
     avatarId: input.avatarId,
-    filename: "eyecatch.png",
+    filename: "eyecatch",
   });
   return { name: m.name, mimeType: m.mimeType, size: m.size, filename: m.filename, alt: "eyecatch" };
 }

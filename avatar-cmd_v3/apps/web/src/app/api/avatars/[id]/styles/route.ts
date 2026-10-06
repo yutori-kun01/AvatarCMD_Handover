@@ -19,9 +19,9 @@ export const POST = route(async (req: Request, { params }: { params: Promise<{ i
   return NextResponse.json({ reference: await addStyleReference({ avatarId: id, kind: b.kind, mediaName: b.mediaName, note: b.note }) });
 });
 
-/** スタイル定義を手で直す */
+/** デザイン DNA を手で直す（イメージ画像・図解で共通） */
 export const PATCH = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const b = (await req.json()) as { kind: string; style: Record<string, unknown> };
-  return NextResponse.json({ style: await saveAvatarStyle(id, b.kind, b.style as never) });
+  const b = (await req.json()) as { style: Record<string, unknown> };
+  return NextResponse.json({ style: await saveAvatarStyle(id, null, b.style as never) });
 });

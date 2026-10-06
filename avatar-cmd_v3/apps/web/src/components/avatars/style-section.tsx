@@ -1,5 +1,6 @@
 "use client";
-// アバター > 画像スタイル: 参考画像（イメージ画像 / 図解）の登録 → AI でスタイル定義を作成 → 手で調整 → 図解の試し描き
+// アバター > 画像スタイル: 参考画像（イメージ画像 / 図解）の登録 → AI でデザイン DNA を作成 → 手で調整 → 図解の試し描き
+// デザイン DNA は 1 つ。イメージ画像のプロンプトと図解の描画の両方に使うので、2 つがかけ離れたデザインにならない
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, Badge, Button, Card, inputCls } from "@/components/settings/ui";
 
@@ -13,6 +14,7 @@ interface Ref {
   isActive: boolean;
 }
 interface Style {
+  dna?: string;
   palette: string[];
   background: string;
   text: string;
@@ -26,13 +28,13 @@ interface Style {
 }
 
 const KINDS: { id: Kind; label: string; help: string }[] = [
-  { id: "image", label: "イメージ画像", help: "記事の見出しごとの挿絵・見出し画像の作風。画風・雰囲気・構図・色を読み取り、生成時に参考画像も一緒に渡します" },
-  { id: "infographic", label: "図解", help: "インフォグラフィックの配色・角丸・アイコンの塗り/線。図解はテンプレートで描くので、色と形の傾向だけを使います" },
+  { id: "image", label: "イメージ画像の参考", help: "挿絵・見出し画像の参考。画像生成のときに参考画像としても渡します（新しい順に 4 枚）" },
+  { id: "infographic", label: "図解の参考", help: "図解（インフォグラフィック）の参考。色・角丸・アイコンの傾向をデザイン DNA に反映します" },
 ];
 
 export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotice: (kind: "ok" | "error", msg: string) => void }) {
   const [refs, setRefs] = useState<Ref[]>([]);
-  const [styles, setStyles] = useState<Record<Kind, Style> | null>(null);
+  const [dna, setDna] = useState<Style | null>(null);
   const [kind, setKind] = useState<Kind>("image");
   const [busy, setBusy] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -42,7 +44,7 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
   const load = useCallback(async () => {
     const d = await api<{ references: Ref[]; styles: Record<Kind, Style> }>(`/api/avatars/${avatarId}/styles`);
     setRefs(d.references);
-    setStyles(d.styles);
+    setDna(d.styles.image);
   }, [avatarId]);
   useEffect(() => {
     load().catch((e) => onNotice("error", e.message));
@@ -77,8 +79,8 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
     if (fileRef.current) fileRef.current.value = "";
   }
 
-  const st = styles?.[kind];
-  const set = (patch: Partial<Style>) => styles && setStyles({ ...styles, [kind]: { ...styles[kind], ...patch } });
+  const st = dna;
+  const set = (patch: Partial<Style>) => dna && setDna({ ...dna, ...patch });
   const mine = refs.filter((r) => r.kind === kind);
 
   return (
@@ -100,8 +102,8 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
           <Button variant="ghost" disabled={!!busy} onClick={() => fileRef.current?.click()}>
             {busy === "upload" ? "追加中…" : "画像を追加"}
           </Button>
-          <Button disabled={!!busy || !mine.some((r) => r.isActive)} onClick={() => run("analyze", () => api(`/api/avatars/${avatarId}/styles/analyze`, { method: "POST", json: { kind } }), "参考画像からスタイルを作りました")}>
-            {busy === "analyze" ? "分析中…" : "AI でスタイルを作る"}
+          <Button disabled={!!busy || !refs.some((r) => r.isActive)} onClick={() => run("analyze", () => api(`/api/avatars/${avatarId}/styles/analyze`, { method: "POST", json: {} }), "参考画像からデザイン DNA を作りました")}>
+            {busy === "analyze" ? "分析中…" : "AI でデザイン DNA を作る"}
           </Button>
         </div>
         {mine.length === 0 ? (
@@ -134,7 +136,18 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
 
       {st && (
         <Card className="space-y-3">
-          <h3 className="text-sm font-semibold">スタイル定義（AI が作った内容を直せます）</h3>
+          <h3 className="text-sm font-semibold">デザイン DNA（イメージ画像と図解で共通）</h3>
+          <p className="text-xs text-white/50">イメージ画像のプロンプトにこの DNA と色・角丸・アイコンの指定が入り、図解は同じ色・角丸・アイコンで描かれます。AI が作った内容を直せます。</p>
+          <label className="block text-xs text-white/60">
+            スタイルプロンプト（画像生成 AI に渡す作風。英語推奨）
+            <textarea
+              value={st.dna ?? ""}
+              onChange={(e) => set({ dna: e.target.value })}
+              rows={4}
+              placeholder="e.g. Flat vector illustration with soft rounded shapes (20px radius), limited palette of blue and violet on white, generous whitespace, subtle grain, no gradients, friendly and calm."
+              className={`${inputCls} mt-1 text-[12px]`}
+            />
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-white/50">色</span>
             {st.palette.map((c, i) => (
@@ -173,8 +186,7 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
               </select>
             </label>
           </div>
-          {kind === "image" && (
-            <div className="grid gap-3 md:grid-cols-2 text-xs text-white/60">
+            <div className="grid gap-3 text-xs text-white/60 md:grid-cols-2">
               {(
                 [
                   ["illustration", "画風・タッチ"],
@@ -192,12 +204,10 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
                 <input value={(st.avoid ?? []).join("、")} onChange={(e) => set({ avoid: e.target.value.split(/[、,]/).map((x) => x.trim()).filter(Boolean) })} className={`${inputCls} mt-1`} />
               </label>
             </div>
-          )}
           <div className="flex flex-wrap items-center gap-2">
-            <Button disabled={!!busy} onClick={() => run("save", () => api(`/api/avatars/${avatarId}/styles`, { method: "PATCH", json: { kind, style: st } }), "スタイルを保存しました")}>
+            <Button disabled={!!busy} onClick={() => run("save", () => api(`/api/avatars/${avatarId}/styles`, { method: "PATCH", json: { style: st } }), "デザイン DNA を保存しました")}>
               保存
             </Button>
-            {kind === "infographic" && (
               <>
                 <input value={desc} onChange={(e) => setDesc(e.target.value)} className={`${inputCls} w-72`} placeholder="試しに描く図解の内容" />
                 <Button
@@ -206,7 +216,7 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
                   onClick={() =>
                     run("preview", async () => {
                       // 保存してから、AI に設計させて描く
-                      await api(`/api/avatars/${avatarId}/styles`, { method: "PATCH", json: { kind, style: st } });
+                      await api(`/api/avatars/${avatarId}/styles`, { method: "PATCH", json: { style: st } });
                       const r = await api<{ media: { name: string }; issues?: string[] }>("/api/images/infographic", { method: "POST", json: { avatarId, description: desc } });
                       setPreview(`/media/${r.media.name}`);
                     })
@@ -215,9 +225,8 @@ export function StyleSection({ avatarId, onNotice }: { avatarId: string; onNotic
                   {busy === "preview" ? "作成中…" : "図解を試しに作る"}
                 </Button>
               </>
-            )}
           </div>
-          {preview && kind === "infographic" && (
+          {preview && (
             <div>
               <Badge className="mb-2 bg-white/5 text-white/50">試し描き</Badge>
               {/* eslint-disable-next-line @next/next/no-img-element */}

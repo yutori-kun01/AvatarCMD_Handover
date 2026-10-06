@@ -40,8 +40,13 @@ export interface InfographicSpec {
   right?: string;
 }
 
-/** 図解・イメージ画像のスタイル定義（参考画像から作り、画面で修正できる） */
+/**
+ * デザイン DNA（アバターごとに 1 つ）。イメージ画像のプロンプトと図解の描画の両方がこれを使うので、
+ * 画像生成 AI の画像とテンプレートの図解が同じ作風になる。参考画像から AI が作り、画面で修正できる。
+ */
 export interface VisualStyle {
+  /** スタイルプロンプト（画像生成 AI にそのまま渡す作風の説明。英語推奨・800 文字まで） */
+  dna?: string;
   /** 主に使う色（先頭ほど優先）。#rrggbb */
   palette: string[];
   background: string;
@@ -78,6 +83,7 @@ export function normalizeStyle(raw: Partial<VisualStyle> | null | undefined): Vi
     muted: HEX.test(String(s.muted)) ? s.muted! : DEFAULT_STYLE.muted,
     corner: typeof s.corner === "number" && s.corner >= 0 && s.corner <= 48 ? s.corner : DEFAULT_STYLE.corner,
     iconStyle: s.iconStyle === "outline" ? "outline" : "solid",
+    dna: typeof s.dna === "string" && s.dna.trim() ? s.dna.trim().slice(0, 800) : undefined,
     mood: typeof s.mood === "string" ? s.mood.slice(0, 200) : undefined,
     illustration: typeof s.illustration === "string" ? s.illustration.slice(0, 200) : undefined,
     composition: typeof s.composition === "string" ? s.composition.slice(0, 200) : undefined,

@@ -93,11 +93,14 @@ let svc: Svc;
 let prisma: typeof import("@avatar-cmd/db").prisma;
 let userId = "";
 let avatarId = "";
-const PNG_B64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString("base64");
+let PNG_B64 = "";
 
 before(async () => {
   if (!hasDb) return;
   process.env.MEDIA_DIR = mkdtempSync(path.join(tmpdir(), "avatar-media-"));
+  // 切り抜き・形式変換（sharp）を通すため、本物の PNG（1536×1024）を返す
+  const sharp = (await import("sharp")).default;
+  PNG_B64 = (await sharp({ create: { width: 1536, height: 1024, channels: 3, background: "#4f7cff" } }).png().toBuffer()).toString("base64");
   svc = await import("../src/server");
   prisma = (await import("@avatar-cmd/db")).prisma;
   const tag = Date.now().toString(36);
@@ -111,7 +114,7 @@ after(async () => {
   if (!hasDb) return;
   await svc.setSetting(svc.AI_PROVIDERS.openai.keySetting, null);
   await svc.setSetting(svc.AI_PROVIDERS.gemini.keySetting, null);
-  await svc.saveImageSettings({ provider: null, quality: null, models: { openai: "", gemini: "" } });
+  await svc.saveImageSettings({ provider: null, quality: null, format: null, models: { openai: "", gemini: "" } });
   await prisma.usageLedger.deleteMany({ where: { purpose: { in: ["image_generate", "image_compare"] }, avatarId } });
   await prisma.user.delete({ where: { id: userId } }).catch(() => {});
   await prisma.$disconnect();
@@ -124,29 +127,43 @@ test("画像生成: OpenAI（参考画像なし=generations / あり=edits）と
     ["POST", /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-test-image:generateContent$/, { candidates: [{ content: { parts: [{ text: "ok" }, { inlineData: { mimeType: "image/png", data: PNG_B64 } }] } }], usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 1290 } }],
   ]);
   try {
-    await svc.saveImageSettings({ provider: "openai", quality: "low", models: { gemini: "gemini-test-image" } });
-    const s = await svc.getImageSettings();
-    assert.equal(s.provider, "openai");
-    assert.equal(s.models.openai, "gpt-image-1-mini");
+    // 既定: OpenAI・推奨モデル・品質 high・PNG（前回の実行の設定が残っていても既定から始める）
+    await svc.saveImageSettings({ provider: null, quality: null, format: null, models: { openai: "", gemini: "" } });
+    const d = await svc.getImageSettings();
+    assert.equal(d.provider, "openai");
+    assert.equal(d.models.openai, "gpt-image2.5-sunburst");
+    assert.equal(d.quality, "high");
+    assert.equal(d.format, "png");
+    const def = await svc.generateImage({ prompt: "既定", avatarId, target: "eyecatch" });
+    const sharp = (await import("sharp")).default;
+    const meta = await sharp(Buffer.from(def.bytes)).metadata();
+    assert.deepEqual([meta.width, meta.height, meta.format], [1280, 670, "png"]);
+    assert.equal(m.calls.at(-1)!.json.quality, "high");
+    assert.equal(m.calls.at(-1)!.json.model, "gpt-image2.5-sunburst");
 
-    const a = await svc.generateImage({ prompt: "朝の光", avatarId });
+    await svc.saveImageSettings({ provider: "openai", quality: "low", format: "webp", models: { gemini: "gemini-test-image" } });
+    const a = await svc.generateImage({ prompt: "朝の光", avatarId, target: "section" });
     assert.equal(a.provider, "openai");
-    const gen = m.calls.find((c) => c.url.endsWith("/images/generations"))!;
+    assert.equal(a.mimeType, "image/webp");
+    const am = await sharp(Buffer.from(a.bytes)).metadata();
+    assert.deepEqual([am.width, am.height, am.format], [1280, 720, "webp"]);
+    const gen = m.calls.filter((c) => c.url.endsWith("/images/generations")).at(-1)!;
     assert.equal(gen.headers.authorization, "Bearer sk-test");
     assert.equal(gen.json.size, "1536x1024");
     assert.equal(gen.json.quality, "low");
+    assert.equal(gen.json.output_format, "webp");
 
     await svc.generateImage({ prompt: "朝の光", references: [{ mimeType: "image/png", data: PNG_B64 }], avatarId });
     assert.ok(m.calls.some((c) => c.url.endsWith("/images/edits")));
 
     const g = await svc.generateImage({ prompt: "朝の光", provider: "gemini", aspect: "1:1", avatarId });
-    assert.equal(g.mimeType, "image/png");
+    assert.equal(g.mimeType, "image/webp"); // Gemini は形式を指定できないので変換する
     const gc = m.calls.find((c) => c.url.includes("generateContent"))!;
     assert.equal(gc.headers["x-goog-api-key"], "g-test");
     assert.deepEqual(gc.json.generationConfig, { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "1:1" } });
 
     const rows = await prisma.usageLedger.findMany({ where: { avatarId, purpose: "image_generate" } });
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
     assert.ok(rows.some((r) => r.provider === "gemini" && r.outputTokens === 1290));
 
     const cmp = await svc.compareImageProviders({ prompt: "比較", avatarId });
@@ -165,12 +182,17 @@ test("画像生成: 画像が返らない・キーが無い場合は分かるエ
     m.restore();
   }
   const r = await svc.renderVisual({ avatarId, kind: "infographic", description: "手順", spec: { type: "steps", title: "手順", items: [{ icon: "sun", label: "A" }, { icon: "moon", label: "B" }] } });
-  assert.match(r.media.name, /\.png$/);
+  assert.match(r.media.name, /\.webp$/); // 設定の形式（webp）にそろえる
   assert.equal(r.media.alt, "手順");
-  // スタイル: 保存と既定値
-  await svc.saveAvatarStyle(avatarId, "infographic", { palette: ["#000000", "#ffffff"], corner: 4 });
+  // デザイン DNA: 1 つを保存すると、イメージ画像・図解の両方に使われる
+  await svc.saveAvatarStyle(avatarId, null, { palette: ["#000000", "#ffffff"], corner: 4, dna: "Flat vector, soft shapes" });
   const st = await svc.getAvatarStyles(avatarId);
   assert.equal(st.infographic.corner, 4);
-  assert.equal(st.image.corner, 20);
+  assert.equal(st.image.corner, 4);
+  assert.equal(st.image.dna, "Flat vector, soft shapes");
+  const prompt = svc.imagePrompt("朝", "", st.image, "eyecatch");
+  assert.match(prompt, /Design DNA \(follow strictly\): Flat vector/);
+  assert.match(prompt, /4px rounded corners/);
+  assert.match(prompt, /1280x670/);
   await assert.rejects(svc.addStyleReference({ avatarId, kind: "video", mediaName: "x.png" }), /種類/);
 });

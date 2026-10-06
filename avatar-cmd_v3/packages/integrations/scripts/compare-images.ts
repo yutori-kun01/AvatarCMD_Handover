@@ -4,7 +4,7 @@
 // 同じプロンプト（と参考画像）で各モデルを生成し、画像・時間・トークン数・概算費用を report.html にまとめる。
 // 品質は画像を見て判断し、費用は下の PRICES（1M トークンあたりの USD）で計算する。
 //
-//   OPENAI_API_KEY=... GEMINI_API_KEY=... pnpm --filter @avatar-cmd/integrations compare-images [出力先] [参考画像のフォルダ]
+//   OPENAI_API_KEY=... [GEMINI_API_KEY=...] pnpm --filter @avatar-cmd/integrations compare-images [出力先] [参考画像のフォルダ] [--eyecatch]
 //
 // ・キーが片方だけなら、その社だけ試す。1 枚ごとに課金される（既定の組み合わせで計 4〜8 枚）。
 // ・PRICES は 2025 年時点の公開価格を目安に入れてある。実行前に各社の料金ページで確認して直すこと:
@@ -12,22 +12,25 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
-import { callImageProvider, type ImageProvider, type ImageQuality } from "../src/service/image-gen";
+import { callImageProvider, fitImage, type ImageProvider, type ImageQuality, type ImageTarget } from "../src/service/image-gen";
 import type { InputImage } from "../src/service/llm";
 
 /** 1M トークンあたりの USD（要確認）。input = テキスト・画像入力、output = 画像出力 */
 const PRICES: Record<string, { input: number; output: number }> = {
+  // gpt-image2.5-sunburst（推奨モデル）の単価は料金ページで確認して入れる
   "gpt-image-1-mini": { input: 2.5, output: 8 },
   "gpt-image-1": { input: 10, output: 40 },
   "gemini-2.5-flash-image": { input: 0.3, output: 30 },
 };
 
+// 推奨（2026-10 決定）: OpenAI gpt-image2.5-sunburst・品質 high。比較したいモデルがあれば行を足す
 const TARGETS: { provider: ImageProvider; model: string; quality?: ImageQuality }[] = [
-  { provider: "openai", model: "gpt-image-1-mini", quality: "low" },
-  { provider: "openai", model: "gpt-image-1-mini", quality: "medium" },
-  { provider: "openai", model: "gpt-image-1", quality: "medium" },
+  { provider: "openai", model: "gpt-image2.5-sunburst", quality: "high" },
+  { provider: "openai", model: "gpt-image-1", quality: "high" },
   { provider: "gemini", model: "gemini-2.5-flash-image" },
 ];
+// 出力は記事の「見出しの下」サイズ（1280×720）に切り抜いて保存する。--eyecatch で見出し画像サイズ（1280×670）
+const TARGET: ImageTarget = process.argv.includes("--eyecatch") ? "eyecatch" : "section";
 
 // 記事のイメージ画像として実際に使う形のプロンプト（画像内に文字を入れない）
 const PROMPTS = [
@@ -35,8 +38,9 @@ const PROMPTS = [
   "Editorial illustration for a Japanese blog section. What to depict: スマホの通知をオフにして集中している若い会社員、背景に時計. Art style: flat illustration. Mood: focused. Do NOT include any text, letters, numbers, logos or watermarks.",
 ];
 
-const out = path.resolve(process.argv[2] || "image-compare");
-const refDir = process.argv[3];
+const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const out = path.resolve(args[0] || "image-compare");
+const refDir = args[1];
 mkdirSync(out, { recursive: true });
 const keys: Record<ImageProvider, string | undefined> = { openai: process.env.OPENAI_API_KEY, gemini: process.env.GEMINI_API_KEY };
 const targets = TARGETS.filter((t) => keys[t.provider]);
@@ -71,9 +75,10 @@ for (const [pi, prompt] of PROMPTS.entries()) {
     const label = `${t.provider}/${t.model}${t.quality ? `@${t.quality}` : ""}`;
     process.stdout.write(`[${pi + 1}/${PROMPTS.length}] ${label} … `);
     try {
-      const r = await callImageProvider(t.provider, keys[t.provider]!, t.model, { prompt, aspect: "16:9", quality: t.quality, references: refs });
-      const file = `p${pi + 1}-${t.provider}-${t.model}${t.quality ? `-${t.quality}` : ""}.${r.mimeType.split("/")[1] ?? "png"}`;
-      writeFileSync(path.join(out, file), r.bytes);
+      const r = await callImageProvider(t.provider, keys[t.provider]!, t.model, { prompt, aspect: "16:9", quality: t.quality, references: refs, format: "png" });
+      const fitted = await fitImage(r.bytes, TARGET, "png");
+      const file = `p${pi + 1}-${t.provider}-${t.model}${t.quality ? `-${t.quality}` : ""}.png`;
+      writeFileSync(path.join(out, file), fitted.bytes);
       const price = PRICES[t.model];
       const input = r.usage.inputTokens + r.usage.cacheReadTokens;
       const usd = price ? (input * price.input + r.usage.outputTokens * price.output) / 1e6 : null;
