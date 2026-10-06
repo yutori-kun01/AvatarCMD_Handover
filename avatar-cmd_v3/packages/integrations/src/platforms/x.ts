@@ -279,9 +279,11 @@ export const x: PlatformDefinition = {
   },
   supportsQuote: true,
   async fetchProfile(ctx) {
-    const d = await requestJson("x", withQuery(`${API}/2/users/me`, { "user.fields": "public_metrics" }), { headers: bearer(ctx) }).catch(readError);
+    const d = await requestJson("x", withQuery(`${API}/2/users/me`, { "user.fields": "public_metrics,profile_image_url" }), { headers: bearer(ctx) }).catch(readError);
     const m = (d.data?.public_metrics ?? {}) as Record<string, number>;
-    return { followers: m.followers_count, following: m.following_count, posts: m.tweet_count };
+    // profile_image_url は 48px（_normal）。_400x400 に置き換えると同じ画像の大きいサイズになる
+    const image = typeof d.data?.profile_image_url === "string" ? d.data.profile_image_url.replace(/_normal(\.\w+)$/, "_400x400$1") : undefined;
+    return { followers: m.followers_count, following: m.following_count, posts: m.tweet_count, imageUrl: image };
   },
   async fetchMetrics(ctx, posts) {
     if (!posts.length) return {};

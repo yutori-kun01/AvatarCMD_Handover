@@ -23,3 +23,5 @@ export * from "./service/improvement";
 export * from "./service/api-keys";
 export * from "./service/api-v1";
 export * from "./service/youtube-learning";
+export * from "./service/profile-image";
+export * from "./service/timeseries";

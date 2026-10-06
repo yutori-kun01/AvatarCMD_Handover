@@ -4,6 +4,7 @@
 import { prisma } from "@avatar-cmd/db";
 import { getPlatform } from "../platforms";
 import { getSetting, SETTING_KEYS } from "./store";
+import { followerSeries, lastDays } from "./timeseries";
 
 const DAY = 24 * 3600_000;
 
@@ -34,9 +35,11 @@ export async function overview() {
   const since14 = new Date(now - 14 * DAY);
   const since30 = new Date(now - 30 * DAY);
 
-  const [avatars, accounts, published30, published7, publishedPrev7, failed7, scheduled, drafts, rules, revenue30, revenuePrev30, failed30, revenueRows30] =
+  // 日別の推移は timeseries()（/api/timeseries）に一本化。ここはカード・アラート用の集計だけ
+  const days30 = lastDays(30);
+  const [avatars, accounts, published30, published7, publishedPrev7, failed7, scheduled, drafts, rules, revenue30, revenuePrev30, snaps] =
     await Promise.all([
-      prisma.avatar.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, name: true, role: true, status: true } }),
+      prisma.avatar.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, name: true, role: true, status: true, avatarImageUrl: true } }),
       prisma.snsAccount.findMany({ select: { id: true, avatarId: true, platform: true, accountName: true, isActive: true, lastError: true, tokenExpiry: true } }),
       prisma.content.findMany({ where: { status: "PUBLISHED", publishedAt: { gte: since30 } }, select: { avatarId: true, platform: true, publishedAt: true } }),
       prisma.content.count({ where: { status: "PUBLISHED", publishedAt: { gte: since7 } } }),
@@ -47,22 +50,15 @@ export async function overview() {
       prisma.automationRule.findMany({ select: { isActive: true, nextRunAt: true, name: true } }),
       prisma.revenue.aggregate({ _sum: { amount: true }, where: { earnedAt: { gte: since30 }, status: { not: "refunded" } } }),
       prisma.revenue.aggregate({ _sum: { amount: true }, where: { earnedAt: { gte: new Date(now - 60 * DAY), lt: since30 }, status: { not: "refunded" } } }),
-      prisma.content.findMany({ where: { status: "FAILED", updatedAt: { gte: since30 } }, select: { updatedAt: true } }),
-      prisma.revenue.findMany({ where: { earnedAt: { gte: since30 }, status: { not: "refunded" } }, select: { earnedAt: true, amount: true } }),
+      // アバターごとのフォロワー推移（30日 + 引き継ぎの起点に 30 日前まで）
+      prisma.accountSnapshot.findMany({
+        where: { date: { gte: new Date(`${lastDays(60)[0]}T00:00:00.000Z`) }, followers: { not: null } },
+        select: { snsAccountId: true, date: true, followers: true, snsAccount: { select: { avatarId: true } } },
+      }),
     ]);
 
   const change = (a: number, b: number) => (b === 0 ? (a > 0 ? 100 : 0) : Math.round(((a - b) / b) * 1000) / 10);
   const successRate = published7 + failed7 === 0 ? null : Math.round((published7 / (published7 + failed7)) * 1000) / 10;
-
-  // 日別の投稿数・失敗数・収益（30日）
-  const byDay = new Map<string, { count: number; failed: number; revenue: number }>();
-  for (let i = 29; i >= 0; i--) byDay.set(dayKey(new Date(now - i * DAY)), { count: 0, failed: 0, revenue: 0 });
-  for (const c of published30) byDay.get(dayKey(c.publishedAt!)) && byDay.get(dayKey(c.publishedAt!))!.count++;
-  for (const c of failed30) byDay.get(dayKey(c.updatedAt)) && byDay.get(dayKey(c.updatedAt))!.failed++;
-  for (const r of revenueRows30) {
-    const d = byDay.get(dayKey(r.earnedAt));
-    if (d) d.revenue += r.amount;
-  }
 
   const platformCounts = new Map<string, number>();
   for (const c of published30) platformCounts.set(c.platform, (platformCounts.get(c.platform) ?? 0) + 1);
@@ -70,8 +66,17 @@ export async function overview() {
   const avatarRows = avatars.map((a) => {
     const mine = accounts.filter((x) => x.avatarId === a.id);
     const posts = published30.filter((c) => c.avatarId === a.id);
+    const f = followerSeries(
+      snaps.filter((s) => s.snsAccount.avatarId === a.id).map((s) => ({ accountId: s.snsAccountId, date: s.date.toISOString().slice(0, 10), followers: s.followers })),
+      days30
+    );
+    const known = f.followers.filter((x): x is number => x !== null);
     return {
       ...a,
+      imageUrl: a.avatarImageUrl,
+      followers: known.at(-1) ?? null,
+      followersDelta30: f.delta.some((x) => x !== null) ? f.delta.reduce<number>((s, x) => s + (x ?? 0), 0) : null,
+      followerSpark: f.followers,
       accounts: mine.map((m) => ({ platform: m.platform, name: getPlatform(m.platform)?.name ?? m.platform, icon: getPlatform(m.platform)?.icon ?? "", accountName: m.accountName, ok: m.isActive && !m.lastError })),
       posts30: posts.length,
       posts7: posts.filter((c) => c.publishedAt! >= since7).length,
@@ -105,7 +110,6 @@ export async function overview() {
       revenue30: revenue30._sum.amount ?? 0,
       revenueChange: change(revenue30._sum.amount ?? 0, revenuePrev30._sum.amount ?? 0),
     },
-    daily: [...byDay.entries()].map(([date, v]) => ({ date, ...v })),
     platforms: [...platformCounts.entries()]
       .map(([p, count]) => ({ platform: p, name: getPlatform(p)?.name ?? p, icon: getPlatform(p)?.icon ?? "", count }))
       .sort((a, b) => b.count - a.count),

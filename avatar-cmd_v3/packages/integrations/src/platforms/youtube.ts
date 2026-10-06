@@ -117,10 +117,11 @@ export const youtube: PlatformDefinition = {
   async fetchProfile(ctx) {
     const token = ctx.credentials.accessToken;
     if (!token) throw new ConfigError("YouTube: アカウントを再接続してください");
-    const d = await requestJson("youtube", "https://www.googleapis.com/youtube/v3/channels?part=statistics&mine=true", { headers: { Authorization: `Bearer ${token}` } });
+    const d = await requestJson("youtube", "https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&mine=true", { headers: { Authorization: `Bearer ${token}` } });
     const st = d.items?.[0]?.statistics as { subscriberCount?: string; videoCount?: string; hiddenSubscriberCount?: boolean } | undefined;
     const n = (v?: string) => (v === undefined ? undefined : Number(v));
-    return { followers: st?.hiddenSubscriberCount ? undefined : n(st?.subscriberCount), posts: n(st?.videoCount) };
+    const thumbs = d.items?.[0]?.snippet?.thumbnails as Record<string, { url?: string }> | undefined;
+    return { followers: st?.hiddenSubscriberCount ? undefined : n(st?.subscriberCount), posts: n(st?.videoCount), imageUrl: thumbs?.high?.url ?? thumbs?.medium?.url ?? thumbs?.default?.url };
   },
   async publish(ctx, post) {
     const token = ctx.credentials.accessToken;

@@ -13,6 +13,7 @@ import { loadFreshCredentials } from "./accounts";
 import { errorMessage } from "./publish";
 import { getSystemConfig } from "./store";
 import { recordUsage } from "./usage";
+import { addPostDeltas } from "./analytics";
 
 const HOUR = 3600_000;
 export const METRICS_WINDOW_DAYS = 14;
@@ -32,6 +33,12 @@ export function summarizeMetrics(m: PostMetrics) {
   const engagements = (m.likes ?? 0) + (m.replies ?? 0) + (m.reposts ?? 0) + (m.quotes ?? 0) + (m.shares ?? 0);
   const engagementRate = m.views ? engagements / m.views : null;
   return { engagements, engagementRate };
+}
+
+/** 前回取得した指標からの増分（初回は公開からの全量。減った場合は 0） */
+export function metricsDelta(prev: Record<string, unknown>, next: Record<string, unknown>): { views: number; engagements: number } {
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return { views: Math.max(0, n(next.views) - n(prev.views)), engagements: Math.max(0, n(next.engagements) - n(prev.engagements)) };
 }
 
 /** 期限の来た投稿の指標を取得する。取得した投稿数を返す */
@@ -74,6 +81,9 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
     // 読み取り件数の概算（取得できた投稿数。X はページ単位で余分に読むことがあるため実際より少なめになりうる）
     const got = Object.values(results).filter((m) => !("error" in m)).length;
     await recordUsage({ provider: acc.platform, purpose: `${acc.platform}_metrics`, avatarId: acc.avatarId, context: "metrics", reads: got, error: got ? null : Object.values(results)[0] && "error" in Object.values(results)[0] ? (Object.values(results)[0] as { error: string }).error : null });
+    // アカウントの日別の閲覧数・反応数（前回取得からの増分を今日に計上）。
+    // 媒体がアカウント単位の日別閲覧数を返せる場合（Threads）は閲覧数を足さない（二重計上を防ぐ）
+    const delta = { views: 0, engagements: 0 };
     for (const r of rows) {
       const m = results[r.externalPostId!];
       if (!m) continue;
@@ -81,8 +91,13 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       const prev = (r.engagement ?? {}) as Record<string, unknown>;
       const engagement = "error" in m ? { ...prev, error: m.error, errorAt: now.toISOString() } : { ...m, ...summarizeMetrics(m), fetchedAt: now.toISOString() };
       await prisma.content.update({ where: { id: r.id }, data: { engagement: engagement as object, metricsUpdatedAt: now } });
-      if (!("error" in m)) updated++;
+      if ("error" in m) continue;
+      updated++;
+      const d = metricsDelta(prev, engagement as Record<string, unknown>);
+      delta.views += d.views;
+      delta.engagements += d.engagements;
     }
+    await addPostDeltas(accountId, { views: def.fetchInsights ? 0 : delta.views, engagements: delta.engagements }, now).catch((e) => console.warn(`[metrics] snapshot: ${errorMessage(e)}`));
   }
   return updated;
 }

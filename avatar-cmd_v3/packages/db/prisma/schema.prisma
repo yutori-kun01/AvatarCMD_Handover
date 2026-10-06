@@ -101,6 +101,10 @@ model Avatar {
   status          AvatarStatus @default(ACTIVE)
   description     String?
   avatarImageUrl  String?      @map("avatar_image_url")
+  // v3.7 — アイコンの出どころ: manual（手動設定。自動取得で上書きしない）/ account:<snsAccountId>
+  avatarImageSource String?    @map("avatar_image_source")
+  // v3.7 — 参照画像から作ったスタイル定義 { image?: {...}, infographic?: {...} }。画面で修正できる
+  imageStyle      Json         @default("{}") @map("image_style")
   lastSyncAt      DateTime?    @map("last_sync_at")
 
   // --- Persona Engine (Monster v4) ---
@@ -130,6 +134,7 @@ model Avatar {
   automationRules AutomationRule[]
   activityLogs    ActivityLog[]
   knowledgeItems  KnowledgeItem[]
+  styleReferences StyleReference[]
   improvementCycles ImprovementCycle[]
   improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
@@ -219,6 +224,9 @@ model SnsAccount {
   // v3.5 — フォロワー数を最後に取得した時刻・取得できなかった理由
   followersUpdatedAt DateTime? @map("followers_updated_at")
   followersError     String?   @map("followers_error")
+  // v3.7 — プロフィール画像（MEDIA_DIR に保存した /media/{name}）と、変化の検出用ハッシュ
+  profileImageUrl    String?   @map("profile_image_url")
+  profileImageHash   String?   @map("profile_image_hash")
   // v3.3 — 接続に使った開発者アプリ: shared = 共通（設定 > SNS連携アプリ）/ avatar = アバター専用
   // トークンの更新は、発行したのと同じアプリで行う必要があるため記録する
   appScope      String    @default("shared") @map("app_scope")
@@ -368,6 +376,14 @@ model AccountSnapshot {
   followers    Int?
   following    Int?
   posts        Int?
+  // v3.7 — その日の閲覧数（インプレッション／PV）と反応数。
+  // source: api_daily（媒体の日別値）/ post_sum（投稿ごとの増分の合計）/ cumulative_diff（累計の差分）/ manual
+  views        Int?
+  engagements  Int?
+  /// 累計しか取れない媒体（note の PV など）の累計値。翌日の差分計算に使う
+  viewsTotal   Int?       @map("views_total")
+  engagementsTotal Int?   @map("engagements_total")
+  source       String?
 
   snsAccount   SnsAccount @relation(fields: [snsAccountId], references: [id], onDelete: Cascade)
 
@@ -1017,4 +1033,24 @@ model YoutubeVideo {
   @@unique([channelRowId, videoId])
   @@index([transcriptStatus])
   @@map("youtube_videos")
+}
+
+// v3.7 — アバターごとの画像スタイル参照（イメージ画像・図解の作風）
+model StyleReference {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  /// image（イメージ画像の参考）/ infographic（図解の参考）
+  kind        String   @default("image")
+  /// MEDIA_DIR のファイル名
+  mediaName   String   @map("media_name")
+  note        String?
+  isActive    Boolean  @default(true) @map("is_active")
+
+  avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([avatarId, kind])
+  @@map("style_references")
 }

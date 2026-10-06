@@ -120,7 +120,7 @@ test("収益アイテム: 登録 → 選んで数量だけで記録 → アカ�
   assert.equal(a.prevRevenue, 500);
   assert.equal(a.followers, 230);
   assert.equal(a.followersDelta, 30);
-  assert.equal(a.followersAuto, false);
+  assert.equal(a.followersAuto, true); // note もフォロワー数を自動取得する（v3.7）
   assert.equal(a.daily.find((d) => d.date === "2026-09-10")!.revenue, 1500);
   assert.equal(a.daily.find((d) => d.date === "2026-09-15")!.followers, 230);
   assert.deepEqual(a.items, [{ name: "記事『朝の集中ルーティン』", total: 1950, quantity: 4 }]);

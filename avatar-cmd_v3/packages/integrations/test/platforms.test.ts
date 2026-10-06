@@ -5,6 +5,8 @@ import { PLATFORMS } from "../src/platforms";
 import { escapeLittleText } from "../src/platforms/linkedin";
 import { tiktokChunks } from "../src/platforms/tiktok";
 import { zennTopics } from "../src/platforms/zenn";
+import { notePrice } from "../src/platforms/note";
+import { markdownToNote } from "../src/markdown";
 import { ctx, media, mockFetch, system } from "./helpers";
 
 const post = (p: Partial<import("../src/types").PostInput> = {}) => ({ text: "hello", media: [], options: {}, ...p });
@@ -435,6 +437,69 @@ test("note: text_notes 作成 → draft_save（下書きのみ）", async () => 
   }
 });
 
+test("note: 画像・見出し画像・有料ライン・価格・タグまで下書きに入れる（公開はしない）", async () => {
+  const m = mockFetch([
+    ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 7, key: "nkey" } }],
+    ["POST", /note\.com\/api\/v1\/upload_image$/, { data: { url: "https://assets.st-note.com/img/1.png" } }],
+    ["POST", /note\.com\/api\/v1\/image_upload\/note_eyecatch$/, { data: { url: "https://assets.st-note.com/eye.png" } }],
+    ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=7$/, { data: {} }],
+  ]);
+  try {
+    const text = "# T\n\n## 見出し\n\n**大事**なこと\n\n![図解](media:a.png)\n\n<!-- paywall -->\n\n有料部分";
+    const r = await PLATFORMS.note.publish!(
+      ctx({ credentials: { cookie: "_note_session_v5=S" } }),
+      post({ text, tags: ["AI"], media: [media("image/png", 10, "a"), media("image/png", 10, "eye")], options: { price: "500", eyecatch: "eye.png" } })
+    );
+    const save = m.calls.find((c) => c.url.includes("draft_save"))!;
+    assert.equal(save.json.status, "draft");
+    assert.equal(save.json.price, 500);
+    assert.match(save.json.body, /<strong>大事<\/strong>/);
+    assert.match(save.json.body, /<figure name="[^"]+" id="[^"]+"><img src="https:\/\/assets\.st-note\.com\/img\/1\.png"/);
+    // separator は「有料部分」の段落の ID
+    const sepId = save.json.separator as string;
+    assert.match(save.json.body, new RegExp(`<p name="${sepId}" id="${sepId}">有料部分</p>`));
+    assert.ok(m.calls.some((c) => c.url.endsWith("/image_upload/note_eyecatch")));
+    assert.ok(!m.calls.some((c) => /publish|status.*published/.test(c.url)));
+    assert.match(r.note!, /画像1枚・見出し画像・有料ライン・価格500円・タグ1件/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("note: 有料設定や画像が拒否されても本文の下書きは保存し、入らなかった項目を返す", async () => {
+  let saves = 0;
+  const m = mockFetch([
+    ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 8, key: "nk" } }],
+    ["POST", /note\.com\/api\/v1\/upload_image$/, () => ({ status: 404, text: "not found" })],
+    ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=8$/, (c: any) => (saves++, c.json.price ? { status: 422, text: "bad" } : { json: { data: {} } })],
+  ]);
+  try {
+    const r = await PLATFORMS.note.publish!(
+      ctx({ credentials: { cookie: "_note_session_v5=S" } }),
+      post({ text: "本文\n\n![](media:a.png)\n\n<!-- paywall -->\n\n続き", media: [media("image/png", 10, "a")], options: { price: "300" } })
+    );
+    assert.equal(saves, 2);
+    const last = m.calls.filter((c) => c.url.includes("draft_save")).at(-1)!;
+    assert.equal(last.json.price, undefined);
+    assert.match(last.json.body, /［画像：ここに画像］/);
+    assert.match(r.note!, /アップロードできませんでした/);
+    assert.match(r.note!, /有料ライン・価格を設定できませんでした/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("note: 価格の範囲チェック・目印の変換", () => {
+  assert.equal(notePrice(""), null);
+  assert.equal(notePrice("1,000円"), 1000);
+  assert.throws(() => notePrice("50"), /100〜50,000/);
+  const { html, separator } = markdownToNote("前\n\n<!-- image: 朝の風景 -->\n<!-- paywall -->\n## 有料の見出し", { note: true });
+  assert.match(html, /［画像：朝の風景］/);
+  assert.match(html, new RegExp(`<h2 name="${separator}"`));
+  assert.equal(markdownToNote("<!-- paywall -->\n本文").separator, undefined);
+  assert.doesNotMatch(markdownToNote("<!-- image: x -->\n本文").html, /画像/);
+});
+
 test("Medium: /v1/users/{id}/posts に markdown で投稿", async () => {
   const m = mockFetch([["POST", /api\.medium\.com\/v1\/users\/AU\/posts$/, { data: { id: "p", url: "https://medium.com/p" } }]]);
   try {
@@ -474,18 +539,31 @@ test("全プラットフォーム: 定義の整合性", () => {
   }
 });
 
-test("フォロワー数: X は users/me の public_metrics、Threads は threads_insights、YouTube は channels statistics", async () => {
+test("フォロワー数とプロフィール画像: X は users/me、Threads は threads_insights と me、YouTube は channels", async () => {
   const m = mockFetch([
-    ["GET", /api\.x\.com\/2\/users\/me\?/, { data: { id: "42", public_metrics: { followers_count: 1200, following_count: 80, tweet_count: 950 } } }],
+    ["GET", /api\.x\.com\/2\/users\/me\?/, { data: { id: "42", profile_image_url: "https://pbs.twimg.com/profile_images/1/a_normal.jpg", public_metrics: { followers_count: 1200, following_count: 80, tweet_count: 950 } } }],
     ["GET", /graph\.threads\.net\/v1\.0\/acct\/threads_insights\?/, { data: [{ name: "followers_count", total_value: { value: 340 } }] }],
-    ["GET", /youtube\/v3\/channels\?part=statistics/, { items: [{ statistics: { subscriberCount: "5000", videoCount: "12", hiddenSubscriberCount: false } }] }],
+    ["GET", /graph\.threads\.net\/v1\.0\/me\?/, { threads_profile_picture_url: "https://scontent.cdninstagram.com/p.jpg" }],
+    ["GET", /youtube\/v3\/channels\?part=statistics/, { items: [{ statistics: { subscriberCount: "5000", videoCount: "12", hiddenSubscriberCount: false }, snippet: { thumbnails: { high: { url: "https://yt3.ggpht.com/h.jpg" } } } }] }],
   ]);
   try {
-    assert.deepEqual(await PLATFORMS.x.fetchProfile!(ctx()), { followers: 1200, following: 80, posts: 950 });
-    assert.match(m.calls[0].url, /user\.fields=public_metrics/);
-    assert.deepEqual(await PLATFORMS.threads.fetchProfile!(ctx()), { followers: 340 });
+    assert.deepEqual(await PLATFORMS.x.fetchProfile!(ctx()), { followers: 1200, following: 80, posts: 950, imageUrl: "https://pbs.twimg.com/profile_images/1/a_400x400.jpg" });
+    assert.match(m.calls[0].url, /user\.fields=public_metrics%2Cprofile_image_url/);
+    assert.deepEqual(await PLATFORMS.threads.fetchProfile!(ctx()), { followers: 340, imageUrl: "https://scontent.cdninstagram.com/p.jpg" });
     assert.match(m.calls[1].url, /metric=followers_count/);
-    assert.deepEqual(await PLATFORMS.youtube.fetchProfile!(ctx()), { followers: 5000, posts: 12 });
+    assert.deepEqual(await PLATFORMS.youtube.fetchProfile!(ctx()), { followers: 5000, posts: 12, imageUrl: "https://yt3.ggpht.com/h.jpg" });
+  } finally {
+    m.restore();
+  }
+});
+
+test("Threads: アカウントの日別閲覧数（views の時系列）を日本時間の日付で返す", async () => {
+  const m = mockFetch([
+    ["GET", /threads_insights\?metric=views/, { data: [{ name: "views", values: [{ value: 120, end_time: "2026-10-04T07:00:00+0000" }, { value: 90, end_time: "2026-10-05T07:00:00+0000" }] }] }],
+  ]);
+  try {
+    const r = await PLATFORMS.threads.fetchInsights!(ctx(), { days: 7 });
+    assert.deepEqual(r.daily, [{ date: "2026-10-04", views: 120 }, { date: "2026-10-05", views: 90 }]);
   } finally {
     m.restore();
   }
