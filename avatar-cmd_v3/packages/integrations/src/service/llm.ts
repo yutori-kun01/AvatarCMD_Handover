@@ -48,7 +48,7 @@ export const AUTO_ORDER: AiProvider[] = ["anthropic", "openai", "gemini"];
 // recommended: その用途で「これ以上は下げない」最低限の推奨モデル（モデル欄が空欄のときの既定）。
 // upgrade:     品質を上げたいときの候補（設定画面にヒントとして表示）。
 
-export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary";
+export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary" | "style" | "visual";
 
 export interface AiTaskDef {
   label: string;
@@ -104,6 +104,20 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
     label: "動画の要約",
     help: "YouTube 動画の文字起こしを要約してナレッジにする（文字起こしが無い動画は要約しない）",
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    maxTokens: 16000,
+  },
+  style: {
+    label: "画像スタイル分析",
+    help: "アバターごとの参考画像（複数枚）を読み、配色・タッチ・構図などのスタイル定義を作る。画像を読めるモデルが必要",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 8000,
+  },
+  visual: {
+    label: "画像・図解の設計",
+    help: "記事の見出しごとに、イメージ画像のプロンプトとインフォグラフィック図解の設計（型・アイコン・短いラベル）を作る",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
     maxTokens: 16000,
   },
   tags: {
@@ -212,6 +226,14 @@ export interface CompleteInput {
   user: string;
   /** 指定すると JSON スキーマに沿った出力を強制する（各社の構造化出力機能を使う） */
   json?: { name: string; schema: Record<string, unknown> };
+  /** 一緒に読ませる画像（参考画像のスタイル分析など） */
+  images?: InputImage[];
+}
+
+export interface InputImage {
+  mimeType: string;
+  /** base64 */
+  data: string;
 }
 
 /** 用途に割り当てたプロバイダで生成する。model は実際に応答したモデル名。使用量は共通台帳（usage.ts）に記録する */
@@ -222,7 +244,7 @@ export async function completeText(input: CompleteInput): Promise<{ text: string
   if (!apiKey) throw new ConfigError(`${AI_PROVIDERS[r.provider].name} の API キーが未設定です（設定 > システム > AI）`);
   let out: ProviderResult;
   try {
-    out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json });
+    out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json, images: input.images });
   } catch (e) {
     // 失敗した呼び出しも回数として残す（トークンは不明のため 0。断られた場合など課金されることがある点は料金表の注記で扱う）
     await recordUsage({ provider: r.provider, model: r.model, purpose: input.task, ...((e as { usage?: TokenUsage }).usage ?? {}), error: e instanceof Error ? e.message : String(e) });
@@ -253,6 +275,7 @@ export interface ProviderRequest {
   user: string;
   maxTokens: number;
   json?: CompleteInput["json"];
+  images?: InputImage[];
 }
 
 export interface ProviderResult {
@@ -267,7 +290,7 @@ export function callProvider(provider: AiProvider, req: ProviderRequest): Promis
   return provider === "anthropic" ? callClaude(req) : provider === "openai" ? callOpenAI(req) : callGemini(req);
 }
 
-async function callClaude({ apiKey, model, system, user, maxTokens, json }: ProviderRequest): Promise<ProviderResult> {
+async function callClaude({ apiKey, model, system, user, maxTokens, json, images }: ProviderRequest): Promise<ProviderResult> {
   const client = new Anthropic({ apiKey });
   // Opus 5 / Fable 5 系は安全分類器で断られることがあるため、サーバー側フォールバックを有効にする
   const fallback = /^claude-(opus-5|fable-5)/.test(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {};
@@ -277,7 +300,17 @@ async function callClaude({ apiKey, model, system, user, maxTokens, json }: Prov
       model,
       max_tokens: maxTokens,
       system,
-      messages: [{ role: "user", content: user }],
+      messages: [
+        {
+          role: "user",
+          content: images?.length
+            ? [
+                ...images.map((i) => ({ type: "image" as const, source: { type: "base64" as const, media_type: i.mimeType as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: i.data } })),
+                { type: "text" as const, text: user },
+              ]
+            : user,
+        },
+      ],
       ...(json ? { output_config: { format: { type: "json_schema", schema: json.schema } } } : {}),
       ...fallback,
     })
@@ -292,24 +325,34 @@ async function callClaude({ apiKey, model, system, user, maxTokens, json }: Prov
   return { text, model: msg.model, usage };
 }
 
-async function callOpenAI({ apiKey, model, system, user, json }: ProviderRequest): Promise<ProviderResult> {
+async function callOpenAI({ apiKey, model, system, user, json, images }: ProviderRequest): Promise<ProviderResult> {
   const client = new OpenAI({ apiKey });
   const res = await client.responses.create({
     model,
     instructions: system,
-    input: user,
+    input: images?.length
+      ? [
+          {
+            role: "user" as const,
+            content: [
+              ...images.map((i) => ({ type: "input_image" as const, image_url: `data:${i.mimeType};base64,${i.data}`, detail: "auto" as const })),
+              { type: "input_text" as const, text: user },
+            ],
+          },
+        ]
+      : user,
     ...(json ? { text: { format: { type: "json_schema" as const, name: json.name, schema: json.schema, strict: true } } } : {}),
   });
   return { text: res.output_text ?? "", model: res.model || model, usage: normalizeOpenAIUsage(res.usage) };
 }
 
-async function callGemini({ apiKey, model, system, user, json }: ProviderRequest): Promise<ProviderResult> {
+async function callGemini({ apiKey, model, system, user, json, images }: ProviderRequest): Promise<ProviderResult> {
   // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
   const baseUrl = process.env.GEMINI_BASE_URL;
   const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
   const res = await ai.models.generateContent({
     model,
-    contents: user,
+    contents: images?.length ? [{ role: "user", parts: [...images.map((i) => ({ inlineData: { mimeType: i.mimeType, data: i.data } })), { text: user }] }] : user,
     config: {
       systemInstruction: system,
       temperature: json ? 0.2 : 0.8,

@@ -25,3 +25,8 @@ export * from "./service/api-v1";
 export * from "./service/youtube-learning";
 export * from "./service/profile-image";
 export * from "./service/timeseries";
+export * from "./service/image-gen";
+export * from "./service/infographic";
+export * from "./service/icons";
+export * from "./service/style";
+export * from "./service/article";
