@@ -222,6 +222,8 @@ test("投稿直前の再確認: ルールの停止・下書きモード化・承
 
 test("停止時の選択: holdQueued なら既存の予約も下書きに戻す（影響範囲を事前に取得できる）", opts, async () => {
   const rule = await svc.createRule({ avatarId, name: "停止テスト", trigger: { type: "interval", hours: 24 }, action: { ...base(), mode: "auto", approval: "all" } });
+  // X の通常投稿は X API モードの時刻の枠に予約される。このテストでは枠を十分に用意する
+  await svc.saveXPolicy(avatarId, { mode: "custom", custom: { postsPerDay: 10, postTimes: ["00:00", "02:30", "05:00", "07:30", "10:00", "12:30", "15:00", "17:30", "20:00", "22:30"] } as any });
   const m = mocks();
   try {
     await svc.runRule(rule.id);

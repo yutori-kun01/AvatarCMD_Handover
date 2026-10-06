@@ -85,6 +85,16 @@ export interface ProfileStats {
   followers?: number;
   following?: number;
   posts?: number;
+  /** プロフィール画像の URL（取得元の CDN。期限付きのことがあるので保存して使う） */
+  imageUrl?: string;
+}
+
+/** アカウント単位の閲覧数・反応数（媒体が返せるものだけ） */
+export interface AccountInsights {
+  /** 日別の値（日本時間の "YYYY-MM-DD"）。媒体が日別で返せる場合 */
+  daily?: { date: string; views?: number; engagements?: number }[];
+  /** 累計（note の PV など）。前日の累計との差分を日別の値にする */
+  totals?: { views?: number; engagements?: number };
 }
 
 /** 投稿の反応（取得できたものだけ入る） */
@@ -191,8 +201,12 @@ export interface PlatformDefinition {
   fetchMetrics?(ctx: PublishContext, posts: { postId: string; publishedAt: Date }[]): Promise<Record<string, PostMetrics | { error: string }>>;
   /** アカウントのフォロワー数など（1日1回程度取得して推移を記録する） */
   fetchProfile?(ctx: PublishContext): Promise<ProfileStats>;
+  /** アカウント単位の閲覧数・反応数（1日1回。fetchProfile と同じタイミングで取得する） */
+  fetchInsights?(ctx: PublishContext, opts: { days: number }): Promise<AccountInsights>;
   /** 自分のホームタイムライン（フォロー中の投稿）を新しい順に取得する */
   fetchTimeline?(ctx: PublishContext, opts: { maxResults: number; sinceId?: string }): Promise<TimelinePost[]>;
   /** 引用投稿に対応しているか */
   supportsQuote?: boolean;
+  /** ユーザー情報（名前・フォロワー数）をまとめて取得する（X は 1 件ごとに課金されるのでキャッシュして使う） */
+  lookupUsers?(ctx: PublishContext, ids: string[]): Promise<{ id: string; username: string; name?: string; followers?: number }[]>;
 }

@@ -1,6 +1,8 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Embedded, EmptyState, relTime, Shell } from "@/components/dashboard/shell";
+import { YoutubeSection } from "@/components/sections/youtube-section";
 import { api, Badge, Button, Card, Field, inputCls, Notice } from "@/components/settings/ui";
 
 interface Item {
@@ -63,7 +65,7 @@ const MODE: Record<Schedule["mode"], string> = { suggest: "提案のみ", approv
 
 const empty = { kind: "fact", title: "", summary: "", content: "", source: "", sourceUrl: "", tags: "", platforms: "", topics: "" };
 
-export default function KnowledgePage() {
+function KnowledgeMain() {
   const [avatars, setAvatars] = useState<{ id: string; name: string }[]>([]);
   const [avatarId, setAvatarId] = useState("");
   const [items, setItems] = useState<Item[]>([]);
@@ -398,5 +400,46 @@ export default function KnowledgePage() {
         )}
       </Card>
     </Shell>
+  );
+}
+
+const TABS = [
+  { key: "knowledge", label: "ナレッジ・改善" },
+  { key: "youtube", label: "YouTube 学習" },
+] as const;
+
+function KnowledgeTabs() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const tab = params.get("tab") === "youtube" ? "youtube" : "knowledge";
+  return (
+    <Shell title="ナレッジ・学習" description="アバターの知識（出典付きの事実・人格・成果からの学び）、14〜27日ごとの改善処理、YouTube からの学習" wide>
+      <div className="mb-5 flex gap-1 rounded-xl border border-white/[0.08] bg-white/[0.02] p-1 w-fit">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => router.replace(t.key === "knowledge" ? "/knowledge" : `/knowledge?tab=${t.key}`)}
+            className={`rounded-lg px-4 py-1.5 text-sm transition ${tab === t.key ? "bg-white/10 font-semibold text-white" : "text-white/50 hover:text-white"}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "youtube" ? (
+        <YoutubeSection />
+      ) : (
+        <Embedded>
+          <KnowledgeMain />
+        </Embedded>
+      )}
+    </Shell>
+  );
+}
+
+export default function KnowledgePage() {
+  return (
+    <Suspense>
+      <KnowledgeTabs />
+    </Suspense>
   );
 }

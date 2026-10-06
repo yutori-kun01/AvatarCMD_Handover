@@ -101,6 +101,12 @@ model Avatar {
   status          AvatarStatus @default(ACTIVE)
   description     String?
   avatarImageUrl  String?      @map("avatar_image_url")
+  // v3.7 — アイコンの出どころ: manual（手動設定。自動取得で上書きしない）/ account:<snsAccountId>
+  avatarImageSource String?    @map("avatar_image_source")
+  // v3.7 — 参照画像から作ったスタイル定義 { image?: {...}, infographic?: {...} }。画面で修正できる
+  imageStyle      Json         @default("{}") @map("image_style")
+  // v3.7 — X API の利用方針 { mode: eco|balanced|aggressive|custom, custom: {...}, degradeAtYen, capYen }。空なら BALANCED
+  xPolicy         Json         @default("{}") @map("x_policy")
   lastSyncAt      DateTime?    @map("last_sync_at")
 
   // --- Persona Engine (Monster v4) ---
@@ -130,6 +136,7 @@ model Avatar {
   automationRules AutomationRule[]
   activityLogs    ActivityLog[]
   knowledgeItems  KnowledgeItem[]
+  styleReferences StyleReference[]
   improvementCycles ImprovementCycle[]
   improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
@@ -219,6 +226,9 @@ model SnsAccount {
   // v3.5 — フォロワー数を最後に取得した時刻・取得できなかった理由
   followersUpdatedAt DateTime? @map("followers_updated_at")
   followersError     String?   @map("followers_error")
+  // v3.7 — プロフィール画像（MEDIA_DIR に保存した /media/{name}）と、変化の検出用ハッシュ
+  profileImageUrl    String?   @map("profile_image_url")
+  profileImageHash   String?   @map("profile_image_hash")
   // v3.3 — 接続に使った開発者アプリ: shared = 共通（設定 > SNS連携アプリ）/ avatar = アバター専用
   // トークンの更新は、発行したのと同じアプリで行う必要があるため記録する
   appScope      String    @default("shared") @map("app_scope")
@@ -315,6 +325,7 @@ model Content {
   metricsUpdatedAt   DateTime?     @map("metrics_updated_at")
 
   scheduledPost      ScheduledPost?
+  metricSnapshots    PostMetricSnapshot[]
   snsAccount         SnsAccount?   @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
   avatar             Avatar        @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   campaign           Campaign?     @relation(fields: [campaignId], references: [id])
@@ -368,6 +379,14 @@ model AccountSnapshot {
   followers    Int?
   following    Int?
   posts        Int?
+  // v3.7 — その日の閲覧数（インプレッション／PV）と反応数。
+  // source: api_daily（媒体の日別値）/ post_sum（投稿ごとの増分の合計）/ cumulative_diff（累計の差分）/ manual
+  views        Int?
+  engagements  Int?
+  /// 累計しか取れない媒体（note の PV など）の累計値。翌日の差分計算に使う
+  viewsTotal   Int?       @map("views_total")
+  engagementsTotal Int?   @map("engagements_total")
+  source       String?
 
   snsAccount   SnsAccount @relation(fields: [snsAccountId], references: [id], onDelete: Cascade)
 
@@ -1017,4 +1036,54 @@ model YoutubeVideo {
   @@unique([channelRowId, videoId])
   @@index([transcriptStatus])
   @@map("youtube_videos")
+}
+
+// v3.7 — アバターごとの画像スタイル参照（イメージ画像・図解の作風）
+model StyleReference {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  /// image（イメージ画像の参考）/ infographic（図解の参考）
+  kind        String   @default("image")
+  /// MEDIA_DIR のファイル名
+  mediaName   String   @map("media_name")
+  note        String?
+  isActive    Boolean  @default(true) @map("is_active")
+
+  avatar      Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([avatarId, kind])
+  @@map("style_references")
+}
+
+// v3.7 — 投稿の指標を決まった時点（公開から 1h / 6h / 24h など）ごとに記録（伸び方の比較・改善処理に使う）
+model PostMetricSnapshot {
+  id          String   @id @default(uuid())
+  contentId   String   @map("content_id")
+  /// 公開から何時間の時点か
+  checkpoint  Int
+  views       Int?
+  engagements Int?
+  /// { likes, replies, reposts, quotes, bookmarks, ... }
+  metrics     Json     @default("{}")
+  fetchedAt   DateTime @default(now()) @map("fetched_at")
+
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, checkpoint])
+  @@map("post_metric_snapshots")
+}
+
+// v3.7 — X のユーザー情報のキャッシュ（User Read は 1 件 $0.010 なので 1〜7 日に 1 回までしか更新しない）
+model XUser {
+  id           String   @id // X のユーザー ID
+  username     String
+  name         String?
+  followers    Int?
+  lastSyncedAt DateTime @default(now()) @map("last_synced_at")
+
+  @@index([username])
+  @@map("x_users")
 }

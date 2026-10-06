@@ -409,7 +409,7 @@ export default function AutomationPage() {
                 onChange={(v) => setDraft({ ...draft, quoteAccountId: v })}
               />
               <div className="grid gap-3 md:grid-cols-4">
-                <Field def={{ key: "scan", label: "1回に読む件数（10〜100）" }} value={draft.scanPosts} onChange={(v) => setDraft({ ...draft, scanPosts: v })} />
+                <Field def={{ key: "scan", label: "1回に読む件数（10〜100）", help: "自動実行では、アバター > X API のモードの件数・時刻が優先されます（費用の上限管理のため）" }} value={draft.scanPosts} onChange={(v) => setDraft({ ...draft, scanPosts: v })} />
                 <Field def={{ key: "maxd", label: "1回に作る引用案の上限" }} value={draft.maxDrafts} onChange={(v) => setDraft({ ...draft, maxDrafts: v })} />
                 <Field def={{ key: "age", label: "対象にする投稿（何時間以内）" }} value={draft.maxAgeHours} onChange={(v) => setDraft({ ...draft, maxAgeHours: v })} />
                 <Field def={{ key: "cool", label: "同じ相手を引用しない日数" }} value={draft.cooldownDays} onChange={(v) => setDraft({ ...draft, cooldownDays: v })} />
@@ -462,7 +462,7 @@ export default function AutomationPage() {
               {Object.entries(estimate.amounts).filter(([, v]) => v > 0).map(([c, v]) => `${v.toFixed(2)} ${c}`).join(" + ") || "0"}
               {estimate.unpriced.length > 0 && <span className="text-amber-300">（単価未登録の分は未算定）</span>}
               {estimate.notes.length > 0 && <span className="text-amber-300"> {estimate.notes.join(" ／ ")}</span>}
-              ・概算です。<Link href="/costs" className="underline">API コスト</Link>
+              ・概算です。<Link href="/settings?tab=costs" className="underline">API コスト</Link>
             </p>
           )}
           <div className="flex gap-2">

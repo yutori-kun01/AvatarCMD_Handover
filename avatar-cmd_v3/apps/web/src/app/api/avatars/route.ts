@@ -12,7 +12,7 @@ export const GET = route(async () => {
   const avatars = await prisma.avatar.findMany({
     orderBy: { createdAt: "asc" },
     include: {
-      snsAccounts: { select: { id: true, platform: true, accountName: true, isActive: true, lastError: true } },
+      snsAccounts: { select: { id: true, platform: true, accountName: true, isActive: true, lastError: true, profileImageUrl: true } },
       _count: { select: { contents: true, automationRules: true } },
     },
   });
@@ -27,6 +27,9 @@ export const GET = route(async () => {
       description: a.description,
       specialization: a.specialization,
       targetAudience: a.targetAudience,
+      imageUrl: a.avatarImageUrl,
+      /** manual = 手動設定 / account:<id> = 接続アカウントの画像 / null = 未設定 */
+      imageSource: a.avatarImageSource,
       persona: readPersona(a.communication),
       accounts: a.snsAccounts,
       contentCount: a._count.contents,

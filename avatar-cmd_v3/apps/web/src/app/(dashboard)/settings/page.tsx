@@ -8,6 +8,9 @@ import { AppsSection } from "@/components/settings/apps-section";
 import { AccountsSection } from "@/components/settings/accounts-section";
 import { ApiKeysSection } from "@/components/settings/api-keys-section";
 import { SecuritySection, SystemSection, type AiInfo, type JevInfo, type SystemInfo } from "@/components/settings/system-section";
+import { ImageSection } from "@/components/settings/image-section";
+import { PlatformsSection } from "@/components/sections/platforms-section";
+import { CostsSection } from "@/components/sections/costs-section";
 
 interface Data {
   system: SystemInfo;
@@ -22,8 +25,11 @@ interface Data {
 
 const TABS = [
   { key: "accounts", label: "アカウント" },
+  { key: "platforms", label: "プラットフォーム" },
   { key: "apps", label: "SNS連携アプリ" },
   { key: "system", label: "システム" },
+  { key: "images", label: "画像生成" },
+  { key: "costs", label: "API コスト" },
   { key: "security", label: "セキュリティ" },
   { key: "api", label: "外部AI API" },
 ] as const;
@@ -68,7 +74,7 @@ function SettingsInner() {
       <div className="flex flex-1 flex-col">
         <Header title="設定" description="SNS連携・アカウント・システム設定" />
         <main className="flex-1 overflow-auto p-6">
-          <div className="mx-auto max-w-4xl">
+          <div className={`mx-auto ${tab === "costs" || tab === "platforms" ? "max-w-7xl" : "max-w-4xl"}`}>
             <div className="mb-5 flex flex-wrap gap-2 border-b border-white/[0.08] pb-3">
               {TABS.map((t) => (
                 <button
@@ -96,6 +102,9 @@ function SettingsInner() {
             {data && tab === "system" && <SystemSection system={data.system} ai={data.ai} jev={data.jev} onChanged={onChanged} />}
             {data && tab === "security" && <SecuritySection encryptionReady={data.encryptionReady} onChanged={onChanged} />}
             {data && tab === "api" && <ApiKeysSection avatars={data.avatars} onChanged={onChanged} />}
+            {tab === "platforms" && <PlatformsSection />}
+            {data && tab === "images" && <ImageSection avatars={data.avatars} onChanged={onChanged} />}
+            {tab === "costs" && <CostsSection />}
           </div>
         </main>
       </div>

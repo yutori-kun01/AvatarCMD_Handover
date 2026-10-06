@@ -58,9 +58,18 @@ function mocks() {
       () => ({
         json: {
           data: POSTS.map((p) => ({ ...p, created_at: new Date().toISOString(), public_metrics: { like_count: 5 } })),
-          includes: { users: [{ id: "u1", username: "alice", name: "A" }, { id: "u9", username: "blocked_user", name: "B" }] },
         },
       }),
+    ],
+    // 投稿者名は判定にかける分だけ /2/users?ids= で引く（キャッシュ）
+    [
+      "GET",
+      /api\.x\.com\/2\/users\?ids=/,
+      (c) => {
+        const all = [{ id: "u1", username: "alice", name: "A" }, { id: "u9", username: "blocked_user", name: "B" }];
+        const ids = new URL(c.url).searchParams.get("ids")!.split(",");
+        return { json: { data: all.filter((u) => ids.includes(u.id)) } };
+      },
     ],
     [
       "POST",

@@ -199,7 +199,30 @@ export const threads: PlatformDefinition = {
     try {
       const d = await requestJson("threads", withQuery(`${GRAPH}/${V}/${ctx.account.accountId || "me"}/threads_insights`, { metric: "followers_count", access_token: token }));
       const row = ((d.data ?? []) as { name: string; total_value?: { value: number } }[]).find((r) => r.name === "followers_count");
-      return { followers: row?.total_value?.value };
+      // プロフィール画像は失敗してもフォロワー数は返す
+      const me = await requestJson("threads", withQuery(`${GRAPH}/${V}/me`, { fields: "threads_profile_picture_url", access_token: token })).catch(() => null);
+      return { followers: row?.total_value?.value, imageUrl: typeof me?.threads_profile_picture_url === "string" ? me.threads_profile_picture_url : undefined };
+    } catch (e) {
+      throw new ConfigError(insightError(e));
+    }
+  },
+  async fetchInsights(ctx, { days }) {
+    // アカウントの日別の閲覧数（views は日別の時系列で返る）。反応数は投稿ごとの指標の増分から計上する
+    const token = ctx.credentials.accessToken;
+    if (!token) throw new ConfigError("Threads: アカウントを再接続してください");
+    const until = Math.floor(Date.now() / 1000);
+    const since = until - days * 86400;
+    try {
+      const d = await requestJson(
+        "threads",
+        withQuery(`${GRAPH}/${V}/${ctx.account.accountId || "me"}/threads_insights`, { metric: "views", since: String(since), until: String(until), access_token: token })
+      );
+      const row = ((d.data ?? []) as { name: string; values?: { value: number; end_time?: string }[] }[]).find((r) => r.name === "views");
+      const daily = (row?.values ?? [])
+        .filter((v) => typeof v.value === "number" && v.end_time)
+        // end_time はその日の終わり（翌日 0:00 の太平洋時間など）。1 秒戻して日本時間の日付にする
+        .map((v) => ({ date: new Date(new Date(v.end_time!).getTime() - 1000 + 9 * 3600_000).toISOString().slice(0, 10), views: v.value }));
+      return { daily };
     } catch (e) {
       throw new ConfigError(insightError(e));
     }

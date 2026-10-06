@@ -1,10 +1,24 @@
 "use client";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AVATAR_STATUS, EmptyState, Shell, Stat } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, Notice } from "@/components/settings/ui";
 import { AccountVitals } from "@/components/analytics/account-vitals";
+import { MetricChart } from "@/components/analytics/metric-chart";
+import { AvatarIcon } from "@/components/avatar-icon";
+import { StyleSection } from "@/components/avatars/style-section";
+import { XPolicySection } from "@/components/avatars/x-policy-section";
+import { ActivitySection } from "@/components/sections/activity-section";
+
+const TABS = [
+  { key: "analytics", label: "分析" },
+  { key: "profile", label: "プロフィール" },
+  { key: "style", label: "画像スタイル" },
+  { key: "x", label: "X API" },
+  { key: "activity", label: "アクティビティ" },
+] as const;
+type Tab = (typeof TABS)[number]["key"];
 
 interface Persona {
   tone?: string;
@@ -22,7 +36,9 @@ interface Avatar {
   specialization: string | null;
   targetAudience: string | null;
   persona: Persona;
-  accounts: { id: string; platform: string; accountName: string; isActive: boolean; lastError: string | null }[];
+  imageUrl: string | null;
+  imageSource: string | null;
+  accounts: { id: string; platform: string; accountName: string; isActive: boolean; lastError: string | null; profileImageUrl: string | null }[];
   contentCount: number;
   publishedCount: number;
   ruleCount: number;
@@ -96,8 +112,21 @@ function AvatarForm({ form, setForm }: { form: Form; setForm: (f: Form) => void 
 
 function AvatarsInner() {
   const params = useSearchParams();
+  const router = useRouter();
   const [avatars, setAvatars] = useState<Avatar[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(params.get("id"));
+  const tab = (TABS.some((t) => t.key === params.get("tab")) ? params.get("tab") : "analytics") as Tab;
+  const iconRef = useRef<HTMLInputElement>(null);
+  // 選んだアバター・タブは URL に残す（サイドバー・ダッシュボードから直接開ける）
+  const go = (id: string | null, t: Tab = tab) => router.replace(`/avatars?${new URLSearchParams({ ...(id ? { id } : {}), ...(t !== "analytics" ? { tab: t } : {}) })}`, { scroll: false });
+  const setSelectedId = (id: string | null) => {
+    setSelectedIdState(id);
+    go(id);
+  };
+  useEffect(() => {
+    const id = params.get("id");
+    if (id) setSelectedIdState(id);
+  }, [params]);
   const [mode, setMode] = useState<"view" | "edit" | "new">(params.get("new") ? "new" : "view");
   const [form, setForm] = useState<Form>(EMPTY);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
@@ -106,7 +135,7 @@ function AvatarsInner() {
   const load = useCallback(async () => {
     const d = await api<{ avatars: Avatar[] }>("/api/avatars");
     setAvatars(d.avatars);
-    setSelectedId((cur) => cur && d.avatars.some((a) => a.id === cur) ? cur : d.avatars[0]?.id ?? null);
+    setSelectedIdState((cur) => (cur && d.avatars.some((a) => a.id === cur) ? cur : d.avatars[0]?.id ?? null));
   }, []);
   useEffect(() => {
     load().catch((e) => setNotice({ kind: "error", msg: e.message }));
@@ -140,6 +169,31 @@ function AvatarsInner() {
     load();
   }
 
+  async function changeIcon(file: File | null) {
+    if (!file || !selected) return;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const r = await fetch("/api/media", { method: "POST", body: form });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? "アップロードに失敗しました");
+      await api(`/api/avatars/${selected.id}/icon`, { method: "PUT", json: { mediaName: d.media.name } });
+      setNotice({ kind: "ok", msg: "アイコンを変更しました（自動取得では上書きされません）" });
+      load();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      if (iconRef.current) iconRef.current.value = "";
+    }
+  }
+
+  async function autoIcon() {
+    if (!selected) return;
+    await api(`/api/avatars/${selected.id}/icon`, { method: "PUT", json: { mediaName: null } }).catch((e) => setNotice({ kind: "error", msg: e.message }));
+    setNotice({ kind: "ok", msg: "接続アカウントのプロフィール画像（X → Threads → …）を使います" });
+    load();
+  }
+
   async function remove() {
     if (!selected) return;
     if (!confirm(`「${selected.name}」を削除しますか？接続アカウント・投稿履歴・自動化ルールもすべて削除されます。`)) return;
@@ -154,7 +208,7 @@ function AvatarsInner() {
   }
 
   return (
-    <Shell title="アバター管理" description="アバターのプロフィール・ペルソナ・接続状況" wide>
+    <Shell title="アバター" description="アバターごとの分析・プロフィール・画像スタイル" wide>
       {notice && (
         <Notice kind={notice.kind} onClose={() => setNotice(null)}>
           {notice.msg}
@@ -173,7 +227,7 @@ function AvatarsInner() {
                 a.id === selectedId && mode !== "new" ? "border-violet-400/40 bg-violet-500/10" : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]"
               }`}
             >
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-500/20 font-bold text-violet-300">{a.name[0]}</div>
+              <AvatarIcon name={a.name} url={a.imageUrl} size="md" className="!h-9 !w-9" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-semibold">{a.name}</span>
@@ -213,7 +267,18 @@ function AvatarsInner() {
           ) : (
             <>
               <Card className="flex flex-wrap items-center gap-4">
-                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-500/20 text-2xl font-bold text-violet-300">{selected.name[0]}</div>
+                <div className="flex flex-col items-center gap-1">
+                  <AvatarIcon name={selected.name} url={selected.imageUrl} size="lg" />
+                  <input ref={iconRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={(e) => changeIcon(e.target.files?.[0] ?? null)} />
+                  <button className="text-[10px] text-white/40 hover:text-white" onClick={() => iconRef.current?.click()}>
+                    変更
+                  </button>
+                  {selected.imageSource === "manual" && (
+                    <button className="text-[10px] text-cyan-300/70 hover:text-cyan-300" onClick={autoIcon} title="接続アカウントのプロフィール画像（X → Threads → …）に戻す">
+                      自動に戻す
+                    </button>
+                  )}
+                </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xl font-bold">{selected.name}</h2>
@@ -246,6 +311,37 @@ function AvatarsInner() {
                 </div>
               </Card>
 
+              <div className="flex flex-wrap gap-1 rounded-xl border border-white/[0.08] bg-white/[0.02] p-1 w-fit">
+                {TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => go(selected.id, t.key)}
+                    className={`rounded-lg px-4 py-1.5 text-sm transition ${tab === t.key ? "bg-white/10 font-semibold text-white" : "text-white/50 hover:text-white"}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {tab === "analytics" && (
+                <>
+                  <MetricChart key={selected.id} avatarId={selected.id} height={220} />
+              <Card>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold">アカウント分析（バイタルチェック）</h3>
+                  <span className="text-[11px] text-white/40">月ごとの投稿・エラー・収益・フォロワー。アカウントをクリックすると詳細グラフ</span>
+                  <span className="flex-1" />
+                  <Link href="/revenue?tab=record" className="text-xs text-cyan-300">
+                    収益を記録 →
+                  </Link>
+                </div>
+                <AccountVitals key={selected.id} avatarId={selected.id} />
+              </Card>
+                </>
+              )}
+
+              {tab === "profile" && (
+                <>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Stat label="接続アカウント" value={selected.accounts.length} />
                 <Stat label="投稿済み" value={selected.publishedCount} tone="text-emerald-300" />
@@ -310,17 +406,14 @@ function AvatarsInner() {
                 </Card>
               </div>
 
-              <Card>
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <h3 className="text-sm font-semibold">アカウント分析（バイタルチェック）</h3>
-                  <span className="text-[11px] text-white/40">月ごとの投稿・エラー・収益・フォロワー。アカウントをクリックすると詳細グラフ</span>
-                  <span className="flex-1" />
-                  <Link href="/revenue?tab=record" className="text-xs text-cyan-300">
-                    収益を記録 →
-                  </Link>
-                </div>
-                <AccountVitals key={selected.id} avatarId={selected.id} />
-              </Card>
+                </>
+              )}
+
+              {tab === "style" && <StyleSection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
+
+              {tab === "x" && <XPolicySection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
+
+              {tab === "activity" && <ActivitySection key={selected.id} avatarId={selected.id} limit={100} />}
             </>
           )}
         </div>

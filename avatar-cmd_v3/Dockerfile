@@ -21,9 +21,7 @@ FROM base AS deps
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
-COPY packages/core/package.json ./packages/core/
 COPY packages/db/package.json ./packages/db/
-COPY packages/chrome-empire/package.json ./packages/chrome-empire/
 COPY packages/integrations/package.json ./packages/integrations/
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN pnpm install --frozen-lockfile
@@ -48,6 +46,9 @@ CMD ["apps/worker/node_modules/.bin/tsx", "apps/worker/src/index.ts"]
 # ── Web（Next.js standalone） ──
 FROM base AS web
 ENV NODE_ENV=production
+# 図解（インフォグラフィック）の日本語フォント
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder --chown=node:node /app/apps/web/public ./apps/web/public

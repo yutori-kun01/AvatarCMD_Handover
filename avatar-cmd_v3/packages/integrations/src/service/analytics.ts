@@ -9,10 +9,13 @@
 import { prisma } from "@avatar-cmd/db";
 import { ConfigError } from "../http";
 import { getPlatform, PLATFORM_LIST } from "../platforms";
-import type { ProfileStats } from "../types";
+import type { AccountInsights, ProfileStats } from "../types";
 import { loadFreshCredentials } from "./accounts";
 import { errorMessage } from "./publish";
 import { getSystemConfig } from "./store";
+import { saveProfileImage } from "./profile-image";
+import { recordUsage } from "./usage";
+import { effectiveXPolicy } from "./x-policy";
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -84,20 +87,92 @@ export async function saveProfileStats(accountId: string, s: ProfileStats, now =
   return { followers, following, posts };
 }
 
-/** 1アカウントのフォロワー数を API から取得して保存する（失敗時は理由を保存して例外） */
+/**
+ * 閲覧数・反応数を日次の記録に保存する。
+ * daily: 媒体の日別値で上書き（api_daily）。totals: 前回の累計との差分を今日の値にする（cumulative_diff）。
+ */
+export async function saveInsights(accountId: string, ins: AccountInsights, now = new Date()) {
+  const clean = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined);
+  for (const d of ins.daily ?? []) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) continue;
+    const views = clean(d.views);
+    const engagements = clean(d.engagements);
+    if (views === undefined && engagements === undefined) continue;
+    const data = { ...(views !== undefined ? { views } : {}), ...(engagements !== undefined ? { engagements } : {}), source: "api_daily" };
+    await prisma.accountSnapshot.upsert({
+      where: { snsAccountId_date: { snsAccountId: accountId, date: dateOnly(d.date) } },
+      create: { snsAccountId: accountId, date: dateOnly(d.date), ...data },
+      update: data,
+    });
+  }
+  const tv = clean(ins.totals?.views);
+  const te = clean(ins.totals?.engagements);
+  if (tv === undefined && te === undefined) return;
+  const today = dateOnly(jstDay(now));
+  const prev = await prisma.accountSnapshot.findFirst({
+    where: { snsAccountId: accountId, date: { lt: today }, OR: [{ viewsTotal: { not: null } }, { engagementsTotal: { not: null } }] },
+    orderBy: { date: "desc" },
+  });
+  // 初回は差分が出せないので累計だけ保存する。累計が減った（記事の削除など）日は 0 とする
+  const diff = (total: number | undefined, before: number | null | undefined) => (total === undefined || before === null || before === undefined ? undefined : Math.max(0, total - before));
+  const views = diff(tv, prev?.viewsTotal);
+  const engagements = diff(te, prev?.engagementsTotal);
+  const data = {
+    ...(tv !== undefined ? { viewsTotal: tv } : {}),
+    ...(te !== undefined ? { engagementsTotal: te } : {}),
+    ...(views !== undefined ? { views } : {}),
+    ...(engagements !== undefined ? { engagements } : {}),
+    source: "cumulative_diff",
+  };
+  await prisma.accountSnapshot.upsert({
+    where: { snsAccountId_date: { snsAccountId: accountId, date: today } },
+    create: { snsAccountId: accountId, date: today, ...data },
+    update: data,
+  });
+}
+
+/** 投稿ごとの指標の増分を、その日のアカウントの閲覧数・反応数に足す（post_sum） */
+export async function addPostDeltas(accountId: string, delta: { views?: number; engagements?: number }, now = new Date()) {
+  const views = Math.max(0, Math.round(delta.views ?? 0));
+  const engagements = Math.max(0, Math.round(delta.engagements ?? 0));
+  if (!views && !engagements) return;
+  const date = dateOnly(jstDay(now));
+  const existing = await prisma.accountSnapshot.findUnique({ where: { snsAccountId_date: { snsAccountId: accountId, date } } });
+  if (!existing) {
+    await prisma.accountSnapshot.create({ data: { snsAccountId: accountId, date, views: views || null, engagements: engagements || null, source: "post_sum" } });
+    return;
+  }
+  await prisma.accountSnapshot.update({
+    where: { id: existing.id },
+    data: { views: (existing.views ?? 0) + views || existing.views, engagements: (existing.engagements ?? 0) + engagements || existing.engagements, source: existing.source ?? "post_sum" },
+  });
+}
+
+/** 1アカウントのフォロワー数（と画像・閲覧数）を API から取得して保存する（失敗時は理由を保存して例外） */
 export async function refreshFollowers(accountId: string, now = new Date()) {
   const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: accountId } });
   const def = getPlatform(acc.platform);
-  if (!def?.fetchProfile) throw new ConfigError(`${def?.name ?? acc.platform} はフォロワー数の自動取得に対応していません（手入力してください）`);
+  if (!def?.fetchProfile && !def?.fetchInsights) throw new ConfigError(`${def?.name ?? acc.platform} はフォロワー数の自動取得に対応していません（手入力してください）`);
   try {
     const { credentials, app } = await loadFreshCredentials(acc.id);
-    const stats = await def.fetchProfile({
+    const ctx = {
       app,
       credentials,
       settings: (acc.settings ?? {}) as Record<string, unknown>,
       account: { accountId: acc.accountId ?? "", accountName: acc.accountName },
       system: await getSystemConfig(),
-    });
+    };
+    const stats = def.fetchProfile ? await def.fetchProfile(ctx) : {};
+    // X のプロフィール取得は User Read（1 件 $0.010）。X API の予算の集計に入れる
+    if (acc.platform === "x" && def.fetchProfile) await recordUsage({ provider: "x", purpose: "x_profile", avatarId: acc.avatarId, context: "metrics", reads: 1 });
+    // 画像・閲覧数の失敗はフォロワー数の記録を止めない（理由はログだけ）
+    if (stats.imageUrl) await saveProfileImage(acc.id, stats.imageUrl).catch((e) => console.warn(`[profile-image] ${acc.platform} ${acc.accountName}: ${errorMessage(e)}`));
+    if (def.fetchInsights) {
+      await def
+        .fetchInsights(ctx, { days: 7 })
+        .then((ins) => saveInsights(acc.id, ins, now))
+        .catch((e) => console.warn(`[insights] ${acc.platform} ${acc.accountName}: ${errorMessage(e)}`));
+    }
     return await saveProfileStats(acc.id, stats, now);
   } catch (e) {
     await prisma.snsAccount.update({ where: { id: acc.id }, data: { followersUpdatedAt: now, followersError: errorMessage(e).slice(0, 300) } });
@@ -108,7 +183,7 @@ export async function refreshFollowers(accountId: string, now = new Date()) {
 /** worker から: 前回から 20 時間以上たったアカウントのフォロワー数を取得する。取得できた件数を返す */
 export async function collectFollowers({ maxAccounts = 5 } = {}): Promise<number> {
   const now = new Date();
-  const supported: string[] = PLATFORM_LIST.filter((p) => !!p.fetchProfile).map((p) => p.id);
+  const supported: string[] = PLATFORM_LIST.filter((p) => !!p.fetchProfile || !!p.fetchInsights).map((p) => p.id);
   const due = await prisma.snsAccount.findMany({
     where: {
       isActive: true,
@@ -116,11 +191,21 @@ export async function collectFollowers({ maxAccounts = 5 } = {}): Promise<number
       OR: [{ followersUpdatedAt: null }, { followersUpdatedAt: { lt: new Date(now.getTime() - 20 * HOUR) } }],
     },
     orderBy: { followersUpdatedAt: { sort: "asc", nulls: "first" } },
-    take: maxAccounts,
-    select: { id: true },
+    take: maxAccounts * 4,
+    select: { id: true, platform: true, avatarId: true, followersUpdatedAt: true },
   });
-  let n = 0;
+  // X はアバターの X API モードの間隔（ECO は 2 日に 1 回など）。他の媒体は 1 日 1 回
+  const targets: typeof due = [];
   for (const a of due) {
+    if (targets.length >= maxAccounts) break;
+    if (a.platform === "x" && a.followersUpdatedAt) {
+      const days = (await effectiveXPolicy(a.avatarId, now)).params.profileEveryDays;
+      if (now.getTime() - a.followersUpdatedAt.getTime() < (days * 24 - 4) * HOUR) continue;
+    }
+    targets.push(a);
+  }
+  let n = 0;
+  for (const a of targets) {
     try {
       await refreshFollowers(a.id, now);
       n++;
@@ -358,7 +443,7 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
     }),
     prisma.accountSnapshot.findMany({
       where: { snsAccount: avatarFilter, date: { gte: dateOnly(jstDay(prev.start)), lt: dateOnly(jstDay(end)) } },
-      select: { snsAccountId: true, date: true, followers: true },
+      select: { snsAccountId: true, date: true, followers: true, views: true, engagements: true },
       orderBy: { date: "asc" },
     }),
   ]);
@@ -382,7 +467,8 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
     const inMonth = myRevenue.filter((r) => r.earnedAt >= start && r.earnedAt < end);
     const revenue = inMonth.reduce((s, r) => s + r.amount, 0);
     const prevRevenue = myRevenue.filter((r) => r.earnedAt >= prev.start && r.earnedAt < prev.end).reduce((s, r) => s + r.amount, 0);
-    const mySnaps = snaps.filter((s) => s.snsAccountId === a.id).map((s) => ({ date: s.date.toISOString().slice(0, 10), followers: s.followers }));
+    const mySnaps = snaps.filter((s) => s.snsAccountId === a.id).map((s) => ({ date: s.date.toISOString().slice(0, 10), followers: s.followers, views: s.views, engagements: s.engagements }));
+    const snapByDay = new Map(mySnaps.map((s) => [s.date, s]));
     const f = followersDelta(mySnaps, month);
 
     let views = 0;
@@ -404,6 +490,8 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
       revenue: future(date) ? null : inMonth.filter((r) => jstDay(r.earnedAt) === date).reduce((s, r) => s + r.amount, 0),
       prevRevenue: prevDays[i] ? prevInMonth.filter((r) => jstDay(r.earnedAt) === prevDays[i]).reduce((s, r) => s + r.amount, 0) : null,
       followers: followerByDay.get(date) ?? null,
+      views: snapByDay.get(date)?.views ?? null,
+      engagements: snapByDay.get(date)?.engagements ?? null,
     }));
 
     const itemTotals = new Map<string, { name: string; total: number; quantity: number }>();

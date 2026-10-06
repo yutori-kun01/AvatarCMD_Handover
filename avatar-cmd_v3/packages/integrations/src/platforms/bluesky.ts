@@ -64,7 +64,7 @@ export const bluesky: PlatformDefinition = {
     const actor = ctx.account.accountId || ctx.account.accountName.replace(/^@/, "");
     const agent = new AtpAgent({ service: "https://public.api.bsky.app" });
     const { data } = await agent.getProfile({ actor });
-    return { followers: data.followersCount, following: data.followsCount, posts: data.postsCount };
+    return { followers: data.followersCount, following: data.followsCount, posts: data.postsCount, imageUrl: data.avatar };
   },
   async publish(ctx, post) {
     const c = ctx.credentials as Record<string, string>;
