@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { EmptyState, relTime, Shell } from "@/components/dashboard/shell";
+import { EmptyState, relTime, Embedded, Shell } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, Notice } from "@/components/settings/ui";
 
 interface Video {
@@ -49,7 +49,7 @@ const STATUS_CLS: Record<string, string> = {
 
 const emptyForm = { channel: "", ownership: "other", avatarIds: [] as string[], ownerAccountId: "", pollHours: "24", lookbackDays: "30", maxVideosPerRun: "3" };
 
-export default function YoutubePage() {
+function YoutubeSectionInner() {
   const [data, setData] = useState<Data | null>(null);
   const [form, setForm] = useState<typeof emptyForm | null>(null);
   const [transcript, setTranscript] = useState<{ videoId: string; text: string } | null>(null);
@@ -261,5 +261,14 @@ export default function YoutubePage() {
         </div>
       )}
     </Shell>
+  );
+}
+
+/** 別の画面のタブとして表示する */
+export function YoutubeSection() {
+  return (
+    <Embedded>
+      <YoutubeSectionInner />
+    </Embedded>
   );
 }

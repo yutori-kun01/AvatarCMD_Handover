@@ -7,11 +7,12 @@
 // 名前は "fa:rocket" / "bi:lightning" / "lucide:rocket"。接頭辞なしは fa → bi → lucide の順で探す。
 // 見つからない名前は近い名前（語の一部一致）→ 既定のアイコンに置き換える（AI が存在しない名前を出しても崩れない）。
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { createRequire } from "module";
 import path from "path";
-
-const require = createRequire(import.meta.url);
+// Font Awesome は静的 import（Next.js のバンドルにも確実に入る）
+import * as faSolid from "@fortawesome/free-solid-svg-icons";
+import * as faRegular from "@fortawesome/free-regular-svg-icons";
 
 export interface IconSvg {
   /** 解決したアイコン名（例: fa:rocket） */
@@ -29,8 +30,7 @@ let faMap: Map<string, FaDef> | null = null;
 function loadFa(): Map<string, FaDef> {
   if (faMap) return faMap;
   faMap = new Map();
-  for (const pkg of ["@fortawesome/free-solid-svg-icons", "@fortawesome/free-regular-svg-icons"]) {
-    const mod = require(pkg) as Record<string, unknown>;
+  for (const mod of [faSolid, faRegular] as Record<string, unknown>[]) {
     for (const v of Object.values(mod)) {
       const d = v as FaDef;
       if (!d || typeof d !== "object" || !d.iconName || !Array.isArray(d.icon)) continue;
@@ -41,11 +41,30 @@ function loadFa(): Map<string, FaDef> {
   return faMap;
 }
 
-function pkgDir(pkg: string): string | null {
+/**
+ * SVG ファイルのあるパッケージの場所。通常は require.resolve で、バンドル後（Next.js の standalone 出力など）で
+ * 解決できない場合は、作業ディレクトリから上に node_modules（pnpm の .pnpm も）を探す。
+ */
+function pkgDir(pkg: "bootstrap-icons" | "lucide-static"): string | null {
   try {
-    return path.dirname(require.resolve(`${pkg}/package.json`));
+    const req = createRequire(import.meta.url);
+    const p = pkg === "bootstrap-icons" ? req.resolve("bootstrap-icons/package.json") : req.resolve("lucide-static/package.json");
+    if (existsSync(path.join(path.dirname(p), "icons"))) return path.dirname(p);
   } catch {
-    return null;
+    // 下の探索へ
+  }
+  let dir = process.cwd();
+  for (;;) {
+    const direct = path.join(dir, "node_modules", pkg);
+    if (existsSync(path.join(direct, "icons"))) return direct;
+    const pnpm = path.join(dir, "node_modules", ".pnpm");
+    if (existsSync(pnpm)) {
+      const hit = readdirSync(pnpm).find((d) => d.startsWith(`${pkg}@`));
+      if (hit && existsSync(path.join(pnpm, hit, "node_modules", pkg, "icons"))) return path.join(pnpm, hit, "node_modules", pkg);
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
 }
 
@@ -93,7 +112,7 @@ let regularMap: Map<string, FaDef> | null = null;
 export function findRegular(raw: string): IconSvg | null {
   if (!regularMap) {
     regularMap = new Map();
-    for (const v of Object.values(require("@fortawesome/free-regular-svg-icons") as Record<string, unknown>)) {
+    for (const v of Object.values(faRegular as Record<string, unknown>)) {
       const d = v as FaDef;
       if (d && typeof d === "object" && d.iconName && Array.isArray(d.icon)) regularMap.set(d.iconName, d);
     }

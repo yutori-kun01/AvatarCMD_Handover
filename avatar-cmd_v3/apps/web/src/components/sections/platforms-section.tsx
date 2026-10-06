@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Shell, Stat } from "@/components/dashboard/shell";
+import { Embedded, Shell, Stat } from "@/components/dashboard/shell";
 import { api, Badge, Card, DocLinks, Notice, SUPPORT_LABEL, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
-export default function SnsPage() {
+/** 対応プラットフォームの一覧と接続状況（設定 > プラットフォーム） */
+function PlatformsSectionInner() {
   const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -78,5 +79,14 @@ export default function SnsPage() {
         })}
       </div>
     </Shell>
+  );
+}
+
+/** 別の画面のタブとして表示する */
+export function PlatformsSection() {
+  return (
+    <Embedded>
+      <PlatformsSectionInner />
+    </Embedded>
   );
 }

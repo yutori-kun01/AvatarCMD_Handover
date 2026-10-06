@@ -147,6 +147,13 @@ async function callGeminiImage(apiKey: string, model: string, req: ImageRequest)
   return { bytes: new Uint8Array(Buffer.from(inline.data, "base64")), mimeType: inline.mimeType ?? inline.mime_type ?? "image/png", usage: normalizeGeminiUsage(d.usageMetadata) };
 }
 
+/** プロバイダ API を直接呼ぶ（設定・台帳・予算を使わない。比較スクリプト用） */
+export async function callImageProvider(provider: ImageProvider, apiKey: string, model: string, req: ImageRequest): Promise<Omit<ImageResult, "provider" | "model">> {
+  const started = Date.now();
+  const out = provider === "openai" ? await callOpenAIImage(apiKey, model, req) : await callGeminiImage(apiKey, model, req);
+  return { ...out, ms: Date.now() - started };
+}
+
 /** 画像を 1 枚生成する（保存はしない） */
 export async function generateImage(req: ImageRequest): Promise<ImageResult> {
   if (!req.prompt?.trim()) throw new ConfigError("画像のプロンプトが空です");

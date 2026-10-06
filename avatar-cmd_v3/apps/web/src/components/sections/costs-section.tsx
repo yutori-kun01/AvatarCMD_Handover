@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { EmptyState, Shell, Stat } from "@/components/dashboard/shell";
+import { EmptyState, Embedded, Shell, Stat } from "@/components/dashboard/shell";
 import { api, Badge, Button, Card, Field, inputCls, Notice } from "@/components/settings/ui";
 
 type Amounts = Record<string, number>;
@@ -43,6 +43,7 @@ const PURPOSE: Record<string, string> = {
   post: "投稿生成", article: "記事生成", rewrite: "書き直し（文字数）", review: "投稿前チェック", quote: "引用（判定・文章）", tags: "タグ提案",
   jev_post_gate: "Jev 投稿判定", jev_quote_candidate: "Jev 引用判定", jev_performance: "Jev 改善判定", jev_improvement: "Jev 改善分析",
   x_timeline: "引用探索（タイムライン）", x_metrics: "指標取得（X）", threads_metrics: "指標取得（Threads）", post_publish: "投稿 API",
+  style: "画像スタイル分析", visual: "画像・図解の設計", image_generate: "画像生成", image_compare: "画像生成（比較テスト）",
   youtube_api: "YouTube API", youtube_summary: "動画要約", improvement: "改善処理",
 };
 const CONTEXT: Record<string, string> = { automation: "自動化", quote_scan: "引用探索", metrics: "指標取得", publish: "投稿", manual: "手動", api: "外部API", improvement: "改善処理", youtube: "YouTube" };
@@ -55,7 +56,7 @@ const num = (v: number) => Math.round(v).toLocaleString("ja-JP");
 
 const emptyPrice = { provider: "anthropic", model: "", unit: "input_token", price: "", per: "1000000", currency: "USD", effectiveFrom: new Date().toISOString().slice(0, 10), checkedAt: new Date().toISOString().slice(0, 10), note: "" };
 
-export default function CostsPage() {
+function CostsSectionInner() {
   const [data, setData] = useState<Data | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [budget, setBudget] = useState({ amount: "", currency: "USD", warnPct: "80", action: "warn" });
@@ -315,5 +316,14 @@ export default function CostsPage() {
         )}
       </Card>
     </Shell>
+  );
+}
+
+/** 別の画面のタブとして表示する */
+export function CostsSection() {
+  return (
+    <Embedded>
+      <CostsSectionInner />
+    </Embedded>
   );
 }

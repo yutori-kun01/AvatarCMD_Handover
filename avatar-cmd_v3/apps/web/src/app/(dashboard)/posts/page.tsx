@@ -1,6 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArticleEditor } from "@/components/posts/article-editor";
 import { ExternalLink, ImagePlus, Quote, RefreshCw, ScissorsLineDashed, ShieldCheck, Sparkles, Tags, Trash2, X } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
@@ -202,7 +204,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   FAILED: { label: "失敗", cls: "bg-red-500/15 text-red-300" },
 };
 
-export default function PostsPage() {
+function PostsInner() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const view = params.get("tab") === "note" ? "note" : "sns";
   const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [posts, setPosts] = useState<PostRow[]>([]);
@@ -408,8 +413,31 @@ export default function PostsPage() {
     <div className="flex min-h-screen bg-[#0b0c0f] text-white">
       <Sidebar />
       <div className="flex flex-1 flex-col">
-        <Header title="投稿" description="SNSへの投稿・予約・送信状況" />
+        <Header title="投稿・記事" description="SNSへの投稿・予約・送信状況と、note 記事（画像・図解・有料ライン）" />
         <main className="flex-1 overflow-auto p-6">
+          <div className="mx-auto mb-5 flex w-full max-w-6xl gap-1">
+            <div className="flex gap-1 rounded-xl border border-white/[0.08] bg-white/[0.02] p-1">
+              {(
+                [
+                  ["sns", "SNS 投稿"],
+                  ["note", "note 記事"],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => router.replace(k === "sns" ? "/posts" : "/posts?tab=note")}
+                  className={`rounded-lg px-4 py-1.5 text-sm transition ${view === k ? "bg-white/10 font-semibold text-white" : "text-white/50 hover:text-white"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {view === "note" ? (
+            <div className="mx-auto max-w-6xl">
+              <ArticleEditor accounts={accounts} onPosted={() => loadPosts()} />
+            </div>
+          ) : (
           <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <div className="space-y-4">
               {notice && (
@@ -698,8 +726,17 @@ export default function PostsPage() {
               )}
             </Card>
           </div>
+          )}
         </main>
       </div>
     </div>
+  );
+}
+
+export default function PostsPage() {
+  return (
+    <Suspense>
+      <PostsInner />
+    </Suspense>
   );
 }

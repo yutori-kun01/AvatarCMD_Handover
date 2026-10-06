@@ -46,6 +46,9 @@ CMD ["apps/worker/node_modules/.bin/tsx", "apps/worker/src/index.ts"]
 # ── Web（Next.js standalone） ──
 FROM base AS web
 ENV NODE_ENV=production
+# 図解（インフォグラフィック）の日本語フォント
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder --chown=node:node /app/apps/web/public ./apps/web/public

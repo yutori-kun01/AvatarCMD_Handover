@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { EmptyState, Shell } from "@/components/dashboard/shell";
+import { Embedded, EmptyState, Shell } from "@/components/dashboard/shell";
 import { api, Badge, Card, inputCls, Notice } from "@/components/settings/ui";
 
 interface Log {
@@ -22,7 +22,7 @@ const LEVEL: Record<string, string> = {
 };
 const CATEGORY: Record<string, string> = { sns: "投稿", content: "コンテンツ・自動化", security: "接続・セキュリティ", system: "システム", revenue: "収益" };
 
-function ActivityInner() {
+function ActivityInner({ avatarId, limit = 200 }: { avatarId?: string; limit?: number }) {
   const params = useSearchParams();
   const [logs, setLogs] = useState<Log[]>([]);
   const [level, setLevel] = useState(params.get("level") ?? "");
@@ -30,12 +30,12 @@ function ActivityInner() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    const q = new URLSearchParams({ ...(level ? { level } : {}), ...(category ? { category } : {}) });
+    const q = new URLSearchParams({ ...(level ? { level } : {}), ...(category ? { category } : {}), ...(avatarId ? { avatarId } : {}), limit: String(limit) });
     const load = () => api<{ logs: Log[] }>(`/api/activity?${q}`).then((d) => setLogs(d.logs)).catch((e) => setErr(e.message));
     load();
     const t = setInterval(load, 15_000);
     return () => clearInterval(t);
-  }, [level, category]);
+  }, [level, category, avatarId, limit]);
 
   return (
     <Shell title="アクティビティ" description="投稿・失敗・接続・自動化の記録">
@@ -58,7 +58,7 @@ function ActivityInner() {
       {logs.length === 0 ? (
         <EmptyState>記録はまだありません</EmptyState>
       ) : (
-        <Card className="divide-y divide-white/[0.05] p-0">
+        <Card className="max-h-[520px] divide-y divide-white/[0.05] overflow-auto p-0">
           {logs.map((l) => (
             <div key={l.id} className="flex flex-wrap items-start gap-3 px-5 py-3">
               <Badge className={LEVEL[l.level] ?? "bg-white/10 text-white/60"}>{CATEGORY[l.category] ?? l.category}</Badge>
@@ -75,10 +75,13 @@ function ActivityInner() {
   );
 }
 
-export default function ActivityPage() {
+/** アクティビティ（ダッシュボード・アバター詳細に埋め込む。avatarId で絞り込み） */
+export function ActivitySection(props: { avatarId?: string; limit?: number }) {
   return (
-    <Suspense>
-      <ActivityInner />
-    </Suspense>
+    <Embedded>
+      <Suspense>
+        <ActivityInner {...props} />
+      </Suspense>
+    </Embedded>
   );
 }

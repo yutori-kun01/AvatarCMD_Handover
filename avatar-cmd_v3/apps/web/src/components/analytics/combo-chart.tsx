@@ -43,6 +43,8 @@ export interface Series {
   hidden?: boolean;
   /** 棒・面のグラデーション（上 → 下）。ブランドの棒は [brandFrom, brandTo] */
   gradient?: [string, string];
+  /** 同じ値の棒を積み上げる（増加・減少を 1 本の位置に描くなど） */
+  stack?: string;
 }
 type Mode = "combo" | SeriesKind;
 const MODES: { id: Mode; label: string }[] = [
@@ -187,7 +189,7 @@ export function ComboChart<T extends Record<string, unknown>>({
             {visible.map((s) => {
               const kind = s.compare || mode === "combo" ? s.kind : mode;
               const common = { dataKey: s.key, name: s.label, yAxisId: s.right ? "right" : "left", isAnimationActive: false };
-              if (kind === "bar") return <Bar key={s.key} {...common} fill={s.gradient ? `url(#${uid}-${s.key}-bar)` : s.color} fillOpacity={s.compare ? 0.35 : 0.9} radius={[3, 3, 0, 0]} barSize={barSize} />;
+              if (kind === "bar") return <Bar key={s.key} {...common} stackId={s.stack} fill={s.gradient ? `url(#${uid}-${s.key}-bar)` : s.color} fillOpacity={s.compare ? 0.35 : 0.9} radius={[3, 3, 0, 0]} barSize={barSize} />;
               if (kind === "area")
                 return (
                   <Area

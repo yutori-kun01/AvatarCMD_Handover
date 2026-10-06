@@ -1,9 +1,18 @@
 "use client";
 // ダッシュボード各ページ共通のレイアウト
+import { createContext, useContext } from "react";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
 
+/** 別の画面のタブとして埋め込むとき（Shell の枠を出さず中身だけ描く） */
+const EmbeddedContext = createContext(false);
+export function Embedded({ children }: { children: React.ReactNode }) {
+  return <EmbeddedContext.Provider value={true}>{children}</EmbeddedContext.Provider>;
+}
+
 export function Shell({ title, description, children, wide }: { title: string; description?: string; children: React.ReactNode; wide?: boolean }) {
+  const embedded = useContext(EmbeddedContext);
+  if (embedded) return <>{children}</>;
   return (
     <div className="flex min-h-screen bg-[#0b0c0f] text-white">
       <Sidebar />

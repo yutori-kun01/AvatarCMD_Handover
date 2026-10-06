@@ -462,7 +462,7 @@ export default function AutomationPage() {
               {Object.entries(estimate.amounts).filter(([, v]) => v > 0).map(([c, v]) => `${v.toFixed(2)} ${c}`).join(" + ") || "0"}
               {estimate.unpriced.length > 0 && <span className="text-amber-300">（単価未登録の分は未算定）</span>}
               {estimate.notes.length > 0 && <span className="text-amber-300"> {estimate.notes.join(" ／ ")}</span>}
-              ・概算です。<Link href="/costs" className="underline">API コスト</Link>
+              ・概算です。<Link href="/settings?tab=costs" className="underline">API コスト</Link>
             </p>
           )}
           <div className="flex gap-2">

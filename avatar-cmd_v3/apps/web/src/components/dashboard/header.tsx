@@ -7,12 +7,11 @@ import { Bell, Plus, ArrowLeft, LogOut } from "lucide-react"
 const pageTitles: Record<string, { title: string; description: string }> = {
   "/": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
   "/dashboard": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
-  "/posts": { title: "投稿", description: "SNSへの投稿・予約・送信状況" },
-  "/avatars": { title: "アバター管理", description: "全アバターの詳細設定と状態管理" },
-  "/activity": { title: "アクティビティ", description: "パフォーマンス分析 & 改善サイクル" },
-  "/sns": { title: "SNS運用", description: "プラットフォーム & コンテンツ管理" },
-  "/revenue": { title: "収益分析", description: "全アバター収益レポート" },
-  "/automation": { title: "自動化ルール", description: "タスク自動化の設定と管理" },
+  "/posts": { title: "投稿・記事", description: "SNSへの投稿・予約・送信状況と note 記事" },
+  "/avatars": { title: "アバター", description: "アバターごとの分析・プロフィール・画像スタイル" },
+  "/revenue": { title: "分析・収益", description: "アカウント別のバイタルと収益" },
+  "/automation": { title: "自動化", description: "タスク自動化の設定と管理" },
+  "/knowledge": { title: "ナレッジ・学習", description: "ナレッジ・改善処理・YouTube 学習" },
   "/settings": { title: "設定", description: "システム全体の設定" },
 }
 
@@ -54,7 +53,7 @@ export function Header({ title, description }: HeaderProps) {
         </Link>
 
         <Link
-          href="/activity?level=error"
+          href="/dashboard?level=error#activity"
           title="エラーのアクティビティ"
           className="relative rounded-lg p-2 text-white/30 transition-colors hover:bg-white/[0.05] hover:text-white/70"
         >

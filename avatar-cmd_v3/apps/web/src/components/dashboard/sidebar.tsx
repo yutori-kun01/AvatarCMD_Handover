@@ -6,20 +6,17 @@ import { usePathname } from "next/navigation"
 import {
   LayoutDashboard,
   Users,
-  Activity,
   TrendingUp,
   Settings,
-  MessageSquare,
   Brain,
   Zap,
   ChevronLeft,
   ChevronRight,
   Send,
-  Wallet,
   BookOpen,
-  Youtube,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { AvatarIcon } from "@/components/avatar-icon"
 
 const navItems: {
   icon: typeof LayoutDashboard
@@ -27,16 +24,13 @@ const navItems: {
   href: string
   badge?: string
 }[] = [
+  // v3.7 — 10 項目から 6 項目に統合（アクティビティ → ダッシュボード、SNS運用・API コスト → 設定、YouTube 学習 → ナレッジ）
   { icon: LayoutDashboard, label: "ダッシュボード", href: "/dashboard" },
-  { icon: Send, label: "投稿", href: "/posts" },
-  { icon: Users, label: "アバター管理", href: "/avatars" },
-  { icon: Activity, label: "アクティビティ", href: "/activity" },
-  { icon: MessageSquare, label: "SNS運用", href: "/sns" },
-  { icon: TrendingUp, label: "収益分析", href: "/revenue" },
-  { icon: Zap, label: "自動化ルール", href: "/automation" },
-  { icon: BookOpen, label: "ナレッジ・改善", href: "/knowledge" },
-  { icon: Youtube, label: "YouTube 学習", href: "/youtube" },
-  { icon: Wallet, label: "API コスト", href: "/costs" },
+  { icon: Send, label: "投稿・記事", href: "/posts" },
+  { icon: Users, label: "アバター", href: "/avatars" },
+  { icon: TrendingUp, label: "分析・収益", href: "/revenue" },
+  { icon: Zap, label: "自動化", href: "/automation" },
+  { icon: BookOpen, label: "ナレッジ・学習", href: "/knowledge" },
 ]
 
 interface SidebarProps {
@@ -50,6 +44,14 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
   const toggle = onToggle ?? (() => setInternalCollapsed(!internalCollapsed))
   const pathname = usePathname()
   const [status, setStatus] = useState<{ workerAlive: boolean; queued: number; failed24h: number; drafts: number } | null>(null)
+  const [avatars, setAvatars] = useState<{ id: string; name: string; imageUrl: string | null }[]>([])
+
+  useEffect(() => {
+    fetch("/api/avatars")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setAvatars(d.avatars))
+      .catch(() => setAvatars([]))
+  }, [])
 
   useEffect(() => {
     const load = () =>
@@ -77,7 +79,7 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
         {!collapsed && (
           <div className="flex flex-col">
             <span className="text-sm font-semibold">Avatar CMD</span>
-            <span className="text-[10px] text-white/30">v3.0</span>
+            <span className="text-[10px] text-white/30">v3.7</span>
           </div>
         )}
       </div>
@@ -112,6 +114,20 @@ export function Sidebar({ collapsed: controlledCollapsed, onToggle }: SidebarPro
           )
         })}
       </nav>
+
+      {/* アバター（アイコンから各アバターの分析・設定へ） */}
+      {avatars.length > 0 && (
+        <div className={cn("border-t border-white/[0.08] p-3", collapsed && "px-2")}>
+          {!collapsed && <div className="mb-2 px-1 text-[10px] text-white/30">アバター</div>}
+          <div className={cn("flex flex-wrap gap-1.5", collapsed && "flex-col items-center")}>
+            {avatars.slice(0, 12).map((a) => (
+              <Link key={a.id} href={`/avatars?id=${a.id}`} title={a.name} className="rounded-full no-underline transition hover:ring-2 hover:ring-cyan-400/40">
+                <AvatarIcon name={a.name} url={a.imageUrl} size="sm" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* System Status（/api/status の実データ） */}
       {!collapsed && status && (
