@@ -51,13 +51,23 @@
 - 出力サイズを用途ごとに固定し、生成後に中央基準で切り抜く: **見出し画像（note のサムネイル）1280×670**（note 推奨）／**見出しの下の画像・図解 1280×720**。形式は **PNG（既定）か WebP**
 - **デザイン DNA**: スタイル定義をアバターごとに 1 つに統一。スタイルプロンプト（画像生成 AI に渡す作風）と色・角丸・アイコンの塗り/線を、イメージ画像のプロンプトと図解の描画の両方に使い、2 つがかけ離れたデザインにならないようにした。参考画像はイメージ画像用・図解用の両方から 1 つの DNA を作る
 
-### ⑧ 整理
+### ⑧ X API の費用の最適化（2026-10-06 追記。詳細は `docs/X_API_COST_PLAN.md`）
+- **自分の投稿の指標**: `GET /2/users/{id}/tweets`（一覧の読み直し・最大 300 件）をやめ、`GET /2/tweets?ids=` で **期限の来た投稿だけ** 読む。取得はモードの時点（BALANCED: 公開から 1h / 6h / 24h）だけで、時点ごとの値を `post_metric_snapshots` に残す（止まっていた間の時点はさかのぼって読まない）
+- **引用探索**: `exclude=replies,retweets`、投稿者情報（`expansions`）を外す。モードの時刻（BALANCED: 08:00 / 18:00）・件数（12 件）だけ読む。軽い採点の上位（3 件）だけ判定し、その投稿者名だけを `x_users` キャッシュ経由で取得（User Read）。月の引用案の上限（BALANCED: 20 件）
+- **プロフィール**: モードの間隔（ECO は 2 日に 1 回）。User Read として記録
+- **モード**: ECO / **BALANCED（既定）** / AGGRESSIVE / **カスタマイズ**（指標の時点・探索の時刻・件数・判定する件数・引用の上限・プロフィールの間隔・キャッシュ期間を自由に設定）。各モードの月額の見積もりを表示
+- **予算（アバターごと）**: 今月の X 費用（Post Read / User Read / Post Create × 単価 × 為替）が縮小する額（既定 ¥800）を超えたら探索 1 日 1 回・10 件・指標は後ろ 2 時点、上限（既定 ¥1,000）で引用探索と引用案の作成を停止。通常投稿と自分の投稿の分析は続ける
+- 画面: アバター > **X API**（使用量のバー・モード・カスタマイズ・予算・単価と為替）、ダッシュボードのアバターカードに予算バー
+- アカウント設定の「引用候補の自動探索」は「しない／する（モードの時刻）」に変更（旧設定の 12/24 時間ごとは「する」として扱う）
+
+### ⑨ 整理
 - 削除: `packages/core`（使用は `CredentialVault` の 1 ファイルのみ → `packages/integrations/src/security` へ移動）、`packages/chrome-empire`（未使用）、リポジトリ直下の旧版 `Avater_CMD_v2/`（git の履歴には残る）
 
 ## 2. 未検証事項（本番反映前・反映後に確認が必要）
 
 | 項目 | 内容 |
 |---|---|
+| **X の単価と課金の単位** | 単価（Post Read $0.005 / User Read $0.010 / Post Create $0.015）は共有いただいた値。`GET /2/tweets?ids=` で見つからない投稿・`/2/users?ids=` が課金対象になるか、`expansions` を外した後に User Read の請求が減るかを、反映後 1 週間の X の請求画面と 設定 > API コスト の件数で突き合わせる |
 | **note の画像・見出し画像・有料設定** | エンドポイント（`/api/v1/upload_image`、`/api/v1/image_upload/note_eyecatch`）と `draft_save` の `price` / `separator` の項目名は、参考記事を作業環境から読めなかったため **未確認**（モックでのテストのみ）。拒否されても本文は保存されるが、実アカウントで 1 件だけ下書きを作り、編集画面で画像・有料ライン・価格を確認すること。違っていればブラウザで手動保存したときの通信内容に合わせて `platforms/note.ts` を直す |
 | note の太字 | 本文は `<strong>` で送っている（従来どおり）。note の編集画面で太字として表示されるか |
 | note のプロフィール画像・PV | `current_user` の画像の項目名（`profile_image_path` 等）と `stats/pv` の集計が想定どおりか |
@@ -82,6 +92,7 @@
 
 | マイグレーション | 内容 |
 |---|---|
+| `20261006012212_v37_x_api_policy` | `avatars.x_policy`（既定 `{}` = BALANCED）、新テーブル `post_metric_snapshots`・`x_users` |
 | `20261006002914_v37_media_insights_style` | `account_snapshots` に `views` `engagements` `views_total` `engagements_total` `source`、`sns_accounts` に `profile_image_url` `profile_image_hash`、`avatars` に `avatar_image_source` `image_style`（既定 `{}`）、新テーブル `style_references` |
 
 反映手順は v3.6 と同じ（バックアップ → 取得 → `docker compose ... up -d --build`。migrate コンテナが自動で適用）。web イメージはフォントの追加で約 60MB 大きくなります。追加の環境変数は不要です（画像生成のキーは設定画面の AI キーと共通）。
@@ -104,6 +115,9 @@ docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 
 ### DB も戻す場合（通常は不要。実行前に必ずバックアップ）
 ```sql
+DROP TABLE IF EXISTS "post_metric_snapshots", "x_users";
+ALTER TABLE "avatars" DROP COLUMN IF EXISTS "x_policy";
+DELETE FROM "_prisma_migrations" WHERE migration_name = '20261006012212_v37_x_api_policy';
 DROP TABLE IF EXISTS "style_references";
 ALTER TABLE "avatars" DROP COLUMN IF EXISTS "avatar_image_source", DROP COLUMN IF EXISTS "image_style";
 ALTER TABLE "sns_accounts" DROP COLUMN IF EXISTS "profile_image_url", DROP COLUMN IF EXISTS "profile_image_hash";

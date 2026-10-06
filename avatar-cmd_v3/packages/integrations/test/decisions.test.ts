@@ -97,17 +97,14 @@ test("X: 引用投稿は quote_tweet_id を使わず、元投稿の URL を本�
   }
 });
 
-test("X: 自分の投稿の反応を /2/users/{id}/tweets の public_metrics から取る（見つからない投稿は理由付き）", async () => {
+test("X: 自分の投稿の反応は /2/tweets?ids= で指定した投稿だけ読む（一覧は読み直さない。見つからない投稿は理由付き）", async () => {
   const m = mockFetch([
     [
       "GET",
-      /\/2\/users\/42\/tweets\?/,
+      /\/2\/tweets\?/,
       {
-        data: [
-          { id: "T1", public_metrics: { impression_count: 500, like_count: 10, reply_count: 2, retweet_count: 3, quote_count: 1, bookmark_count: 4 } },
-          { id: "OTHER", public_metrics: { like_count: 1 } },
-        ],
-        meta: {},
+        data: [{ id: "T1", public_metrics: { impression_count: 500, like_count: 10, reply_count: 2, retweet_count: 3, quote_count: 1, bookmark_count: 4 } }],
+        errors: [{ resource_id: "GONE", title: "Not Found Error", detail: "Could not find tweet with ids: [GONE]." }],
       },
     ],
   ]);
@@ -117,40 +114,41 @@ test("X: 自分の投稿の反応を /2/users/{id}/tweets の public_metrics か
       { postId: "GONE", publishedAt: new Date("2026-09-26T00:00:00Z") },
     ]);
     assert.deepEqual(r.T1, { views: 500, likes: 10, replies: 2, reposts: 3, quotes: 1, bookmarks: 4 });
-    assert.ok("error" in r.GONE);
+    assert.match((r.GONE as { error: string }).error, /見つかりません/);
     const u = new URL(m.calls[0].url);
-    assert.equal(u.searchParams.get("tweet.fields"), "public_metrics,created_at");
-    assert.equal(u.searchParams.get("start_time"), "2026-09-25T23:59:00.000Z");
+    assert.equal(u.pathname, "/2/tweets");
+    assert.equal(u.searchParams.get("ids"), "T1,GONE");
+    assert.equal(u.searchParams.get("tweet.fields"), "public_metrics");
     assert.equal(m.calls.length, 1);
+    assert.ok(!m.calls.some((c) => /\/users\/42\/tweets/.test(c.url)));
   } finally {
     m.restore();
   }
 });
 
-test("X: ホームタイムライン（reverse_chronological）を取得し、投稿の種類と投稿者を付ける", async () => {
+test("X: ホームタイムラインは返信・リポストを除外し、投稿者情報（User Read）を付けずに取得する", async () => {
   const m = mockFetch([
     [
       "GET",
       /\/2\/users\/42\/timelines\/reverse_chronological\?/,
-      {
-        data: [
-          { id: "P1", text: "本文", author_id: "u1", created_at: "2026-09-27T10:00:00Z", public_metrics: { like_count: 5 } },
-          { id: "P2", text: "RT @x: ...", author_id: "u2", referenced_tweets: [{ type: "retweeted", id: "Z" }] },
-        ],
-        includes: { users: [{ id: "u1", username: "alice", name: "Alice" }, { id: "u2", username: "bob", name: "Bob" }] },
-      },
+      { data: [{ id: "P1", text: "本文", author_id: "u1", created_at: "2026-09-27T10:00:00Z", public_metrics: { like_count: 5 } }] },
     ],
+    ["GET", /\/2\/users\?ids=/, { data: [{ id: "u1", username: "alice", name: "Alice", public_metrics: { followers_count: 120 } }] }],
   ]);
   try {
-    const t = await PLATFORMS.x.fetchTimeline!(ctx({ credentials: { accessToken: "AT" }, account: { accountId: "42", accountName: "@y" } }), { maxResults: 30, sinceId: "P0" });
-    assert.equal(t[0].url, "https://x.com/alice/status/P1");
+    const c = ctx({ credentials: { accessToken: "AT" }, account: { accountId: "42", accountName: "@y" } });
+    const t = await PLATFORMS.x.fetchTimeline!(c, { maxResults: 12, sinceId: "P0" });
+    assert.equal(t[0].url, "https://x.com/i/web/status/P1");
+    assert.equal(t[0].authorId, "u1");
     assert.equal(t[0].kind, "original");
     assert.equal(t[0].metrics?.likes, 5);
-    assert.equal(t[1].kind, "repost");
     const u = new URL(m.calls[0].url);
     assert.equal(u.searchParams.get("since_id"), "P0");
-    assert.equal(u.searchParams.get("exclude"), "replies");
-    assert.equal(u.searchParams.get("max_results"), "30");
+    assert.equal(u.searchParams.get("exclude"), "replies,retweets");
+    assert.equal(u.searchParams.get("max_results"), "12");
+    assert.equal(u.searchParams.get("expansions"), null);
+    const users = await PLATFORMS.x.lookupUsers!(c, ["u1"]);
+    assert.deepEqual(users, [{ id: "u1", username: "alice", name: "Alice", followers: 120 }]);
   } finally {
     m.restore();
   }

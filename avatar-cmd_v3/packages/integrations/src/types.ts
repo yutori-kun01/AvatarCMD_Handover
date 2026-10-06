@@ -207,4 +207,6 @@ export interface PlatformDefinition {
   fetchTimeline?(ctx: PublishContext, opts: { maxResults: number; sinceId?: string }): Promise<TimelinePost[]>;
   /** 引用投稿に対応しているか */
   supportsQuote?: boolean;
+  /** ユーザー情報（名前・フォロワー数）をまとめて取得する（X は 1 件ごとに課金されるのでキャッシュして使う） */
+  lookupUsers?(ctx: PublishContext, ids: string[]): Promise<{ id: string; username: string; name?: string; followers?: number }[]>;
 }

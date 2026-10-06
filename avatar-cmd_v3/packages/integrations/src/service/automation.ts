@@ -248,7 +248,7 @@ export async function runRule(ruleId: string): Promise<number> {
   if (rule.actionType === "quote_post") {
     // 引用投稿ルール: タイムラインから探して引用案を作る（設定はルールの actionConfig）
     const config = validateQuoteAction(rule.actionConfig as unknown as QuoteActionConfig);
-    const r = await scanQuoteCandidates(config.accountId, { config, ruleId: rule.id });
+    const r = await scanQuoteCandidates(config.accountId, { config, ruleId: rule.id, scheduled: true });
     if (r.errors.length && !r.drafted) throw new Error(`引用案の作成に失敗: ${r.errors[0]}`);
     return r.drafted;
   }

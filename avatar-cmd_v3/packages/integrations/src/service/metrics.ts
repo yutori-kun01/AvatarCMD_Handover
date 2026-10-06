@@ -1,7 +1,8 @@
 // ================================================
 // 投稿の反応（指標）の収集 — worker から定期実行
 // ================================================
-// ・X: 自分の投稿一覧（GET /2/users/{id}/tweets の public_metrics）。Owned Reads（1件 $0.001）
+// ・X: 指定した投稿だけ（GET /2/tweets?ids=）。取得する時点はアバターの X API モード（例: 公開から 1h / 6h / 24h）で決め、
+//   時点ごとの値を post_metric_snapshots に残す（1 件 $0.005 なので、決まった時点だけ読む）
 // ・Threads: 投稿ごとのインサイト（フォロワー100人以上など Meta の条件あり。満たさない間は理由を記録してスキップ）
 // 公開から 14 日間、若い投稿ほど頻繁に取得する（〜48時間: 6時間ごと / それ以降: 24時間ごと）。
 // 取得結果は Content.engagement（{ views, likes, ..., engagements, engagementRate, fetchedAt } または { error }）に保存。
@@ -14,6 +15,7 @@ import { errorMessage } from "./publish";
 import { getSystemConfig } from "./store";
 import { recordUsage } from "./usage";
 import { addPostDeltas } from "./analytics";
+import { dueCheckpoint, effectiveXPolicy } from "./x-policy";
 
 const HOUR = 3600_000;
 export const METRICS_WINDOW_DAYS = 14;
@@ -52,11 +54,22 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       publishedAt: { gte: new Date(now.getTime() - METRICS_WINDOW_DAYS * 24 * HOUR), lte: new Date(now.getTime() - HOUR) },
       platform: { in: ["x", "threads"] },
     },
-    select: { id: true, snsAccountId: true, externalPostId: true, publishedAt: true, metricsUpdatedAt: true, engagement: true },
+    select: { id: true, avatarId: true, platform: true, snsAccountId: true, externalPostId: true, publishedAt: true, metricsUpdatedAt: true, engagement: true, metricSnapshots: { select: { checkpoint: true } } },
     orderBy: { publishedAt: "desc" },
     take: 500,
   });
-  const due = candidates.filter((c) => metricsDue(c.publishedAt!, c.metricsUpdatedAt, now));
+  // X は読み取りが有料なので、アバターの X API モードの時点（例: 1h / 6h / 24h）だけ取る。Threads は従来どおり
+  const checkpointsByAvatar = new Map<string, number[]>();
+  for (const avatarId of new Set(candidates.filter((c) => c.platform === "x").map((c) => c.avatarId))) {
+    checkpointsByAvatar.set(avatarId, (await effectiveXPolicy(avatarId, now)).params.metricsCheckpoints);
+  }
+  const checkpointOf = new Map<string, number>();
+  const due = candidates.filter((c) => {
+    if (c.platform !== "x") return metricsDue(c.publishedAt!, c.metricsUpdatedAt, now);
+    const cp = dueCheckpoint(c.publishedAt!, c.metricSnapshots.map((s) => s.checkpoint), checkpointsByAvatar.get(c.avatarId) ?? [], now);
+    if (cp !== null) checkpointOf.set(c.id, cp);
+    return cp !== null;
+  });
   const byAccount = new Map<string, typeof due>();
   for (const c of due) byAccount.set(c.snsAccountId!, [...(byAccount.get(c.snsAccountId!) ?? []), c]);
 
@@ -67,6 +80,7 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
     const def = acc && getPlatform(acc.platform);
     if (!acc || !acc.isActive || !def?.fetchMetrics) continue;
     let results: Record<string, PostMetrics | { error: string }>;
+    let accountFailed = false;
     try {
       const { credentials, app } = await loadFreshCredentials(acc.id);
       results = await def.fetchMetrics(
@@ -75,6 +89,7 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       );
     } catch (e) {
       // アカウント単位の失敗（クレジット不足・認証切れ）は全件に理由を残し、次の間隔まで待つ
+      accountFailed = true;
       const msg = errorMessage(e).slice(0, 300);
       results = Object.fromEntries(rows.map((r) => [r.externalPostId!, { error: msg }]));
     }
@@ -91,6 +106,18 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       const prev = (r.engagement ?? {}) as Record<string, unknown>;
       const engagement = "error" in m ? { ...prev, error: m.error, errorAt: now.toISOString() } : { ...m, ...summarizeMetrics(m), fetchedAt: now.toISOString() };
       await prisma.content.update({ where: { id: r.id }, data: { engagement: engagement as object, metricsUpdatedAt: now } });
+      const cp = checkpointOf.get(r.id);
+      // アカウント単位の失敗（認証切れ・クレジット不足）は時点を記録せず、次の確認で取り直す
+      if (cp !== undefined && !accountFailed) {
+        // 失敗した時点も記録して、同じ時点を何度も読み直さない（読み取りは課金されうる）
+        const ok = !("error" in m);
+        const e = engagement as Record<string, unknown>;
+        await prisma.postMetricSnapshot.upsert({
+          where: { contentId_checkpoint: { contentId: r.id, checkpoint: cp } },
+          create: { contentId: r.id, checkpoint: cp, views: ok && typeof e.views === "number" ? e.views : null, engagements: ok && typeof e.engagements === "number" ? e.engagements : null, metrics: (ok ? m : { error: m.error }) as object },
+          update: {},
+        });
+      }
       if ("error" in m) continue;
       updated++;
       const d = metricsDelta(prev, engagement as Record<string, unknown>);

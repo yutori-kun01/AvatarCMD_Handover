@@ -30,3 +30,4 @@ export * from "./service/infographic";
 export * from "./service/icons";
 export * from "./service/style";
 export * from "./service/article";
+export * from "./service/x-policy";

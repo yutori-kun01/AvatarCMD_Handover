@@ -26,6 +26,7 @@ interface Overview {
     role: string;
     status: string;
     imageUrl: string | null;
+    xApi: { yen: number; capYen: number; level: string } | null;
     followers: number | null;
     followersDelta30: number | null;
     followerSpark: (number | null)[];
@@ -165,6 +166,22 @@ function DashboardInner() {
                         </div>
                         <Sparkline values={a.followerSpark} />
                       </div>
+                      {a.xApi && (
+                        <div className="mt-3" title="X API の今月の費用 / 上限（アバター > X API）">
+                          <div className="flex justify-between text-[11px] text-white/50">
+                            <span>X API {a.xApi.level === "stopped" ? "（引用探索を停止）" : a.xApi.level === "reduced" ? "（縮小中）" : ""}</span>
+                            <span className="tabular-nums">
+                              ¥{a.xApi.yen.toLocaleString()} / ¥{a.xApi.capYen.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                            <div
+                              className={`h-full rounded-full ${a.xApi.level === "stopped" ? "bg-red-400" : a.xApi.level === "reduced" ? "bg-amber-400" : "bg-cyan-400"}`}
+                              style={{ width: `${a.xApi.capYen ? Math.min(100, (a.xApi.yen / a.xApi.capYen) * 100) : 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {a.accounts.length === 0 ? (
                           <span className="text-xs text-cyan-300">アカウント未接続</span>

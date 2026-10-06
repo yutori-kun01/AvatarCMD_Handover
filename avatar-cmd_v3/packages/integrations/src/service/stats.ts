@@ -5,6 +5,7 @@ import { prisma } from "@avatar-cmd/db";
 import { getPlatform } from "../platforms";
 import { getSetting, SETTING_KEYS } from "./store";
 import { followerSeries, lastDays } from "./timeseries";
+import { effectiveXPolicy } from "./x-policy";
 
 const DAY = 24 * 3600_000;
 
@@ -63,6 +64,13 @@ export async function overview() {
   const platformCounts = new Map<string, number>();
   for (const c of published30) platformCounts.set(c.platform, (platformCounts.get(c.platform) ?? 0) + 1);
 
+  // X API の今月の費用と予算（X を接続しているアバターだけ）
+  const xBudget = new Map<string, { yen: number; capYen: number; level: string }>();
+  for (const a of avatars) {
+    if (!accounts.some((x) => x.avatarId === a.id && x.platform === "x")) continue;
+    const e = await effectiveXPolicy(a.id);
+    xBudget.set(a.id, { yen: e.usage.yen, capYen: e.setting.capYen, level: e.level });
+  }
   const avatarRows = avatars.map((a) => {
     const mine = accounts.filter((x) => x.avatarId === a.id);
     const posts = published30.filter((c) => c.avatarId === a.id);
@@ -74,6 +82,7 @@ export async function overview() {
     return {
       ...a,
       imageUrl: a.avatarImageUrl,
+      xApi: xBudget.get(a.id) ?? null,
       followers: known.at(-1) ?? null,
       followersDelta30: f.delta.some((x) => x !== null) ? f.delta.reduce<number>((s, x) => s + (x ?? 0), 0) : null,
       followerSpark: f.followers,

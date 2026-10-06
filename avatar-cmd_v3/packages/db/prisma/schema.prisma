@@ -105,6 +105,8 @@ model Avatar {
   avatarImageSource String?    @map("avatar_image_source")
   // v3.7 — 参照画像から作ったスタイル定義 { image?: {...}, infographic?: {...} }。画面で修正できる
   imageStyle      Json         @default("{}") @map("image_style")
+  // v3.7 — X API の利用方針 { mode: eco|balanced|aggressive|custom, custom: {...}, degradeAtYen, capYen }。空なら BALANCED
+  xPolicy         Json         @default("{}") @map("x_policy")
   lastSyncAt      DateTime?    @map("last_sync_at")
 
   // --- Persona Engine (Monster v4) ---
@@ -323,6 +325,7 @@ model Content {
   metricsUpdatedAt   DateTime?     @map("metrics_updated_at")
 
   scheduledPost      ScheduledPost?
+  metricSnapshots    PostMetricSnapshot[]
   snsAccount         SnsAccount?   @relation(fields: [snsAccountId], references: [id], onDelete: SetNull)
   avatar             Avatar        @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   campaign           Campaign?     @relation(fields: [campaignId], references: [id])
@@ -1053,4 +1056,34 @@ model StyleReference {
 
   @@index([avatarId, kind])
   @@map("style_references")
+}
+
+// v3.7 — 投稿の指標を決まった時点（公開から 1h / 6h / 24h など）ごとに記録（伸び方の比較・改善処理に使う）
+model PostMetricSnapshot {
+  id          String   @id @default(uuid())
+  contentId   String   @map("content_id")
+  /// 公開から何時間の時点か
+  checkpoint  Int
+  views       Int?
+  engagements Int?
+  /// { likes, replies, reposts, quotes, bookmarks, ... }
+  metrics     Json     @default("{}")
+  fetchedAt   DateTime @default(now()) @map("fetched_at")
+
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, checkpoint])
+  @@map("post_metric_snapshots")
+}
+
+// v3.7 — X のユーザー情報のキャッシュ（User Read は 1 件 $0.010 なので 1〜7 日に 1 回までしか更新しない）
+model XUser {
+  id           String   @id // X のユーザー ID
+  username     String
+  name         String?
+  followers    Int?
+  lastSyncedAt DateTime @default(now()) @map("last_synced_at")
+
+  @@index([username])
+  @@map("x_users")
 }

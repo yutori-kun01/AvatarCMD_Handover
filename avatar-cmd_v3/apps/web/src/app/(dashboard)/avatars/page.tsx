@@ -8,12 +8,14 @@ import { AccountVitals } from "@/components/analytics/account-vitals";
 import { MetricChart } from "@/components/analytics/metric-chart";
 import { AvatarIcon } from "@/components/avatar-icon";
 import { StyleSection } from "@/components/avatars/style-section";
+import { XPolicySection } from "@/components/avatars/x-policy-section";
 import { ActivitySection } from "@/components/sections/activity-section";
 
 const TABS = [
   { key: "analytics", label: "分析" },
   { key: "profile", label: "プロフィール" },
   { key: "style", label: "画像スタイル" },
+  { key: "x", label: "X API" },
   { key: "activity", label: "アクティビティ" },
 ] as const;
 type Tab = (typeof TABS)[number]["key"];
@@ -408,6 +410,8 @@ function AvatarsInner() {
               )}
 
               {tab === "style" && <StyleSection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
+
+              {tab === "x" && <XPolicySection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
 
               {tab === "activity" && <ActivitySection key={selected.id} avatarId={selected.id} limit={100} />}
             </>

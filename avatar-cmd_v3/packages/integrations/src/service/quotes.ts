@@ -2,7 +2,8 @@
 // 引用投稿の候補 — タイムラインから方向性が同じ投稿を見つけ、肯定＋知見/体験を添えた引用案を下書きにする
 // ================================================
 // 流れ:
-//   1. X のホームタイムライン（フォロー中の投稿）を取得（Owned Reads: 1件 $0.001）
+//   1. X のホームタイムライン（フォロー中の投稿）を取得（Post Read 1件 $0.005。件数・時刻はアバターの X API モード）
+//      → 反応・新しさ・ジャンルの近さで採点し、上位だけを判定にかける（投稿者名はその分だけキャッシュから引く）
 //   2. コードのルールで除外（リポスト・返信・自分の投稿・短すぎる・古い・同じ相手を最近引用済み など）
 //   3. 残りを判定: Jev（設定があれば）/ 無ければ「引用投稿」用途の LLM
 //        方向性の一致・引用する価値・関わるリスク・添える観点（知見 / 体験）
@@ -26,6 +27,7 @@ import { canonicalStatusUrl, cleanPostText, INLINE_QUOTE_WEIGHT } from "../post-
 import { autoApprovalDecision } from "./automation";
 import { getSystemConfig } from "./store";
 import { assertBudget, recordUsage, withUsageContext } from "./usage";
+import { effectiveXPolicy, scanDue } from "./x-policy";
 
 const HOUR = 3600_000;
 
@@ -269,6 +271,8 @@ export interface ScanResult {
   judged: number;
   drafted: number;
   errors: string[];
+  /** 実行しなかった理由（次の探索時刻まで待機 など） */
+  waiting?: string;
 }
 
 /** X アカウントのホームタイムラインから引用候補を探し、通過したものを下書きにする */
@@ -277,6 +281,8 @@ export interface ScanOptions {
   /** 自動化ルール（quote_post）から実行したときの設定 */
   config?: QuoteActionConfig;
   ruleId?: string;
+  /** worker・自動化ルールからの実行。X API モードの探索時刻を過ぎていなければ読まずに終わる */
+  scheduled?: boolean;
 }
 
 export async function scanQuoteCandidates(snsAccountId: string, opts: ScanOptions = {}): Promise<ScanResult> {
@@ -301,7 +307,32 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
   if (!def?.fetchTimeline || !def.supportsQuote) throw new ConfigError(`${def?.name ?? acc.platform} はタイムラインからの引用候補に対応していません`);
   if (!acc.isActive) throw new ConfigError("停止中のアカウントです");
   const settings = (acc.settings ?? {}) as Record<string, unknown>;
-  const maxResults = opts.maxResults ?? opts.config?.scanPosts ?? (Number(settings.quoteScanPosts) || 30);
+  const now0 = new Date();
+  // X API の利用方針（モード・予算）。上限に達していたら探索しない、決まった時刻にだけ探索する
+  const xp = acc.platform === "x" ? await effectiveXPolicy(acc.avatarId, now0) : null;
+  const empty: ScanResult = { fetched: 0, new: 0, skipped: 0, judged: 0, drafted: 0, errors: [] };
+  if (xp?.level === "stopped") {
+    throw new ConfigError(`X API の今月の費用（¥${xp.usage.yen}）が上限 ¥${xp.setting.capYen} に達したため、引用探索を止めています（通常投稿と自分の投稿の分析は続けます）`);
+  }
+  if (xp && opts.scheduled) {
+    const last = typeof settings.lastQuoteScanAt === "string" ? new Date(settings.lastQuoteScanAt) : null;
+    if (!scanDue(xp.params.scanTimes, last, now0)) return { ...empty, waiting: `次の探索時刻まで待機（${xp.params.scanTimes.join(" / ") || "探索なし"}）` };
+  }
+  const quotesThisMonth = xp
+    ? await prisma.content.count({ where: { avatarId: acc.avatarId, category: "quote", createdAt: { gte: new Date(Date.UTC(new Date(now0.getTime() + 9 * HOUR).getUTCFullYear(), new Date(now0.getTime() + 9 * HOUR).getUTCMonth(), 1) - 9 * HOUR) } } })
+    : 0;
+  if (xp && quotesThisMonth >= xp.params.quotesPerMonth) {
+    return { ...empty, waiting: `今月の引用案の上限（${xp.params.quotesPerMonth} 件）に達しています` };
+  }
+  const maxResults = xp
+    ? opts.scheduled
+      ? xp.params.scanPosts
+      : Math.min(opts.maxResults ?? xp.params.scanPosts, 100)
+    : (opts.maxResults ?? opts.config?.scanPosts ?? (Number(settings.quoteScanPosts) || 30));
+  if (xp) {
+    rules.maxJudged = Math.min(rules.maxJudged, xp.params.shortlist);
+    rules.maxDrafts = Math.min(rules.maxDrafts, xp.params.quotesPerMonth - quotesThisMonth);
+  }
 
   // 前回読んだ中で最も新しい投稿 ID から続きを取る（X の ID は時系列で増える数値）
   const sinceId = typeof settings.quoteSinceId === "string" ? settings.quoteSinceId : undefined;
@@ -355,12 +386,35 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
     else fresh.push({ id: row.id, post: p });
   }
 
-  // 反応の大きい順に上限件数まで判定（判定コストの上限）
-  const reach = (p: TimelinePost) => (p.metrics?.likes ?? 0) + 2 * (p.metrics?.reposts ?? 0) + (p.metrics?.replies ?? 0);
-  fresh.sort((a, b) => reach(b.post) - reach(a.post));
-  const toJudge = fresh.slice(0, rules.maxJudged);
-  for (const f of fresh.slice(rules.maxJudged)) {
-    await prisma.quoteCandidate.update({ where: { id: f.id }, data: { status: "skipped", reason: "判定件数の上限を超えたため未判定" } });
+  // 採点（反応・新しさ・ジャンルの近さ。API・AI の費用なし）の高い順に、上限件数まで判定（判定コストの上限）
+  const topics = readPersona((await prisma.avatar.findUnique({ where: { id: acc.avatarId }, select: { communication: true } }))?.communication).topics ?? [];
+  fresh.sort((a, b) => candidateScore(b.post, topics, now) - candidateScore(a.post, topics, now));
+  // 投稿者名（URL・除外する相手の確認用）は、判定にかける分だけキャッシュから引く（User Read を最小限に）
+  const toJudge: typeof fresh = [];
+  const rest: typeof fresh = [];
+  for (const f of fresh) {
+    if (toJudge.length >= rules.maxJudged) {
+      rest.push(f);
+      continue;
+    }
+    if (f.post.authorId && !f.post.authorUsername && def.lookupUsers) {
+      const u = (await resolveXUsers(acc, [f.post.authorId], xp?.params.userCacheDays ?? 7)).get(f.post.authorId);
+      if (u) {
+        f.post.authorUsername = u.username;
+        f.post.authorName = u.name ?? undefined;
+        f.post.url = `https://x.com/${u.username}/status/${f.post.id}`;
+        await prisma.quoteCandidate.update({ where: { id: f.id }, data: { authorUsername: u.username, url: f.post.url } });
+      }
+    }
+    if (f.post.authorUsername && rules.excludeAuthors?.includes(f.post.authorUsername.toLowerCase())) {
+      await prisma.quoteCandidate.update({ where: { id: f.id }, data: { status: "skipped", reason: "引用しない相手に設定済み" } });
+      result.skipped++;
+      continue;
+    }
+    toJudge.push(f);
+  }
+  for (const f of rest) {
+    await prisma.quoteCandidate.update({ where: { id: f.id }, data: { status: "skipped", reason: "採点で上位に入らなかったため未判定" } });
     result.skipped++;
   }
 
@@ -434,6 +488,57 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
   return result;
 }
 
+/**
+ * 引用候補の採点（0〜1 程度）。反応の大きさ（対数）・新しさ・アバターの得意なトピックとの一致。
+ * AI を使わない軽い採点で、判定（AI / Jev）にかける上位だけを選ぶ。
+ */
+export function candidateScore(p: TimelinePost, topics: string[], now = new Date()): number {
+  const reach = (p.metrics?.likes ?? 0) + 2 * (p.metrics?.reposts ?? 0) + (p.metrics?.replies ?? 0) + 2 * (p.metrics?.quotes ?? 0);
+  const engagement = Math.min(1, Math.log10(1 + reach) / 4);
+  const ageH = p.createdAt ? (now.getTime() - Date.parse(p.createdAt)) / HOUR : 24;
+  const fresh = Math.max(0, 1 - ageH / 48);
+  const text = p.text.toLowerCase();
+  const hits = topics.filter((t) => t && text.includes(t.toLowerCase())).length;
+  const relevance = topics.length ? Math.min(1, hits / Math.min(2, topics.length)) : 0.5;
+  return 0.45 * relevance + 0.35 * engagement + 0.2 * fresh;
+}
+
+/** X のユーザー情報（キャッシュが古いものだけ取得。User Read として記録） */
+export async function resolveXUsers(acc: { id: string; avatarId: string; platform: string; accountId: string | null; accountName: string; settings: unknown }, ids: string[], cacheDays: number) {
+  const out = new Map<string, { username: string; name: string | null }>();
+  if (!ids.length) return out;
+  const cached = await prisma.xUser.findMany({ where: { id: { in: ids } } });
+  const fresh = cached.filter((u) => Date.now() - u.lastSyncedAt.getTime() < cacheDays * 24 * HOUR);
+  for (const u of fresh) out.set(u.id, { username: u.username, name: u.name });
+  const missing = ids.filter((id) => !out.has(id));
+  const def = getPlatform(acc.platform);
+  if (!missing.length || !def?.lookupUsers) {
+    for (const u of cached) if (!out.has(u.id)) out.set(u.id, { username: u.username, name: u.name });
+    return out;
+  }
+  try {
+    const { credentials, app } = await loadFreshCredentials(acc.id);
+    const users = await def.lookupUsers(
+      { app, credentials, settings: (acc.settings ?? {}) as Record<string, unknown>, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system: await getSystemConfig() },
+      missing
+    );
+    await recordUsage({ provider: acc.platform, purpose: "x_user_lookup", avatarId: acc.avatarId, reads: users.length });
+    for (const u of users) {
+      await prisma.xUser.upsert({
+        where: { id: u.id },
+        create: { id: u.id, username: u.username, name: u.name ?? null, followers: u.followers ?? null },
+        update: { username: u.username, name: u.name ?? null, followers: u.followers ?? null, lastSyncedAt: new Date() },
+      });
+      out.set(u.id, { username: u.username, name: u.name ?? null });
+    }
+  } catch (e) {
+    console.warn(`[quotes] ユーザー情報を取得できませんでした: ${errorMessage(e)}`);
+  }
+  // 取得できなかったものは古いキャッシュでも使う
+  for (const u of cached) if (!out.has(u.id)) out.set(u.id, { username: u.username, name: u.name });
+  return out;
+}
+
 /** 自動探索が有効なアカウントを探索する（worker から呼ぶ） */
 export async function processQuoteScans(): Promise<number> {
   const accounts = await prisma.snsAccount.findMany({ where: { platform: "x", isActive: true, avatar: { status: "ACTIVE" } } });
@@ -444,13 +549,12 @@ export async function processQuoteScans(): Promise<number> {
   );
   for (const acc of accounts) {
     const s = (acc.settings ?? {}) as Record<string, unknown>;
-    const hours = Number(s.quoteScanHours);
-    if (!hours || ruled.has(acc.id)) continue;
-    const last = typeof s.lastQuoteScanAt === "string" ? Date.parse(s.lastQuoteScanAt) : 0;
-    if (Date.now() - last < hours * HOUR) continue;
+    // 「する」（旧設定の「12/24 時間ごと」も含む）なら、アバターの X API モードの時刻に探索する
+    const enabled = !!s.quoteScanHours && s.quoteScanHours !== "off";
+    if (!enabled || ruled.has(acc.id)) continue;
     try {
-      await scanQuoteCandidates(acc.id);
-      n++;
+      const r = await scanQuoteCandidates(acc.id, { scheduled: true });
+      if (!r.waiting) n++;
     } catch (e) {
       // 失敗しても次回まで待つ（課金が発生する処理を短い間隔で繰り返さない）
       await prisma.snsAccount.update({ where: { id: acc.id }, data: { settings: { ...s, lastQuoteScanAt: new Date().toISOString() } as object, lastError: errorMessage(e).slice(0, 300) } });

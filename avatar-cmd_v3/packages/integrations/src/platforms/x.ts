@@ -10,10 +10,11 @@
 //              GET  /2/media/upload?command=STATUS&media_id=（処理待ち）
 //   - スコープ: tweet.read tweet.write users.read media.write offline.access
 //   - 引用:   元投稿の URL を本文に入れる（quote_tweet_id は自分の投稿・メンションされた投稿しか引用できないため使わない）
-//   - 自分の投稿の反応: GET /2/users/{id}/tweets?tweet.fields=public_metrics
-//   - ホームタイムライン: GET /2/users/{id}/timelines/reverse_chronological
-//   料金（従量課金）: 上の2つは「Owned Reads」で 1件 $0.001（認証ユーザー＝開発者アプリの所有者のとき）。
-//   それ以外のアプリで認証した場合は通常の読み取り（1件 $0.005）。→ アバター専用アプリの利用を推奨
+//   - 自分の投稿の反応: GET /2/tweets?ids=…&tweet.fields=public_metrics（指定した投稿だけ）
+//   - ホームタイムライン: GET /2/users/{id}/timelines/reverse_chronological（返信・リポストを除外、投稿者情報なし）
+//   - ユーザー情報: GET /2/users?ids=…（キャッシュして 1〜7 日に 1 回まで）
+//   料金（従量課金・2026-10 時点）: Post Read 1件 $0.005 / User Read 1件 $0.010 / Post Create 1回 $0.015。
+//   読み取りの回数・件数はアバターごとの X API の利用方針（service/x-policy.ts）で決める
 
 import type { MediaFile, PlatformDefinition, PostMetrics, PublishContext, TimelinePost } from "../types";
 import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
@@ -161,23 +162,9 @@ export const x: PlatformDefinition = {
       default: "off",
       options: [
         { value: "off", label: "しない（手動のみ）" },
-        { value: "12", label: "12時間ごと" },
-        { value: "24", label: "24時間ごと" },
+        { value: "on", label: "する（アバターの X API モードの時刻に探索）" },
       ],
-      help: "フォロー中の投稿から、方向性が同じ投稿の引用案を下書きに作ります（投稿は必ず承認制）",
-    },
-    {
-      key: "quoteScanPosts",
-      label: "1回に読むタイムライン件数",
-      type: "select",
-      default: "30",
-      options: [
-        { value: "20", label: "20件" },
-        { value: "30", label: "30件" },
-        { value: "50", label: "50件" },
-        { value: "100", label: "100件" },
-      ],
-      help: "Owned Reads なら1件 $0.001（30件で約 $0.03）。このアカウントで作った開発者アプリ（アバター専用アプリ）で接続したときの料金です",
+      help: "フォロー中の投稿から、方向性が同じ投稿の引用案を下書きに作ります（投稿は必ず承認制）。時刻・読む件数はアバター > X API のモードで決まります",
     },
   ],
   postFields: [],
@@ -286,34 +273,31 @@ export const x: PlatformDefinition = {
     return { followers: m.followers_count, following: m.following_count, posts: m.tweet_count, imageUrl: image };
   },
   async fetchMetrics(ctx, posts) {
-    if (!posts.length) return {};
-    const uid = ctx.account.accountId;
-    const want = new Set(posts.map((p) => p.postId));
-    const oldest = Math.min(...posts.map((p) => p.publishedAt.getTime()));
+    // 指定した投稿だけを読む（GET /2/tweets?ids=、100 件ずつ）。読み取りの課金は返ってきた投稿の数だけ。
+    // 以前は自分の投稿一覧（/2/users/{id}/tweets）を読み直していたため、必要のない投稿にも課金されていた
     const found: Record<string, PostMetrics | { error: string }> = {};
-    let token: string | undefined;
-    // 自分の投稿を新しい順に最大3ページ（300件）。対象がすべて見つかれば打ち切る（課金を抑える）
-    for (let page = 0; page < 3 && want.size; page++) {
-      const d = await requestJson(
-        "x",
-        withQuery(`${API}/2/users/${uid}/tweets`, {
-          max_results: "100",
-          "tweet.fields": "public_metrics,created_at",
-          start_time: new Date(oldest - 60_000).toISOString(),
-          pagination_token: token,
-        }),
-        { headers: bearer(ctx) }
-      ).catch(readError);
-      for (const t of (d.data ?? []) as { id: string; public_metrics?: Record<string, number> }[]) {
-        if (!want.has(t.id)) continue;
-        found[t.id] = toMetrics(t.public_metrics);
-        want.delete(t.id);
+    const ids = [...new Set(posts.map((p) => p.postId))];
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const d = await requestJson("x", withQuery(`${API}/2/tweets`, { ids: chunk.join(","), "tweet.fields": "public_metrics" }), { headers: bearer(ctx) }).catch(readError);
+      for (const t of (d.data ?? []) as { id: string; public_metrics?: Record<string, number> }[]) found[t.id] = toMetrics(t.public_metrics);
+      for (const e of (d.errors ?? []) as { resource_id?: string; value?: string; title?: string; detail?: string }[]) {
+        const id = e.resource_id ?? e.value;
+        if (id && !found[id]) found[id] = { error: e.title === "Not Found Error" ? "投稿が見つかりません（削除済みの可能性）" : (e.detail ?? e.title ?? "取得できませんでした") };
       }
-      token = d.meta?.next_token;
-      if (!token) break;
     }
-    for (const id of want) found[id] = { error: "自分の投稿一覧に見つかりません（削除済みの可能性）" };
+    for (const id of ids) if (!found[id]) found[id] = { error: "投稿が見つかりません（削除済みの可能性）" };
     return found;
+  },
+  async lookupUsers(ctx, ids) {
+    const out: { id: string; username: string; name?: string; followers?: number }[] = [];
+    for (let i = 0; i < ids.length; i += 100) {
+      const d = await requestJson("x", withQuery(`${API}/2/users`, { ids: ids.slice(i, i + 100).join(","), "user.fields": "username,name,public_metrics" }), { headers: bearer(ctx) }).catch(readError);
+      for (const u of (d.data ?? []) as { id: string; username: string; name?: string; public_metrics?: { followers_count?: number } }[]) {
+        out.push({ id: u.id, username: u.username, name: u.name, followers: u.public_metrics?.followers_count });
+      }
+    }
+    return out;
   },
   async fetchTimeline(ctx, opts) {
     const uid = ctx.account.accountId;
@@ -321,25 +305,22 @@ export const x: PlatformDefinition = {
       "x",
       withQuery(`${API}/2/users/${uid}/timelines/reverse_chronological`, {
         max_results: String(Math.min(Math.max(opts.maxResults, 1), 100)),
-        exclude: "replies",
+        // 返信・リポストは最初から返させない（読んでから捨てる分にも課金されるため）
+        exclude: "replies,retweets",
         since_id: opts.sinceId,
         "tweet.fields": "created_at,public_metrics,author_id,lang,referenced_tweets",
-        expansions: "author_id",
-        "user.fields": "username,name",
+        // 投稿者情報（expansions=author_id）は付けない。ユーザー情報は User Read として高く課金される可能性があるため、
+        // 引用案の候補に残った投稿の投稿者だけをキャッシュ経由で引く（quotes.ts）
       }),
       { headers: bearer(ctx) }
     ).catch(readError);
-    const users = new Map<string, { username: string; name: string }>(((d.includes?.users ?? []) as { id: string; username: string; name: string }[]).map((u) => [u.id, u]));
     return ((d.data ?? []) as { id: string; text: string; author_id?: string; created_at?: string; lang?: string; public_metrics?: Record<string, number>; referenced_tweets?: { type: string }[] }[]).map((t): TimelinePost => {
-      const u = t.author_id ? users.get(t.author_id) : undefined;
       const ref = t.referenced_tweets?.[0]?.type;
       return {
         id: t.id,
         text: t.text,
-        url: `https://x.com/${u?.username ?? "i/web"}/status/${t.id}`,
+        url: `https://x.com/i/web/status/${t.id}`,
         authorId: t.author_id,
-        authorUsername: u?.username,
-        authorName: u?.name,
         createdAt: t.created_at,
         lang: t.lang,
         metrics: toMetrics(t.public_metrics),

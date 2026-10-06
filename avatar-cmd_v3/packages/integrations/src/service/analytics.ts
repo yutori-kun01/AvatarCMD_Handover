@@ -14,6 +14,8 @@ import { loadFreshCredentials } from "./accounts";
 import { errorMessage } from "./publish";
 import { getSystemConfig } from "./store";
 import { saveProfileImage } from "./profile-image";
+import { recordUsage } from "./usage";
+import { effectiveXPolicy } from "./x-policy";
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -161,6 +163,8 @@ export async function refreshFollowers(accountId: string, now = new Date()) {
       system: await getSystemConfig(),
     };
     const stats = def.fetchProfile ? await def.fetchProfile(ctx) : {};
+    // X のプロフィール取得は User Read（1 件 $0.010）。X API の予算の集計に入れる
+    if (acc.platform === "x" && def.fetchProfile) await recordUsage({ provider: "x", purpose: "x_profile", avatarId: acc.avatarId, context: "metrics", reads: 1 });
     // 画像・閲覧数の失敗はフォロワー数の記録を止めない（理由はログだけ）
     if (stats.imageUrl) await saveProfileImage(acc.id, stats.imageUrl).catch((e) => console.warn(`[profile-image] ${acc.platform} ${acc.accountName}: ${errorMessage(e)}`));
     if (def.fetchInsights) {
@@ -187,11 +191,21 @@ export async function collectFollowers({ maxAccounts = 5 } = {}): Promise<number
       OR: [{ followersUpdatedAt: null }, { followersUpdatedAt: { lt: new Date(now.getTime() - 20 * HOUR) } }],
     },
     orderBy: { followersUpdatedAt: { sort: "asc", nulls: "first" } },
-    take: maxAccounts,
-    select: { id: true },
+    take: maxAccounts * 4,
+    select: { id: true, platform: true, avatarId: true, followersUpdatedAt: true },
   });
-  let n = 0;
+  // X はアバターの X API モードの間隔（ECO は 2 日に 1 回など）。他の媒体は 1 日 1 回
+  const targets: typeof due = [];
   for (const a of due) {
+    if (targets.length >= maxAccounts) break;
+    if (a.platform === "x" && a.followersUpdatedAt) {
+      const days = (await effectiveXPolicy(a.avatarId, now)).params.profileEveryDays;
+      if (now.getTime() - a.followersUpdatedAt.getTime() < (days * 24 - 4) * HOUR) continue;
+    }
+    targets.push(a);
+  }
+  let n = 0;
+  for (const a of targets) {
     try {
       await refreshFollowers(a.id, now);
       n++;
