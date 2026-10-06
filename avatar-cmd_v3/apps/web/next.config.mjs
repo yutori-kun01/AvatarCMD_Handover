@@ -8,7 +8,7 @@ if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone", // Docker multi-stage build に必要
-  transpilePackages: ["@avatar-cmd/core", "@avatar-cmd/db", "@avatar-cmd/integrations"],
+  transpilePackages: ["@avatar-cmd/db", "@avatar-cmd/integrations"],
   serverExternalPackages: ["@prisma/client", "@atproto/api"],
   outputFileTracingRoot: resolve(import.meta.dirname, "../../"),
   experimental: {

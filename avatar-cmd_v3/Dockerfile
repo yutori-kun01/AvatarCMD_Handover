@@ -21,9 +21,7 @@ FROM base AS deps
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
-COPY packages/core/package.json ./packages/core/
 COPY packages/db/package.json ./packages/db/
-COPY packages/chrome-empire/package.json ./packages/chrome-empire/
 COPY packages/integrations/package.json ./packages/integrations/
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN pnpm install --frozen-lockfile

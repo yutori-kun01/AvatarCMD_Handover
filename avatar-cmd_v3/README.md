@@ -121,26 +121,6 @@ avatar-cmd/
 │   │   ├── prisma/schema.prisma
 │   │   └── src/index.ts
 │   │
-│   ├── core/                       # 7 Business Logic Services
-│   │   └── src/
-│   │       ├── index.ts            # Public API (全エクスポート)
-│   │       ├── persona/mood-engine.ts       # MoodEngine
-│   │       ├── avatar/avatar-service.ts     # AvatarService
-│   │       ├── security/credential-vault.ts # CredentialVault (AES-256-GCM)
-│   │       ├── content/content-service.ts   # ContentService (生成/キュー/A-B)
-│   │       ├── content/campaign-service.ts  # CampaignService (企画/目標)
-│   │       ├── analytics/analytics-service.ts    # AnalyticsService (KPI/インサイト)
-│   │       ├── analytics/improvement-engine.ts   # ImprovementEngine (改善サイクル)
-│   │       ├── analytics/revenue-service.ts      # RevenueService (収益追跡)
-│   │       └── scheduler/scheduler-service.ts    # SchedulerService (投稿スケジューラ)
-│   │
-│   ├── chrome-empire/              # Playwright Browser Pool
-│   │   └── src/
-│   │       ├── pool.ts             # ChromeEmpire (spawn/destroy/health)
-│   │       ├── profile.ts          # ProfileManager (fingerprint isolation)
-│   │       ├── types.ts            # ChromeInstance, BrowserTask, etc.
-│   │       └── index.ts
-│   │
 │   └── integrations/               # SNS連携（公式API準拠）+ 投稿サービス
 │       ├── src/platforms/*.ts      # 1SNS = 1ファイル（認可URL・トークン交換・更新・投稿）
 │       ├── src/service/            # 暗号化設定ストア・アカウント・OAuth・メディア・投稿キュー

@@ -4,7 +4,7 @@
 // 暗号鍵 ENCRYPTION_KEY だけは .env に置く（DB の中身を守る鍵なので DB には置けない）。
 
 import { prisma } from "@avatar-cmd/db";
-import { CredentialVault } from "@avatar-cmd/core/src/security/credential-vault";
+import { CredentialVault } from "../security/credential-vault";
 import { DEFAULT_SYSTEM_CONFIG, type SystemConfig } from "../types";
 import { getPlatform } from "../platforms";
 import { ConfigError } from "../http";

@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@avatar-cmd/core": "workspace:*",
     "@avatar-cmd/db": "workspace:*",
     "@avatar-cmd/integrations": "workspace:*",
     "@fortawesome/fontawesome-svg-core": "^7.3.1",

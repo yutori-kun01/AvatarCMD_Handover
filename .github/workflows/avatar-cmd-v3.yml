@@ -47,7 +47,7 @@ jobs:
           pnpm --filter @avatar-cmd/db exec prisma migrate deploy
       - name: Typecheck
         run: |
-          for d in packages/db packages/core packages/chrome-empire packages/integrations apps/worker apps/web; do
+          for d in packages/db packages/integrations apps/worker apps/web; do
             echo "::group::$d"; (cd "$d" && npx tsc --noEmit -p .); echo "::endgroup::"
           done
       - name: Test
