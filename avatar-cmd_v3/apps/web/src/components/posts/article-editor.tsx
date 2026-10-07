@@ -3,8 +3,10 @@
 // ・本文は Markdown のまま編集できる。目印は <!-- image: … --> / <!-- infographic: … -->、有料ラインは <!-- paywall -->
 // ・作った画像は ![説明](media:{name}) として本文に入り、投稿時に添付される（note には自動でアップロード）
 // ・公開ボタンだけは note の編集画面で本人が押す
-import { useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, ImageIcon, ImagePlus, Lock, Sparkles, Wand2 } from "lucide-react";
+// ・AI の執筆・画像/図解・見出し画像はバックグラウンドのジョブ（/api/articles/jobs）。ページを離れても生成は続き、戻ると結果が反映される
+// ・AI で書くときは、タイトル・テーマ・本文のうち入力済みのものを活かし、足りない部分だけを AI が補う
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, ImageIcon, ImagePlus, Loader2, Lock, Sparkles, Wand2 } from "lucide-react";
 import { api, Badge, Button, Card, inputCls, Notice, type AccountInfo } from "@/components/settings/ui";
 
 interface MediaRef {
@@ -23,6 +25,26 @@ interface Marker {
 
 const MARKER = /^\s*<!--\s*(paywall|image|infographic)\s*(?::\s*([\s\S]*?))?\s*-->\s*$/;
 const DRAFT_KEY = "avatar-cmd:note-draft";
+const JOBS_KEY = "avatar-cmd:note-jobs";
+
+type JobKind = "write" | "render" | "eyecatch";
+/** 依頼中のジョブ（この端末のブラウザに保存し、ページを離れて戻っても結果を受け取る） */
+interface PendingJob {
+  id: string;
+  kind: JobKind;
+  /** render の対象（"all" か目印の番号） */
+  target?: string;
+  progress?: string | null;
+}
+interface JobView {
+  id: string;
+  kind: JobKind;
+  status: "queued" | "running" | "done" | "failed";
+  progress: string | null;
+  result: any;
+  error: string | null;
+}
+const JOB_LABEL: Record<JobKind, string> = { write: "記事の執筆", render: "画像・図解の作成", eyecatch: "見出し画像の生成" };
 
 function markers(md: string): Marker[] {
   const out: Marker[] = [];
@@ -75,6 +97,23 @@ function Preview({ md, title, eyecatch }: { md: string; title: string; eyecatch:
   );
 }
 
+/** AI で書くボタンの文言（何を元に書くかが分かるように） */
+function writeLabel(title: string, topic: string, md: string): string {
+  const t = !!title.trim();
+  const p = !!topic.trim();
+  if (md.trim()) return "本文を整えて仕上げる";
+  if (t && p) return "タイトルとテーマから書く";
+  if (t) return "タイトルから書く";
+  if (p) return "テーマから書く";
+  return "AI で書く";
+}
+
+/** 入力欄ごとに、AI で書くとどう扱われるかを示す */
+function InputState({ filled, preserve, body }: { filled: boolean; preserve: boolean; body?: boolean }) {
+  if (!filled) return <Badge className="bg-white/10 text-white/50">空 → AI が{body ? "全文を書く" : "作る"}</Badge>;
+  return <Badge className="bg-emerald-500/15 text-emerald-300">入力済み → {preserve ? (body ? "そのまま残して足す" : "そのまま使う") : body ? "活かして補う" : "活かして整える"}</Badge>;
+}
+
 export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[]; onPosted?: () => void }) {
   const notes = accounts.filter((a) => a.platform === "note" && a.isActive);
   const [accountId, setAccountId] = useState("");
@@ -87,6 +126,9 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
   const [eyecatch, setEyecatch] = useState<MediaRef | null>(null);
   const [media, setMedia] = useState<Record<string, MediaRef>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [preserve, setPreserve] = useState(false);
+  const [jobs, setJobs] = useState<PendingJob[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
   const [showPreview, setShowPreview] = useState(false);
@@ -103,6 +145,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     try {
       const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null");
       if (d) {
+        setTopic(d.topic ?? "");
+        setPaid(!!d.paid);
         setTitle(d.title ?? "");
         setMd(d.md ?? "");
         setPrice(d.price ?? "");
@@ -113,17 +157,113 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     } catch {
       /* 読めなければ空から */
     }
+    try {
+      setJobs(JSON.parse(localStorage.getItem(JOBS_KEY) ?? "[]"));
+    } catch {
+      /* 読めなければ無し */
+    }
+    setLoaded(true);
   }, []);
   useEffect(() => {
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({ title, md, price, tags, eyecatch, media }));
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({ topic, paid, title, md, price, tags, eyecatch, media }));
       } catch {
         /* 保存できない環境では何もしない */
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [title, md, price, tags, eyecatch, media]);
+  }, [topic, paid, title, md, price, tags, eyecatch, media]);
+  useEffect(() => {
+    if (!loaded) return;
+    try {
+      localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
+    } catch {
+      /* 保存できない環境では何もしない */
+    }
+  }, [jobs, loaded]);
+
+  // --- バックグラウンドのジョブ --------------------------------------------------
+
+  const jobFor = (kind: JobKind, target?: string) => jobs.find((j) => j.kind === kind && (target === undefined || j.target === target));
+  const writing = !!jobFor("write");
+
+  /** 終わったジョブの結果を、今の本文に反映する */
+  const applyJob = useCallback((pending: PendingJob, job: JobView) => {
+    if (job.status === "failed") {
+      setNotice({ kind: "error", msg: `${JOB_LABEL[job.kind]}に失敗しました: ${job.error ?? "不明なエラー"}` });
+      return;
+    }
+    const r = job.result ?? {};
+    if (job.kind === "write") {
+      setTitle(r.title ?? "");
+      if (r.topic) setTopic(r.topic);
+      setMd(r.markdown ?? "");
+      setNotice({ kind: "ok", msg: "記事を書きました。内容を確認して、必要なら直してください" });
+    } else if (job.kind === "eyecatch") {
+      if (r.media) setEyecatch(r.media);
+      setNotice({ kind: "ok", msg: "見出し画像（1280×670）を作りました" });
+    } else if (job.kind === "render") {
+      const reps: { marker: string; replacement: string }[] = r.replacements ?? [];
+      // 生成中に本文が編集されていても、目印の行だけを画像に置き換える
+      setMd((cur) => {
+        const missed: string[] = [];
+        const lines = cur.split("\n");
+        for (const x of reps) {
+          const i = lines.findIndex((l) => l.trim() === x.marker.trim());
+          if (i === -1) missed.push(x.replacement);
+          else lines[i] = x.replacement;
+        }
+        // 目印が消されていた画像は末尾に足す（作った画像を失わない）
+        return missed.length ? `${lines.join("\n")}\n\n${missed.join("\n\n")}` : lines.join("\n");
+      });
+      const made: MediaRef[] = r.media ?? [];
+      setMedia((cur) => ({ ...cur, ...Object.fromEntries(made.map((m) => [m.name, m])) }));
+      const errors: { description: string; error: string }[] = (r.results ?? []).filter((x: any) => x.error);
+      setNotice(
+        errors.length
+          ? { kind: "error", msg: `${made.length} 件作成、${errors.length} 件失敗: ${errors.map((e) => `${e.description}（${e.error}）`).join(" / ")}` }
+          : { kind: "ok", msg: `${made.length} 件の画像・図解を作りました` }
+      );
+    }
+  }, []);
+
+  // 依頼中のジョブを数秒ごとに確認する（ページを離れている間も生成は続き、戻ったときに結果を受け取る）
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
+  const polling = jobs.length > 0;
+  useEffect(() => {
+    if (!polling) return;
+    let inFlight = false;
+    const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        for (const p of jobsRef.current) {
+          try {
+            const { job } = await api<{ job: JobView }>(`/api/articles/jobs/${p.id}`);
+            if (job.status === "done" || job.status === "failed") {
+              setJobs((cur) => cur.filter((j) => j.id !== p.id));
+              applyJob(p, job);
+            } else if (job.progress !== p.progress) {
+              setJobs((cur) => cur.map((j) => (j.id === p.id ? { ...j, progress: job.progress } : j)));
+            }
+          } catch (e) {
+            // ジョブが消えていたら待つのをやめる（それ以外の失敗は次の確認で再試行）
+            if (/見つかりません/.test((e as Error).message)) setJobs((cur) => cur.filter((j) => j.id !== p.id));
+          }
+        }
+      } finally {
+        inFlight = false;
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [polling, applyJob]);
+
+  async function startJob(kind: JobKind, input: Record<string, unknown>, target?: string) {
+    const r = await run(`start-${kind}`, () => api<{ job: JobView }>("/api/articles/jobs", { method: "POST", json: { kind, avatarId, input } }));
+    if (r) setJobs((cur) => [...cur, { id: r.job.id, kind, target, progress: r.job.progress }]);
+  }
 
   async function run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
     setBusy(label);
@@ -138,16 +278,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     }
   }
 
-  async function generate() {
-    const r = await run("generate", () => api<{ text: string }>("/api/articles/generate", { method: "POST", json: { avatarId, topic, paid } }));
-    if (!r) return;
-    // 先頭の「# タイトル」はタイトル欄へ
-    const m = /^\s*#\s+(.+)\n/.exec(r.text);
-    if (m && !/^##/.test(r.text.trim())) {
-      setTitle(m[1].trim());
-      setMd(r.text.slice(m[0].length).trim());
-    } else setMd(r.text);
-    if (!title && !m) setTitle(topic);
+  function generate() {
+    void startJob("write", { title, topic, markdown: md, paid, preserve });
   }
 
   async function plan() {
@@ -158,15 +290,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     }
   }
 
-  async function render(only?: number[]) {
-    const r = await run(only ? `render-${only[0]}` : "render-all", () =>
-      api<{ markdown: string; media: MediaRef[]; results: { kind: string; description: string; error?: string; issues?: string[] }[] }>("/api/articles/render", { method: "POST", json: { avatarId, markdown: md, only } })
-    );
-    if (!r) return;
-    setMd(r.markdown);
-    setMedia((cur) => ({ ...cur, ...Object.fromEntries(r.media.map((m) => [m.name, m])) }));
-    const errors = r.results.filter((x) => x.error);
-    setNotice(errors.length ? { kind: "error", msg: `${r.media.length} 件作成、${errors.length} 件失敗: ${errors.map((e) => `${e.description}（${e.error}）`).join(" / ")}` } : { kind: "ok", msg: `${r.media.length} 件の画像・図解を作りました` });
+  function render(only?: number[]) {
+    void startJob("render", { markdown: md, only }, only ? String(only[0]) : "all");
   }
 
   function insertAtCursor(snippet: string) {
@@ -195,6 +320,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     const ref = await run("upload", async () => {
       const form = new FormData();
       form.append("file", file);
+      // 見出し画像は note のサムネイルサイズ（1280×670）に切り抜く
+      if (asEyecatch) form.append("fit", "eyecatch");
       const r = await fetch("/api/media", { method: "POST", body: form });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "アップロードに失敗しました");
@@ -208,9 +335,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
     }
   }
 
-  async function makeEyecatch() {
-    const r = await run("eyecatch", () => api<{ media: MediaRef }>("/api/articles/eyecatch", { method: "POST", json: { avatarId, title, summary: md.slice(0, 400) } }));
-    if (r) setEyecatch(r.media);
+  function makeEyecatch() {
+    void startJob("eyecatch", { title, summary: md.slice(0, 400) });
   }
 
   function check(): string[] {
@@ -281,25 +407,59 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
               ))}
             </select>
           </label>
-          <label className="min-w-[260px] flex-1 text-xs text-white/60">
-            テーマ（AI で書く場合）
-            <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="例: ADHD でも続く朝の集中ルーティン" className={`${inputCls} mt-1`} />
-          </label>
           <label className="flex items-center gap-1.5 pb-2 text-xs text-white/60">
             <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} /> 有料記事
           </label>
-          <Button disabled={!!busy || !topic.trim()} onClick={generate}>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block text-xs text-white/60">
+            <span className="flex items-center gap-2">
+              タイトル <InputState filled={!!title.trim()} preserve={preserve} />
+            </span>
+            <input value={title} readOnly={writing} onChange={(e) => setTitle(e.target.value)} placeholder="例: ADHD の私が 3 年続けている朝の集中ルーティン" className={`${inputCls} mt-1 text-base font-semibold`} />
+          </label>
+          <label className="block text-xs text-white/60">
+            <span className="flex items-center gap-2">
+              テーマ <InputState filled={!!topic.trim()} preserve={preserve} />
+            </span>
+            <input value={topic} readOnly={writing} onChange={(e) => setTopic(e.target.value)} placeholder="例: ADHD でも続く朝の集中ルーティン" className={`${inputCls} mt-1 text-base`} />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-white/60">
+          <span className="flex items-center gap-2">
+            本文 <InputState filled={!!md.trim()} preserve={preserve} body />
+          </span>
+          <label className="flex items-center gap-1.5">
+            <input type="checkbox" checked={preserve} onChange={(e) => setPreserve(e.target.checked)} /> 入力済みの部分は書き換えない（足りない部分だけ書く）
+          </label>
+          <span className="flex-1" />
+          <Button disabled={!!busy || writing || !account || (!title.trim() && !topic.trim() && !md.trim())} onClick={generate}>
             <Sparkles className="mr-1 inline h-3.5 w-3.5" />
-            {busy === "generate" ? "執筆中…（1〜2 分）" : "AI で書く"}
+            {writing ? "執筆中…" : writeLabel(title, topic, md)}
           </Button>
         </div>
+        <p className="text-[11px] text-white/40">
+          タイトルだけ・テーマだけ・両方・書きかけの本文、どれからでも書けます。入力した部分は活かして整え、空の部分を AI が補います。生成はバックグラウンドで続くので、ページを離れても大丈夫です（戻ると反映されます）。
+        </p>
+        {jobs.length > 0 && (
+          <ul className="space-y-1 rounded-lg border border-cyan-400/20 bg-cyan-500/[0.06] p-2 text-xs text-cyan-100">
+            {jobs.map((j) => (
+              <li key={j.id} className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {JOB_LABEL[j.kind]}
+                {j.kind === "render" && j.target !== "all" ? `（${Number(j.target) + 1} 番目）` : ""}
+                <span className="text-cyan-100/60">{j.progress ? `… ${j.progress}` : "… 順番待ち"}</span>
+              </li>
+            ))}
+            <li className="text-[11px] text-cyan-100/50">バックグラウンドで生成中です。ページを離れても続きます。</li>
+          </ul>
+        )}
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card className="space-y-3">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="記事タイトル" className={`${inputCls} text-base font-semibold`} />
           <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" disabled={!!busy || !md.trim()} onClick={plan}>
+            <Button variant="ghost" disabled={!!busy || writing || !md.trim()} onClick={plan}>
               <Wand2 className="mr-1 inline h-3.5 w-3.5" />
               {busy === "plan" ? "考え中…" : "見出しごとの画像・図解を提案"}
             </Button>
@@ -327,6 +487,7 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
             <textarea
               ref={textRef}
               value={md}
+              readOnly={writing}
               onChange={(e) => setMd(e.target.value)}
               rows={28}
               placeholder={"## 大見出し\n\n本文。大事なところは **太字** に。\n\n### 小見出し\n\n<!-- infographic: 3つの手順 -->\n\n<!-- paywall -->\n\n有料部分…"}
@@ -342,8 +503,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
           <Card className="space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">画像・図解（{list.length}）</h3>
-              <Button disabled={!!busy || !list.length} onClick={() => render()}>
-                {busy === "render-all" ? "作成中…" : "すべて作る"}
+              <Button disabled={!!busy || writing || !!jobFor("render") || !list.length} onClick={() => render()}>
+                {jobFor("render", "all") ? "作成中…" : "すべて作る"}
               </Button>
             </div>
             {list.length === 0 ? (
@@ -353,8 +514,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
                 <div key={m.line} className="flex items-center gap-2 rounded-lg border border-white/[0.06] p-2 text-xs">
                   <Badge className={m.kind === "image" ? "bg-violet-500/15 text-violet-200" : "bg-cyan-500/15 text-cyan-200"}>{m.kind === "image" ? "画像" : "図解"}</Badge>
                   <span className="min-w-0 flex-1 truncate">{m.description || "（説明なし）"}</span>
-                  <button className="text-cyan-300 disabled:text-white/30" disabled={!!busy} onClick={() => render([m.index])}>
-                    {busy === `render-${m.index}` ? "…" : "作る"}
+                  <button className="text-cyan-300 disabled:text-white/30" disabled={!!busy || writing || !!jobFor("render")} onClick={() => render([m.index])}>
+                    {jobFor("render", String(m.index)) ? "作成中…" : "作る"}
                   </button>
                 </div>
               ))
@@ -367,8 +528,8 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
             {/* eslint-disable-next-line @next/next/no-img-element */}
             {eyecatch ? <img src={`/media/${eyecatch.name}`} alt="見出し画像" className="w-full rounded-lg" /> : <p className="text-xs text-white/40">未設定</p>}
             <div className="flex flex-wrap gap-2">
-              <Button variant="ghost" disabled={!!busy || !title.trim()} onClick={makeEyecatch}>
-                {busy === "eyecatch" ? "生成中…" : "AI で作る"}
+              <Button variant="ghost" disabled={!!busy || !!jobFor("eyecatch") || !title.trim()} onClick={makeEyecatch}>
+                {jobFor("eyecatch") ? "生成中…" : "AI で作る（1280×670）"}
               </Button>
               <Button variant="ghost" disabled={!!busy} onClick={() => eyeRef.current?.click()}>
                 アップロード
@@ -401,7 +562,7 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
                 ))}
               </ul>
             )}
-            <Button disabled={!!busy} onClick={submit}>
+            <Button disabled={!!busy || jobs.length > 0} onClick={submit}>
               {busy === "submit" ? "送信中…" : "note の下書きに保存"}
             </Button>
             <p className="text-[11px] text-white/35">本文・画像・見出し画像・有料ライン・価格・タグを下書きに入れます。公開は note の編集画面で行ってください。</p>

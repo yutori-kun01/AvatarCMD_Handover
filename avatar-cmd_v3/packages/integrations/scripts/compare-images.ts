@@ -17,15 +17,15 @@ import type { InputImage } from "../src/service/llm";
 
 /** 1M トークンあたりの USD（要確認）。input = テキスト・画像入力、output = 画像出力 */
 const PRICES: Record<string, { input: number; output: number }> = {
-  // gpt-image2.5-sunburst（推奨モデル）の単価は料金ページで確認して入れる
+  // gpt-image-2.5-sunburst（推奨モデル）の単価は料金ページで確認して入れる
   "gpt-image-1-mini": { input: 2.5, output: 8 },
   "gpt-image-1": { input: 10, output: 40 },
   "gemini-2.5-flash-image": { input: 0.3, output: 30 },
 };
 
-// 推奨（2026-10 決定）: OpenAI gpt-image2.5-sunburst・品質 high。比較したいモデルがあれば行を足す
+// 推奨（2026-10 決定）: OpenAI gpt-image-2.5-sunburst・品質 high。比較したいモデルがあれば行を足す
 const TARGETS: { provider: ImageProvider; model: string; quality?: ImageQuality }[] = [
-  { provider: "openai", model: "gpt-image2.5-sunburst", quality: "high" },
+  { provider: "openai", model: "gpt-image-2.5-sunburst", quality: "high" },
   { provider: "openai", model: "gpt-image-1", quality: "high" },
   { provider: "gemini", model: "gemini-2.5-flash-image" },
 ];

@@ -2,7 +2,7 @@
 // 設定 > 画像生成: プロバイダ（OpenAI / Gemini）・モデル・画質と、同じプロンプトで両方を試す比較テスト
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, Badge, Button, Card, Field, inputCls } from "./ui";
+import { api, Badge, Button, Card, inputCls } from "./ui";
 
 type Provider = "openai" | "gemini";
 interface Settings {
@@ -17,6 +17,7 @@ interface ProviderInfo {
   defaultModel: string;
   modelHelp: string;
   pricingUrl: string;
+  models: { id: string; label: string; note: string }[];
 }
 interface CompareResult {
   provider: Provider;
@@ -33,6 +34,46 @@ interface CompareResult {
 const PROVIDERS: Provider[] = ["openai", "gemini"];
 const money = (amounts: Record<string, number> | undefined) =>
   amounts && Object.keys(amounts).length ? Object.entries(amounts).map(([c, v]) => `${c} ${v < 1 ? v.toFixed(4) : v.toFixed(2)}`).join(" / ") : null;
+
+const CUSTOM = "__custom__";
+
+/** モデルは一覧から選ぶ（一覧にない新しいモデルは ID を直接入力） */
+function ModelPicker({ info, value, disabled, onChange }: { info: ProviderInfo; value: string; disabled?: boolean; onChange: (v: string) => void }) {
+  const known = info.models.some((m) => m.id === value);
+  const [custom, setCustom] = useState(!known);
+  return (
+    <div className="mt-2 space-y-1.5 text-xs text-white/60">
+      <span>モデル</span>
+      <select
+        value={custom ? CUSTOM : value}
+        disabled={disabled}
+        onChange={(e) => {
+          if (e.target.value === CUSTOM) return setCustom(true);
+          setCustom(false);
+          onChange(e.target.value);
+        }}
+        className={`${inputCls} w-full`}
+      >
+        {info.models.map((m) => (
+          <option key={m.id} value={m.id} className="bg-[#111]">
+            {m.label}
+            {m.id === info.defaultModel ? "（推奨）" : ""}
+          </option>
+        ))}
+        <option value={CUSTOM} className="bg-[#111]">
+          その他（モデル ID を入力）
+        </option>
+      </select>
+      {!custom && (
+        <p className="text-[11px] text-white/50">
+          <span className="font-mono">{value}</span> — {info.models.find((m) => m.id === value)?.note}
+        </p>
+      )}
+      {custom && <input value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder={info.defaultModel} className={`${inputCls} w-full font-mono`} />}
+      <p className="text-[11px] text-white/40">{info.modelHelp}。入力した ID の表記ゆれは保存時に正しい ID に直ります。</p>
+    </div>
+  );
+}
 
 export function ImageSection({ avatars, onChanged }: { avatars: { id: string; name: string }[]; onChanged: (msg: string, ok: boolean) => void }) {
   const [s, setS] = useState<Settings | null>(null);
@@ -105,13 +146,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
                 <span className="text-sm font-semibold">{info[p].name}</span>
                 {s.keys[p] ? <Badge className="bg-emerald-500/15 text-emerald-300">キーあり</Badge> : <Badge className="bg-white/10 text-white/50">キーなし</Badge>}
               </div>
-              <div className="mt-2">
-                <Field
-                  def={{ key: `model-${p}`, label: "モデル", placeholder: info[p].defaultModel, help: info[p].modelHelp }}
-                  value={s.models[p] === info[p].defaultModel ? "" : s.models[p]}
-                  onChange={(v) => setS({ ...s, models: { ...s.models, [p]: v || info[p].defaultModel } })}
-                />
-              </div>
+              <ModelPicker info={info[p]} value={s.models[p]} disabled={busy} onChange={(v) => setS({ ...s, models: { ...s.models, [p]: v } })} />
               <a href={info[p].pricingUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[11px] text-cyan-300 underline">
                 料金ページ
               </a>
@@ -134,7 +169,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
               <option value="webp" className="bg-[#111]">WebP（容量が小さい）</option>
             </select>
           </label>
-          <Button disabled={busy} onClick={() => save({ models: s.models })}>
+          <Button disabled={busy || PROVIDERS.some((p) => !s.models[p].trim())} onClick={() => save({ models: s.models })}>
             モデルを保存
           </Button>
         </div>
@@ -142,7 +177,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
           <div className="mb-1 font-semibold text-white/80">出力サイズ（生成後に中央基準で切り抜き）</div>
           <div>見出し画像（note のサムネイル）: 1280 × 670（note 推奨）</div>
           <div>見出しの下の画像・図解: 1280 × 720（16:9。本文の表示幅 620px の 2 倍強で高解像度の画面でもきれい）</div>
-          <div className="mt-1 text-white/40">OpenAI へは 1536 × 1024 で生成を依頼し、主役が切れないよう中央に寄せる指示をプロンプトに入れています。</div>
+          <div className="mt-1 text-white/40">GPT Image 2 以降は用途のサイズ（1280 × 672 / 1280 × 720）で直接生成し、見出し画像は 1280 × 670 に整えます。旧モデル（GPT Image 1 系）と Gemini は横長で生成して中央基準で切り抜きます。</div>
         </div>
         <p className="text-[11px] text-white/40">
           費用は 設定 &gt; API コスト の料金表に単価（出力トークン・リクエスト）を登録すると計算されます。使用量は用途「image_generate」で記録され、月の予算を超えると止まります。
