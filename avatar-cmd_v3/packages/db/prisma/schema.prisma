@@ -137,6 +137,7 @@ model Avatar {
   activityLogs    ActivityLog[]
   knowledgeItems  KnowledgeItem[]
   styleReferences StyleReference[]
+  videoEpisodes   VideoEpisode[]
   improvementCycles ImprovementCycle[]
   improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
@@ -1178,4 +1179,101 @@ model ArticleJob {
 
   @@index([status, createdAt])
   @@map("article_jobs")
+}
+
+// ==============================================
+// Video Pipeline (v3.9) — 動画パイプライン（docs/VIDEO_PIPELINE.md）
+// ==============================================
+// 1 本の動画 = 1 エピソード。カット指示書（shotlist）を唯一の正として、各工程は自分の担当フィールドだけを更新する。
+// 承認 A〜D（ネタ・台本・絵コンテ・公開前）は人が行い、承認が無い限り次の工程へ進まない。
+
+model VideoEpisode {
+  id          String   @id @default(uuid())
+  avatarId    String   @map("avatar_id")
+  /// 例: 2026-10-09_rv-father（フォルダ名・ログに使う）
+  episodeKey  String   @unique @map("episode_key")
+  title       String   @default("")
+  /// フォーマット設定: long_with_clips（長尺＋切り抜き）/ vertical_only（縦型専用）/ ad（広告）
+  profile     String   @default("long_with_clips")
+  /// 回の型: 深掘り回 / 体験談回 / ランキング回 / 前後編
+  format      String?
+  /// 出力先: youtube_long / youtube_shorts / tiktok / ig_reels
+  targets     String[] @default([])
+  /// 工程（video-pipeline.ts の STAGES）
+  stage       String   @default("topics")
+  /// active / paused（費用上限・作り直し上限などで停止。report に理由）/ done / cancelled
+  status      String   @default("active")
+  /// 依頼時のジャンル・テーマ・メモ
+  theme       String?  @db.Text
+  /// ネタ候補（10 件。一次情報 URL・切り口つき）
+  topics      Json     @default("[]")
+  script      String?  @db.Text
+  /// カット指示書（shotlist.json）
+  shotlist    Json     @default("{}")
+  /// ナレーション（章ごとの音声・単語タイムスタンプ・SRT）
+  narration   Json     @default("{}")
+  /// 書き出し（出力先ごとの動画）
+  renders     Json     @default("{}")
+  /// サムネイル候補（3 案）
+  thumbnails  Json     @default("[]")
+  /// 承認 D の内容（出力先ごとのアカウント・公開日時・投稿設定・選んだサムネイル）
+  publishPlan Json     @default("{}") @map("publish_plan")
+  /// 承認 A〜D の記録（誰が・いつ・メモ）
+  approvals   Json     @default("{}")
+  /// 人への報告（何が起きたか / どのカットか / 試したこと / 決めてほしいこと）
+  report      Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  avatar    Avatar                  @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  revisions VideoShotlistRevision[]
+  jobs      VideoJob[]
+
+  @@index([avatarId, createdAt])
+  @@index([status, stage])
+  @@map("video_episodes")
+}
+
+/// カット指示書の更新履歴（工程・理由・その時点の全体）
+model VideoShotlistRevision {
+  id        String   @id @default(uuid())
+  episodeId String   @map("episode_id")
+  step      String
+  reason    String?  @db.Text
+  by        String   @default("system")
+  shotlist  Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  episode VideoEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@index([episodeId, createdAt])
+  @@map("video_shotlist_revisions")
+}
+
+/// ジョブ = 1 エピソード × 1 工程 ×（1 カット）。同じ入力のジョブは inputHash で二重に走らせない
+model VideoJob {
+  id         String    @id @default(uuid())
+  episodeId  String    @map("episode_id")
+  /// topics / script / narration / storyboard / final / thumbnails
+  step       String
+  shotId     String?   @map("shot_id")
+  inputHash  String    @unique @map("input_hash")
+  /// 作り直しの指示（検品・差し戻しの理由）など
+  input      Json      @default("{}")
+  /// queued / running / done / failed
+  status     String    @default("queued")
+  attempts   Int       @default(0)
+  progress   String?
+  result     Json?
+  error      String?   @db.Text
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  episode VideoEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([episodeId, step])
+  @@map("video_jobs")
 }

@@ -29,7 +29,14 @@ export const ALLOWED_MEDIA: Record<string, string> = {
   "video/webm": "webm",
 };
 
-const NAME_RE = /^[a-f0-9-]{36}\.(jpg|png|gif|webp|mp4|mov|webm)$/;
+/** 保存できる形式（投稿の添付に使える ALLOWED_MEDIA ＋ 動画パイプラインのナレーション音声） */
+export const STORED_MEDIA: Record<string, string> = {
+  ...ALLOWED_MEDIA,
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+};
+
+const NAME_RE = /^[a-f0-9-]{36}\.(jpg|png|gif|webp|mp4|mov|webm|mp3|wav)$/;
 
 /** web と worker で同じ場所を指すよう、既定はモノレポ直下の data/media */
 function workspaceRoot(): string {
@@ -52,7 +59,7 @@ export function mediaPath(name: string): string {
 }
 
 export async function saveMedia(bytes: Uint8Array, filename: string, mimeType: string): Promise<MediaRef> {
-  const ext = ALLOWED_MEDIA[mimeType];
+  const ext = STORED_MEDIA[mimeType];
   if (!ext) throw new Error(`対応していないファイル形式です: ${mimeType}`);
   await mkdir(mediaDir(), { recursive: true });
   const name = `${randomUUID()}.${ext}`;

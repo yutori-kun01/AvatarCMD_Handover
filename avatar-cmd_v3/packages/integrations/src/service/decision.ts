@@ -71,7 +71,7 @@ async function agreementCount(since: Date): Promise<number> {
 // --- 呼び出し -------------------------------------------------------------------
 
 export interface DecisionMeta {
-  decisionType: "post_gate" | "quote_candidate" | "performance" | "improvement";
+  decisionType: "post_gate" | "quote_candidate" | "performance" | "improvement" | "video_qc";
   avatarId?: string | null;
   subjectId?: string | null;
 }

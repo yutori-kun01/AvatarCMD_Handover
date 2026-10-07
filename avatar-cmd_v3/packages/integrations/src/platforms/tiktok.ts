@@ -7,14 +7,25 @@
 //   - 投稿前に必須: POST /v2/post/publish/creator_info/query/（公開範囲の選択肢を取得）
 //   - 動画:   POST /v2/post/publish/video/init/（source=FILE_UPLOAD）→ upload_url に PUT（Content-Range）
 //   - 写真:   POST /v2/post/publish/content/init/（source=PULL_FROM_URL, 要ドメイン所有確認）
+//   - 下書き: POST /v2/post/publish/inbox/video/init/（video.upload 権限。TikTok アプリの受信トレイに届き、人がアプリで仕上げて公開する）
 //   - 状態:   POST /v2/post/publish/status/fetch/
-// 未監査アプリは公開範囲 SELF_ONLY（自分のみ）でしか投稿できない。
+// 未監査アプリは公開範囲 SELF_ONLY（自分のみ）でしか投稿できない。監査前は「下書き」モードで送り、人がアプリで公開する運用を推奨。
+// AI で作った動画は post_info.is_aigc でラベルを付ける（アカウント設定の既定は「付ける」。投稿ごとに上書き可）。
 
 import type { PlatformDefinition } from "../types";
 import { ConfigError, expiresWithin, MINUTE, poll, request, requestJson, requireFields, tokenTimes } from "../http";
 
 const API = "https://open.tiktokapis.com";
-const SCOPES = ["user.info.basic", "video.publish"];
+// video.upload は「下書き」モード（受信トレイへ送る）に必要。追加前に接続したアカウントは再接続すると使える
+const SCOPES = ["user.info.basic", "video.publish", "video.upload"];
+
+
+/** 投稿ごとの指定（空ならアカウント設定）で真偽を決める */
+function flag(option: string | undefined, setting: unknown, fallback: boolean): boolean {
+  if (option === "true" || option === "false") return option === "true";
+  if (setting === "true" || setting === "false") return setting === "true";
+  return fallback;
+}
 const MB = 1024 * 1024;
 
 function authJson(token: string) {
@@ -85,8 +96,61 @@ export const tiktok: PlatformDefinition = {
         { value: "true", label: "オフ" },
       ],
     },
+    {
+      key: "disableDuet",
+      label: "デュエット",
+      type: "select",
+      default: "false",
+      options: [
+        { value: "false", label: "許可" },
+        { value: "true", label: "オフ" },
+      ],
+    },
+    {
+      key: "disableStitch",
+      label: "リミックス（Stitch）",
+      type: "select",
+      default: "false",
+      options: [
+        { value: "false", label: "許可" },
+        { value: "true", label: "オフ" },
+      ],
+    },
+    {
+      key: "aiGenerated",
+      label: "AI 生成コンテンツのラベル",
+      type: "select",
+      default: "true",
+      help: "AI で作った画像・動画を含む投稿は「付ける」にしてください（TikTok のガイドライン）",
+      options: [
+        { value: "true", label: "付ける" },
+        { value: "false", label: "付けない" },
+      ],
+    },
+    {
+      key: "postMode",
+      label: "送り方",
+      type: "select",
+      default: "direct",
+      help: "監査前のアプリは「下書き」を推奨（TikTok アプリの受信トレイに届くので、アプリで確認して公開します）",
+      options: [
+        { value: "direct", label: "直接投稿（Direct Post）" },
+        { value: "draft", label: "下書き（受信トレイへ送る）" },
+      ],
+    },
   ],
-  postFields: [],
+  postFields: [
+    {
+      key: "aiGenerated",
+      label: "AI 生成ラベル",
+      type: "select",
+      options: [
+        { value: "", label: "アカウント設定に従う" },
+        { value: "true", label: "付ける" },
+        { value: "false", label: "付けない" },
+      ],
+    },
+  ],
   media: { image: true, video: true, required: "any", maxCount: 35 },
   docs: [
     { label: "Content Posting API", url: "https://developers.tiktok.com/doc/content-posting-api-get-started" },
@@ -97,6 +161,8 @@ export const tiktok: PlatformDefinition = {
     "TikTok for Developers でアプリを作成し、Login Kit と Content Posting API（Direct Post を有効化）を追加、Redirect URI に下記URIを登録してください。",
     "監査（Audit）前のアプリは、公開範囲「自分のみ」でしか投稿できません。一般公開するには TikTok の審査が必要です。",
     "写真投稿は URL 取り込み方式のため、公開URLのドメインを TikTok 開発者ポータルで所有確認する必要があります。動画はファイル送信のため不要です。",
+    "「下書き」モードは video.upload 権限を使います。以前に接続したアカウントは再接続してください。",
+    "TikTok のガイドラインにより、投稿前に公開範囲・コメント/デュエット/リミックスの可否を投稿者に示して同意を得る必要があります（動画パイプラインでは承認 D で確認します）。宣伝用のロゴや透かしは入れないでください。",
   ],
   oauth: {
     pkce: false,
@@ -137,20 +203,27 @@ export const tiktok: PlatformDefinition = {
     const token = ctx.credentials.accessToken;
     if (!token) throw new ConfigError("TikTok: アカウントを再接続してください");
     const s = ctx.settings as Record<string, string>;
-    if (!s.privacyLevel) throw new ConfigError("TikTok: アカウント設定で公開範囲を選択してください");
     if (!post.media.length) throw new ConfigError("TikTok: 動画または写真を添付してください");
+    const video = post.media.find((m) => m.mimeType.startsWith("video/"));
+    if (s.postMode === "draft") {
+      if (!video) throw new ConfigError("TikTok: 下書きモードは動画のみ対応です");
+      return uploadDraft(token, video);
+    }
+    // 投稿ごとの指定（動画パイプラインの承認 D で投稿者が選んだ設定）があればアカウント設定より優先する
+    const privacyLevel = post.options.privacyLevel || s.privacyLevel;
+    if (!privacyLevel) throw new ConfigError("TikTok: アカウント設定で公開範囲を選択してください");
 
     const creator = check(
       await requestJson("tiktok", `${API}/v2/post/publish/creator_info/query/`, { method: "POST", headers: authJson(token), json: {} }),
       "creator_info"
     );
     const allowed: string[] = creator?.privacy_level_options ?? [];
-    if (allowed.length && !allowed.includes(s.privacyLevel)) {
-      throw new ConfigError(`TikTok: 公開範囲 ${s.privacyLevel} はこのアカウントで使えません（選択肢: ${allowed.join(", ")}）`);
+    if (allowed.length && !allowed.includes(privacyLevel)) {
+      throw new ConfigError(`TikTok: 公開範囲 ${privacyLevel} はこのアカウントで使えません（選択肢: ${allowed.join(", ")}）`);
     }
-    const disableComment = s.disableComment === "true" || !!creator?.comment_disabled;
+    const disableComment = flag(post.options.disableComment, s.disableComment, false) || !!creator?.comment_disabled;
     const caption = post.link && !post.text.includes(post.link) ? `${post.text}\n${post.link}` : post.text;
-    const video = post.media.find((m) => m.mimeType.startsWith("video/"));
+    const aigc = flag(post.options.aiGenerated, s.aiGenerated, true);
 
     let publishId: string;
     if (video) {
@@ -163,11 +236,12 @@ export const tiktok: PlatformDefinition = {
           json: {
             post_info: {
               title: caption.slice(0, 2200),
-              privacy_level: s.privacyLevel,
+              privacy_level: privacyLevel,
               disable_comment: disableComment,
-              disable_duet: !!creator?.duet_disabled,
-              disable_stitch: !!creator?.stitch_disabled,
+              disable_duet: flag(post.options.disableDuet, s.disableDuet, false) || !!creator?.duet_disabled,
+              disable_stitch: flag(post.options.disableStitch, s.disableStitch, false) || !!creator?.stitch_disabled,
               video_cover_timestamp_ms: 1000,
+              is_aigc: aigc,
             },
             source_info: { source: "FILE_UPLOAD", video_size: bytes.byteLength, chunk_size: chunkSize, total_chunk_count: count },
           },
@@ -175,19 +249,7 @@ export const tiktok: PlatformDefinition = {
         "video/init"
       );
       publishId = init.publish_id;
-      for (let i = 0; i < count; i++) {
-        const start = i * chunkSize;
-        const end = i === count - 1 ? bytes.byteLength : start + chunkSize;
-        await request("tiktok", init.upload_url, {
-          method: "PUT",
-          headers: {
-            "Content-Type": video.mimeType,
-            "Content-Length": String(end - start),
-            "Content-Range": `bytes ${start}-${end - 1}/${bytes.byteLength}`,
-          },
-          body: bytes.subarray(start, end) as BodyInit,
-        });
-      }
+      await putChunks(init.upload_url, bytes, video.mimeType);
     } else {
       const init = check(
         await requestJson("tiktok", `${API}/v2/post/publish/content/init/`, {
@@ -197,7 +259,7 @@ export const tiktok: PlatformDefinition = {
             post_info: {
               title: (post.options.title || post.title || "").slice(0, 90),
               description: caption.slice(0, 4000),
-              privacy_level: s.privacyLevel,
+              privacy_level: privacyLevel,
               disable_comment: disableComment,
             },
             source_info: { source: "PULL_FROM_URL", photo_images: post.media.slice(0, 35).map((m) => m.url), photo_cover_index: 0 },
@@ -210,23 +272,63 @@ export const tiktok: PlatformDefinition = {
       publishId = init.publish_id;
     }
 
-    const postId = await poll<string>(
-      async () => {
-        const st = check(
-          await requestJson("tiktok", `${API}/v2/post/publish/status/fetch/`, { method: "POST", headers: authJson(token), json: { publish_id: publishId } }),
-          "status/fetch"
-        );
-        if (st.status === "FAILED") return { done: false, error: st.fail_reason ?? "FAILED" };
-        const ids = st.publicaly_available_post_id ?? st.publicly_available_post_id ?? [];
-        return { done: st.status === "PUBLISH_COMPLETE", value: ids[0] ? String(ids[0]) : publishId };
-      },
-      { intervalMs: 5000, label: "TikTok の投稿処理" }
-    );
+    const postId = await waitPublished(token, publishId, "PUBLISH_COMPLETE");
     const user = ctx.account.accountName.startsWith("@") ? ctx.account.accountName : "";
+    const notes = [privacyLevel === "SELF_ONLY" ? "公開範囲「自分のみ」で投稿しました" : "", video && aigc ? "AI 生成ラベル付き" : ""].filter(Boolean);
     return {
       postId,
       url: user && postId !== publishId ? `https://www.tiktok.com/${user}/video/${postId}` : undefined,
-      note: s.privacyLevel === "SELF_ONLY" ? "公開範囲「自分のみ」で投稿しました" : undefined,
+      note: notes.length ? notes.join(" / ") : undefined,
     };
   },
 };
+
+async function putChunks(uploadUrl: string, bytes: Uint8Array, mimeType: string) {
+  const { chunkSize, count } = tiktokChunks(bytes.byteLength);
+  for (let i = 0; i < count; i++) {
+    const start = i * chunkSize;
+    const end = i === count - 1 ? bytes.byteLength : start + chunkSize;
+    await request("tiktok", uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": mimeType,
+        "Content-Length": String(end - start),
+        "Content-Range": `bytes ${start}-${end - 1}/${bytes.byteLength}`,
+      },
+      body: bytes.subarray(start, end) as BodyInit,
+    });
+  }
+}
+
+/** 状態が done になるまで待つ。投稿 ID（公開された動画の ID が分かればそれ）を返す */
+async function waitPublished(token: string, publishId: string, done: string): Promise<string> {
+  return poll<string>(
+    async () => {
+      const st = check(
+        await requestJson("tiktok", `${API}/v2/post/publish/status/fetch/`, { method: "POST", headers: authJson(token), json: { publish_id: publishId } }),
+        "status/fetch"
+      );
+      if (st.status === "FAILED") return { done: false, error: st.fail_reason ?? "FAILED" };
+      const ids = st.publicaly_available_post_id ?? st.publicly_available_post_id ?? [];
+      return { done: st.status === done || st.status === "PUBLISH_COMPLETE", value: ids[0] ? String(ids[0]) : publishId };
+    },
+    { intervalMs: 5000, label: "TikTok の投稿処理" }
+  );
+}
+
+/** 下書き: 受信トレイへ送る（公開範囲・ラベルは人が TikTok アプリで選ぶ） */
+async function uploadDraft(token: string, video: { load: () => Promise<Uint8Array>; mimeType: string }) {
+  const bytes = await video.load();
+  const { chunkSize, count } = tiktokChunks(bytes.byteLength);
+  const init = check(
+    await requestJson("tiktok", `${API}/v2/post/publish/inbox/video/init/`, {
+      method: "POST",
+      headers: authJson(token),
+      json: { source_info: { source: "FILE_UPLOAD", video_size: bytes.byteLength, chunk_size: chunkSize, total_chunk_count: count } },
+    }),
+    "inbox/video/init"
+  );
+  await putChunks(init.upload_url, bytes, video.mimeType);
+  const postId = await waitPublished(token, init.publish_id, "SEND_TO_USER_INBOX");
+  return { postId, note: "下書きとして TikTok の受信トレイに送りました（アプリで確認して公開してください。AI 生成ラベルもアプリで付けてください）" };
+}

@@ -48,7 +48,7 @@ export const AUTO_ORDER: AiProvider[] = ["anthropic", "openai", "gemini"];
 // recommended: その用途で「これ以上は下げない」最低限の推奨モデル（モデル欄が空欄のときの既定）。
 // upgrade:     品質を上げたいときの候補（設定画面にヒントとして表示）。
 
-export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary" | "style" | "visual";
+export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary" | "style" | "visual" | "video_topics" | "video_script" | "video_qc";
 
 export interface AiTaskDef {
   label: string;
@@ -119,6 +119,26 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
     maxTokens: 16000,
+  },
+  video_topics: {
+    label: "動画のネタ候補",
+    help: "動画パイプラインのネタ候補（10 件・一次情報 URL・切り口）。Gemini を選ぶと Google 検索で裏付けを取ります（推奨）",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 16000,
+  },
+  video_script: {
+    label: "動画の台本・カット指示書",
+    help: "章立て → 本文 → 自己批評 → 修正の順で台本を書き、同時にカット指示書（shotlist）を出力する。構成力と事実の扱いが要る",
+    recommended: { anthropic: "claude-opus-5", openai: "gpt-5", gemini: "gemini-3.8-flash" },
+    maxTokens: 64000,
+  },
+  video_qc: {
+    label: "動画の検品（画像の精査）",
+    help: "Jev の確信度が低いカットだけ、画像とカット指示書を読んで合否を決める。画像を読めるモデルが必要",
+    recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
+    maxTokens: 8000,
   },
   tags: {
     label: "タグ提案",
@@ -228,6 +248,8 @@ export interface CompleteInput {
   json?: { name: string; schema: Record<string, unknown> };
   /** 一緒に読ませる画像（参考画像のスタイル分析など） */
   images?: InputImage[];
+  /** Gemini のときだけ Google 検索で裏付けを取る（検索グラウンディング）。json とは併用しない */
+  search?: boolean;
 }
 
 export interface InputImage {
@@ -244,7 +266,7 @@ export async function completeText(input: CompleteInput): Promise<{ text: string
   if (!apiKey) throw new ConfigError(`${AI_PROVIDERS[r.provider].name} の API キーが未設定です（設定 > システム > AI）`);
   let out: ProviderResult;
   try {
-    out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json, images: input.images });
+    out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json, images: input.images, search: input.search });
   } catch (e) {
     // 失敗した呼び出しも回数として残す（トークンは不明のため 0。断られた場合など課金されることがある点は料金表の注記で扱う）
     await recordUsage({ provider: r.provider, model: r.model, purpose: input.task, ...((e as { usage?: TokenUsage }).usage ?? {}), error: e instanceof Error ? e.message : String(e) });
@@ -276,6 +298,7 @@ export interface ProviderRequest {
   maxTokens: number;
   json?: CompleteInput["json"];
   images?: InputImage[];
+  search?: boolean;
 }
 
 export interface ProviderResult {
@@ -346,7 +369,7 @@ async function callOpenAI({ apiKey, model, system, user, json, images }: Provide
   return { text: res.output_text ?? "", model: res.model || model, usage: normalizeOpenAIUsage(res.usage) };
 }
 
-async function callGemini({ apiKey, model, system, user, json, images }: ProviderRequest): Promise<ProviderResult> {
+async function callGemini({ apiKey, model, system, user, json, images, search }: ProviderRequest): Promise<ProviderResult> {
   // GEMINI_BASE_URL: 社内プロキシ経由などで接続先を変える場合のみ設定（通常は不要）
   const baseUrl = process.env.GEMINI_BASE_URL;
   const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
@@ -356,7 +379,8 @@ async function callGemini({ apiKey, model, system, user, json, images }: Provide
     config: {
       systemInstruction: system,
       temperature: json ? 0.2 : 0.8,
-      ...(json ? { responseMimeType: "application/json", responseJsonSchema: json.schema } : {}),
+      ...(json && !search ? { responseMimeType: "application/json", responseJsonSchema: json.schema } : {}),
+      ...(search ? { tools: [{ googleSearch: {} }] } : {}),
     },
   });
   return { text: res.text ?? "", model, usage: normalizeGeminiUsage(res.usageMetadata) };

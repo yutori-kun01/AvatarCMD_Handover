@@ -32,9 +32,17 @@ async function waitReady(base: string, id: string, token: string) {
   );
 }
 
-function itemParams(m: MediaFile, carousel: boolean): Record<string, string> {
+/** リール（動画 1 本）の追加指定: フィードにも表示するか・カバーにするフレーム（ミリ秒） */
+export function reelParams(options: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = { share_to_feed: options.shareToFeed === "false" ? "false" : "true" };
+  const offset = Number(options.thumbOffsetMs);
+  if (options.thumbOffsetMs && Number.isFinite(offset) && offset >= 0) out.thumb_offset = String(Math.round(offset));
+  return out;
+}
+
+function itemParams(m: MediaFile, carousel: boolean, options: Record<string, string> = {}): Record<string, string> {
   if (m.mimeType.startsWith("video/")) {
-    return carousel ? { media_type: "VIDEO", video_url: m.url, is_carousel_item: "true" } : { media_type: "REELS", video_url: m.url };
+    return carousel ? { media_type: "VIDEO", video_url: m.url, is_carousel_item: "true" } : { media_type: "REELS", video_url: m.url, ...reelParams(options) };
   }
   return { image_url: m.url, ...(carousel ? { is_carousel_item: "true" } : {}), ...(m.alt ? { alt_text: m.alt } : {}) };
 }
@@ -52,7 +60,18 @@ export const instagram: PlatformDefinition = {
   ],
   accountFields: [],
   settingFields: [],
-  postFields: [],
+  postFields: [
+    {
+      key: "shareToFeed",
+      label: "リールをフィードにも表示",
+      type: "select",
+      options: [
+        { value: "true", label: "表示する" },
+        { value: "false", label: "リールタブのみ" },
+      ],
+    },
+    { key: "thumbOffsetMs", label: "リールのカバー位置（ミリ秒・任意）", placeholder: "1000" },
+  ],
   media: { image: true, video: true, required: "any", maxCount: 10 },
   docs: [
     { label: "Instagram API with Instagram Login", url: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login" },
@@ -63,6 +82,8 @@ export const instagram: PlatformDefinition = {
     "「ビジネスログインを設定」で下記のリダイレクトURIを登録します。",
     "投稿できるのはビジネス/クリエイターアカウントのみです。画像・動画の添付が必須です（テキストのみ不可）。",
     "画像は JPEG のみ、URL から取り込まれるため公開URLが外部から到達可能である必要があります。",
+    "動画 1 本の投稿はリールになります（縦 9:16 推奨）。動画も公開URLから取り込まれるため、処理が終わるまで公開URLを止めないでください。",
+    "投稿 API には予約公開の指定が無いため、予約は Avatar CMD の予約投稿（指定日時に投稿）で行います。AI 情報ラベルは API で付けられないため、必要に応じて Instagram アプリで設定してください。",
   ],
   oauth: {
     pkce: false,
@@ -122,7 +143,7 @@ export const instagram: PlatformDefinition = {
 
     let creationId: string;
     if (post.media.length === 1) {
-      creationId = await createContainer(base, uid, token, { ...itemParams(post.media[0], false), caption });
+      creationId = await createContainer(base, uid, token, { ...itemParams(post.media[0], false, post.options), caption });
     } else {
       const children: string[] = [];
       for (const m of post.media.slice(0, 10)) {
