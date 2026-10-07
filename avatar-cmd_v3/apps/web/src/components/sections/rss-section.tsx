@@ -124,7 +124,7 @@ function RssSectionInner() {
               onChange={(v) => setForm({ ...form, fetchFullText: v })}
             />
           </div>
-          <p className="text-[11px] text-white/40">要約に使うモデルは 設定 &gt; システム &gt; AI の「動画・記事の要約」で選べます。</p>
+          <p className="text-[11px] text-white/40">要約に使うモデルは 設定 &gt; AI 共通・判定 &gt; 学習・改善の AI の「動画・記事の要約」で選べます。</p>
           <div className="flex gap-2">
             <Button
               disabled={busy === "add" || !form.url.trim() || !form.avatarIds.length}

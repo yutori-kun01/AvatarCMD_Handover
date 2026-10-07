@@ -1,5 +1,5 @@
 "use client";
-// 「システム」: 公開URL・APIバージョン・AI（キーと用途ごとの割り当て） ／「セキュリティ」: パスワード変更
+// 設定の各セクション: 基本設定（公開URL・APIバージョン）／ AI の API キー ／ 用途ごとの AI の割り当て（カテゴリごと）／ 判定（Jev）／ セキュリティ
 import { useState } from "react";
 import { api, Button, Card, CopyText, Field } from "./ui";
 
@@ -48,35 +48,29 @@ export interface JevInfo {
   stats: { total: number; errors: number; reviewed: number; agreed: number };
 }
 
-export function SystemSection({ system, ai, jev, onChanged }: { system: SystemInfo; ai: AiInfo; jev: JevInfo; onChanged: (msg: string, ok: boolean) => void }) {
+type OnChanged = (msg: string, ok: boolean) => void;
+
+/** 部分保存（API は送られた項目だけを更新する） */
+async function saveSystem(body: Record<string, unknown>, onChanged: OnChanged, okMsg: string): Promise<boolean> {
+  try {
+    await api("/api/settings/system", { method: "PUT", json: body });
+    onChanged(okMsg, true);
+    return true;
+  } catch (e) {
+    onChanged((e as Error).message, false);
+    return false;
+  }
+}
+
+/** 基本設定: 公開URL・API バージョン */
+export function SystemBasicsSection({ system, onChanged }: { system: SystemInfo; onChanged: OnChanged }) {
   const [v, setV] = useState({
     appUrl: system.appUrl,
     metaGraphVersion: system.metaGraphVersion,
     linkedinVersion: system.linkedinVersion,
   });
-  const emptyKeys = () => Object.fromEntries(ai.providers.map((p) => [p.id, ""]));
-  const [aiKeys, setAiKeys] = useState<Record<string, string>>(emptyKeys);
-  const [aiTasks, setAiTasks] = useState<Record<string, { provider: string; model: string }>>(() =>
-    Object.fromEntries(ai.tasks.map((t) => [t.id, { provider: t.provider, model: t.model }]))
-  );
-  const [jevForm, setJevForm] = useState({ apiKey: "", model: jev.model, mode: jev.mode as string });
-  const providerName = (id: string | null) => ai.providers.find((p) => p.id === id)?.name ?? id ?? "";
   const [busy, setBusy] = useState(false);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-
-  async function save() {
-    setBusy(true);
-    try {
-      await api("/api/settings/system", { method: "PUT", json: { ...v, aiKeys, aiTasks, jev: jevForm } });
-      setAiKeys(emptyKeys());
-      setJevForm({ ...jevForm, apiKey: "" });
-      onChanged("システム設定を保存しました", true);
-    } catch (e) {
-      onChanged((e as Error).message, false);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div className="space-y-4">
@@ -118,122 +112,189 @@ export function SystemSection({ system, ai, jev, onChanged }: { system: SystemIn
         </div>
       </Card>
 
-      <Card className="space-y-4">
-        <h3 className="text-sm font-semibold">AI（投稿文の自動生成）</h3>
-        <p className="text-xs text-white/50">使うサービスの API キーを入力し、用途ごとにプロバイダとモデルを選びます。「自動」はキーが設定済みのものを Claude → OpenAI → Gemini の順で使います。モデル欄が空欄なら、用途ごとの「最低限の推奨モデル」を使います（重い用途だけ上位モデル）。</p>
-        <div className="grid gap-4 md:grid-cols-3">
-          {ai.providers.map((p) => (
-            <Field
-              key={p.id}
-              def={{
-                key: p.id,
-                label: `${p.name} API キー`,
-                type: "password",
-                help: p.apiKey
-                  ? `保存済み: ${p.apiKey}（変更する場合のみ入力 / 削除は「-」）`
-                  : p.fromEnv
-                    ? `.env の ${p.env} を使用中（ここで入力すると優先されます）`
-                    : p.keyHelp,
-              }}
-              value={aiKeys[p.id] ?? ""}
-              configured={!!p.apiKey || p.fromEnv}
-              onChange={(x) => setAiKeys({ ...aiKeys, [p.id]: x })}
-            />
-          ))}
-        </div>
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-white/70">用途ごとの割り当て</div>
-          {ai.tasks.map((t) => {
-            const cur = aiTasks[t.id] ?? { provider: "auto", model: "" };
-            const p = ai.providers.find((x) => x.id === cur.provider);
-            return (
-              <div key={t.id} className="grid gap-3 rounded-lg border border-white/5 p-3 md:grid-cols-[10rem_1fr_1fr]">
-                <div>
-                  <div className="text-sm">{t.label}</div>
-                  <div className="text-[11px] text-white/35">{t.help}</div>
-                </div>
-                <Field
-                  def={{
-                    key: `${t.id}-provider`,
-                    label: "プロバイダ",
-                    type: "select",
-                    options: [{ value: "auto", label: "自動（Claude 優先）" }, ...ai.providers.map((x) => ({ value: x.id, label: x.name }))],
-                    help: t.effectiveProvider ? `現在: ${providerName(t.effectiveProvider)} / ${t.effectiveModel}` : "API キーが未設定のため生成できません",
-                  }}
-                  value={cur.provider}
-                  onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { provider: x, model: "" } })}
-                />
-                {p ? (
-                  <Field
-                    def={{
-                      key: `${t.id}-model`,
-                      label: "モデル（空欄で推奨モデル）",
-                      placeholder: t.defaults[p.id],
-                      help: `推奨（最低限）: ${t.defaults[p.id]}${t.upgrade[p.id] ? ` ／ 品質重視: ${t.upgrade[p.id]}` : ""}。${p.modelHelp}`,
-                    }}
-                    value={cur.model}
-                    onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { ...cur, model: x } })}
-                  />
-                ) : (
-                  <p className="self-center text-[11px] text-white/35">
-                    自動のときは推奨モデルを使います（{ai.providers.map((x) => `${x.name.replace(/（.*）/, "")}: ${t.defaults[x.id]}`).join(" / ")}）
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-
-      <Card className="space-y-4">
-        <h3 className="text-sm font-semibold">判定（TypeSafe Jev）</h3>
-        <p className="text-xs text-white/50">
-          投稿の可否・引用候補の方向性・改善か継続か、といった「判断」を確率付きで行います（文章の生成には使いません）。
-          キーが未設定、またはモードが「使わない」のときは、これまでどおりの流れ（AI の投稿前チェック・コードのルール）で動きます。
-        </p>
-        <div className="grid gap-4 md:grid-cols-3">
-          <Field
-            def={{
-              key: "jevKey",
-              label: "TypeSafe API キー",
-              type: "password",
-              help: jev.apiKey ? `保存済み: ${jev.apiKey}（変更する場合のみ入力 / 削除は「-」）` : jev.fromEnv ? ".env の TYPESAFE_API_KEY を使用中" : "typesafe.ai で発行",
-            }}
-            value={jevForm.apiKey}
-            configured={!!jev.apiKey || jev.fromEnv}
-            onChange={(x) => setJevForm({ ...jevForm, apiKey: x })}
-          />
-          <Field
-            def={{ key: "jevModel", label: "モデル（空欄で既定）", placeholder: jev.defaultModel, help: "本番は具体的なバージョンに固定（jev-latest は変化を受け入れる場合のみ）" }}
-            value={jevForm.model}
-            onChange={(x) => setJevForm({ ...jevForm, model: x })}
-          />
-          <Field
-            def={{
-              key: "jevMode",
-              label: "モード",
-              type: "select",
-              options: [
-                { value: "shadow", label: "記録のみ（shadow・推奨の初期設定）" },
-                { value: "gate", label: "判定を反映（gate）" },
-                { value: "off", label: "使わない" },
-              ],
-              help: "記録のみ: 判定を残すだけで処理は変えない。人の判断との一致率を見てから「反映」に切り替えてください",
-            }}
-            value={jevForm.mode}
-            onChange={(x) => setJevForm({ ...jevForm, mode: x })}
-          />
-        </div>
-        <p className="text-[11px] text-white/40">
-          直近30日: 判定 {jev.stats.total} 件（エラー {jev.stats.errors} 件）／ 人の判断と比較できた投稿判定 {jev.stats.reviewed} 件
-          {jev.stats.reviewed > 0 && `（一致 ${jev.stats.agreed} 件・${Math.round((jev.stats.agreed / jev.stats.reviewed) * 100)}%）`}
-        </p>
-      </Card>
-
-      <Button onClick={save} disabled={busy}>
-        {busy ? "保存中…" : "システム設定を保存"}
+      <Button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          await saveSystem(v, onChanged, "基本設定を保存しました");
+          setBusy(false);
+        }}
+      >
+        {busy ? "保存中…" : "基本設定を保存"}
       </Button>
     </div>
+  );
+}
+
+/** AI の API キー（文章・画像・動画で共通） */
+export function AiKeysSection({ ai, onChanged }: { ai: AiInfo; onChanged: OnChanged }) {
+  const emptyKeys = () => Object.fromEntries(ai.providers.map((p) => [p.id, ""]));
+  const [aiKeys, setAiKeys] = useState<Record<string, string>>(emptyKeys);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Card className="space-y-4">
+      <h3 className="text-sm font-semibold">AI の API キー</h3>
+      <p className="text-xs text-white/50">
+        記事執筆・SNS 投稿文・画像・動画のすべてで共通です。使う用途ごとのプロバイダとモデルは、各カテゴリの「〇〇の AI」で選びます。画像生成には OpenAI か Gemini のキーが必要です（Claude は画像を生成しません）。
+      </p>
+      <div className="grid gap-4 md:grid-cols-3">
+        {ai.providers.map((p) => (
+          <Field
+            key={p.id}
+            def={{
+              key: p.id,
+              label: `${p.name} API キー`,
+              type: "password",
+              help: p.apiKey ? `保存済み: ${p.apiKey}（変更する場合のみ入力 / 削除は「-」）` : p.fromEnv ? `.env の ${p.env} を使用中（ここで入力すると優先されます）` : p.keyHelp,
+            }}
+            value={aiKeys[p.id] ?? ""}
+            configured={!!p.apiKey || p.fromEnv}
+            onChange={(x) => setAiKeys({ ...aiKeys, [p.id]: x })}
+          />
+        ))}
+      </div>
+      <Button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          if (await saveSystem({ aiKeys }, onChanged, "API キーを保存しました")) setAiKeys(emptyKeys());
+          setBusy(false);
+        }}
+      >
+        {busy ? "保存中…" : "API キーを保存"}
+      </Button>
+    </Card>
+  );
+}
+
+/** 用途ごとの AI の割り当て（taskIds の用途だけを表示・保存する） */
+export function AiTasksSection({ ai, taskIds, title, description, onChanged }: { ai: AiInfo; taskIds: string[]; title: string; description?: string; onChanged: OnChanged }) {
+  const tasks = ai.tasks.filter((t) => taskIds.includes(t.id));
+  const [aiTasks, setAiTasks] = useState<Record<string, { provider: string; model: string }>>(() => Object.fromEntries(tasks.map((t) => [t.id, { provider: t.provider, model: t.model }])));
+  const [busy, setBusy] = useState(false);
+  const providerName = (id: string | null) => ai.providers.find((p) => p.id === id)?.name ?? id ?? "";
+  const noKey = !ai.providers.some((p) => p.apiKey || p.fromEnv);
+  return (
+    <Card className="space-y-4">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <p className="text-xs text-white/50">
+        {description ? `${description} ` : ""}「自動」はキーが設定済みのものを Claude → OpenAI → Gemini の順で使います。モデル欄が空欄なら、用途ごとの「最低限の推奨モデル」を使います。
+      </p>
+      {noKey && <p className="text-xs text-amber-300">AI の API キーが未設定です（「AI 共通・判定 &gt; API キー」で入力してください）。</p>}
+      <div className="space-y-3">
+        {tasks.map((t) => {
+          const cur = aiTasks[t.id] ?? { provider: "auto", model: "" };
+          const p = ai.providers.find((x) => x.id === cur.provider);
+          return (
+            <div key={t.id} className="grid gap-3 rounded-lg border border-white/5 p-3 md:grid-cols-[10rem_1fr_1fr]">
+              <div>
+                <div className="text-sm">{t.label}</div>
+                <div className="text-[11px] text-white/35">{t.help}</div>
+              </div>
+              <Field
+                def={{
+                  key: `${t.id}-provider`,
+                  label: "プロバイダ",
+                  type: "select",
+                  options: [{ value: "auto", label: "自動（Claude 優先）" }, ...ai.providers.map((x) => ({ value: x.id, label: x.name }))],
+                  help: t.effectiveProvider ? `現在: ${providerName(t.effectiveProvider)} / ${t.effectiveModel}` : "API キーが未設定のため生成できません",
+                }}
+                value={cur.provider}
+                onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { provider: x, model: "" } })}
+              />
+              {p ? (
+                <Field
+                  def={{
+                    key: `${t.id}-model`,
+                    label: "モデル（空欄で推奨モデル）",
+                    placeholder: t.defaults[p.id],
+                    help: `推奨（最低限）: ${t.defaults[p.id]}${t.upgrade[p.id] ? ` ／ 品質重視: ${t.upgrade[p.id]}` : ""}。${p.modelHelp}`,
+                  }}
+                  value={cur.model}
+                  onChange={(x) => setAiTasks({ ...aiTasks, [t.id]: { ...cur, model: x } })}
+                />
+              ) : (
+                <p className="self-center text-[11px] text-white/35">
+                  自動のときは推奨モデルを使います（{ai.providers.map((x) => `${x.name.replace(/（.*）/, "")}: ${t.defaults[x.id]}`).join(" / ")}）
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <Button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          await saveSystem({ aiTasks }, onChanged, `${title}を保存しました`);
+          setBusy(false);
+        }}
+      >
+        {busy ? "保存中…" : "保存"}
+      </Button>
+    </Card>
+  );
+}
+
+/** 判定（TypeSafe Jev） */
+export function JevSection({ jev, onChanged }: { jev: JevInfo; onChanged: OnChanged }) {
+  const [jevForm, setJevForm] = useState({ apiKey: "", model: jev.model, mode: jev.mode as string });
+  const [busy, setBusy] = useState(false);
+  return (
+    <Card className="space-y-4">
+      <h3 className="text-sm font-semibold">判定（TypeSafe Jev）</h3>
+      <p className="text-xs text-white/50">
+        投稿の可否・引用候補の方向性・改善か継続か・動画の検品、といった「判断」を確率付きで行います（文章の生成には使いません）。
+        キーが未設定、またはモードが「使わない」のときは、これまでどおりの流れ（AI の投稿前チェック・コードのルール）で動きます。
+      </p>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Field
+          def={{
+            key: "jevKey",
+            label: "TypeSafe API キー",
+            type: "password",
+            help: jev.apiKey ? `保存済み: ${jev.apiKey}（変更する場合のみ入力 / 削除は「-」）` : jev.fromEnv ? ".env の TYPESAFE_API_KEY を使用中" : "typesafe.ai で発行",
+          }}
+          value={jevForm.apiKey}
+          configured={!!jev.apiKey || jev.fromEnv}
+          onChange={(x) => setJevForm({ ...jevForm, apiKey: x })}
+        />
+        <Field
+          def={{ key: "jevModel", label: "モデル（空欄で既定）", placeholder: jev.defaultModel, help: "本番は具体的なバージョンに固定（jev-latest は変化を受け入れる場合のみ）" }}
+          value={jevForm.model}
+          onChange={(x) => setJevForm({ ...jevForm, model: x })}
+        />
+        <Field
+          def={{
+            key: "jevMode",
+            label: "モード",
+            type: "select",
+            options: [
+              { value: "shadow", label: "記録のみ（shadow・推奨の初期設定）" },
+              { value: "gate", label: "判定を反映（gate）" },
+              { value: "off", label: "使わない" },
+            ],
+            help: "記録のみ: 判定を残すだけで処理は変えない。人の判断との一致率を見てから「反映」に切り替えてください",
+          }}
+          value={jevForm.mode}
+          onChange={(x) => setJevForm({ ...jevForm, mode: x })}
+        />
+      </div>
+      <p className="text-[11px] text-white/40">
+        直近30日: 判定 {jev.stats.total} 件（エラー {jev.stats.errors} 件）／ 人の判断と比較できた投稿判定 {jev.stats.reviewed} 件
+        {jev.stats.reviewed > 0 && `（一致 ${jev.stats.agreed} 件・${Math.round((jev.stats.agreed / jev.stats.reviewed) * 100)}%）`}
+      </p>
+      <Button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          if (await saveSystem({ jev: jevForm }, onChanged, "判定（Jev）の設定を保存しました")) setJevForm({ ...jevForm, apiKey: "" });
+          setBusy(false);
+        }}
+      >
+        {busy ? "保存中…" : "判定の設定を保存"}
+      </Button>
+    </Card>
   );
 }
 

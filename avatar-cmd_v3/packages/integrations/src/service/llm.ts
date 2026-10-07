@@ -1,7 +1,7 @@
 // ================================================
 // LLM プロバイダ層 — 用途（タスク）ごとに Claude / OpenAI / Gemini を使い分ける
 // ================================================
-// ・API キーはダッシュボードの「設定 > システム > AI」で入力（暗号化して DB に保存）。
+// ・API キーはダッシュボードの「設定 > AI 共通・判定 > API キー」で入力（用途ごとの割り当ては各カテゴリの「〇〇の AI」）（暗号化して DB に保存）。
 //   未入力なら環境変数 ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY を使う。
 // ・用途ごとに「プロバイダ」と「モデル」を選べる。プロバイダが「自動」のときは
 //   キーが設定済みのものを Claude → OpenAI → Gemini の順で選ぶ。
@@ -261,9 +261,9 @@ export interface InputImage {
 /** 用途に割り当てたプロバイダで生成する。model は実際に応答したモデル名。使用量は共通台帳（usage.ts）に記録する */
 export async function completeText(input: CompleteInput): Promise<{ text: string; model: string; provider: AiProvider }> {
   const r = await resolveAi(input.task);
-  if (!r.provider || !r.model) throw new ConfigError("AI の API キーが未設定です（設定 > システム > AI で Claude / OpenAI / Gemini のいずれかを入力）");
+  if (!r.provider || !r.model) throw new ConfigError("AI の API キーが未設定です（設定 > AI 共通・判定 > API キー で Claude / OpenAI / Gemini のいずれかを入力）");
   const apiKey = await providerKey(r.provider);
-  if (!apiKey) throw new ConfigError(`${AI_PROVIDERS[r.provider].name} の API キーが未設定です（設定 > システム > AI）`);
+  if (!apiKey) throw new ConfigError(`${AI_PROVIDERS[r.provider].name} の API キーが未設定です（設定 > AI 共通・判定 > API キー）`);
   let out: ProviderResult;
   try {
     out = await callProvider(r.provider, { apiKey, model: r.model, system: input.system, user: input.user, maxTokens: AI_TASKS[input.task].maxTokens, json: input.json, images: input.images, search: input.search });

@@ -1,4 +1,4 @@
-// 画像生成の設定（プロバイダ・モデル・画質）。API キーは 設定 > システム > AI と共通
+// 画像生成の設定（プロバイダ・モデル・画質）。API キーは 設定 > AI 共通 > API キー と共通
 import { NextResponse } from "next/server";
 import { getImageSettings, IMAGE_PROVIDERS, saveImageSettings } from "@avatar-cmd/integrations/server";
 import { route } from "@/lib/api";

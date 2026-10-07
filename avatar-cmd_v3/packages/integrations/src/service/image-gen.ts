@@ -1,7 +1,7 @@
 // ================================================
 // 画像生成（イメージ画像・見出し画像）— OpenAI / Gemini を切り替え
 // ================================================
-// ・API キーは文章生成と共通（設定 > システム > AI の OpenAI / Gemini）。Claude は画像を生成しないため対象外。
+// ・API キーは文章生成と共通（設定 > AI 共通・判定 > API キー の OpenAI / Gemini）。Claude は画像を生成しないため対象外。
 // ・使うプロバイダとモデルは設定で選ぶ（image_provider / image_model_openai / image_model_gemini / image_quality）。
 // ・参考画像（アバターのスタイル参照）を一緒に渡し、作風を寄せる。
 // ・使用量は共通台帳に記録し（purpose: image_generate）、月の予算を超えていれば止める（assertBudget）。
@@ -260,9 +260,9 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
   if (!req.prompt?.trim()) throw new ConfigError("画像のプロンプトが空です");
   const s = await getImageSettings();
   const provider = req.provider ?? s.provider;
-  if (!provider) throw new ConfigError("画像生成には OpenAI か Gemini の API キーが必要です（設定 > システム > AI）");
+  if (!provider) throw new ConfigError("画像生成には OpenAI か Gemini の API キーが必要です（設定 > AI 共通・判定 > API キー）");
   const apiKey = await providerKey(provider);
-  if (!apiKey) throw new ConfigError(`${IMAGE_PROVIDERS[provider].name} の API キーが未設定です（設定 > システム > AI）`);
+  if (!apiKey) throw new ConfigError(`${IMAGE_PROVIDERS[provider].name} の API キーが未設定です（設定 > AI 共通・判定 > API キー）`);
   const model = normalizeImageModel(provider, req.model) || s.models[provider];
   await assertBudget("画像生成");
   const started = Date.now();
@@ -317,7 +317,7 @@ export interface CompareResult {
 export async function compareImageProviders(input: { prompt: string; aspect?: ImageAspect; target?: ImageTarget; references?: InputImage[]; quality?: ImageQuality; models?: Partial<Record<ImageProvider, string>>; avatarId?: string | null }): Promise<CompareResult[]> {
   const s = await getImageSettings();
   const targets = (Object.keys(IMAGE_PROVIDERS) as ImageProvider[]).filter((p) => s.keys[p]);
-  if (!targets.length) throw new ConfigError("比較には OpenAI か Gemini の API キーが必要です（設定 > システム > AI）");
+  if (!targets.length) throw new ConfigError("比較には OpenAI か Gemini の API キーが必要です（設定 > AI 共通・判定 > API キー）");
   const prices = await loadPrices();
   return Promise.all(
     targets.map(async (provider): Promise<CompareResult> => {

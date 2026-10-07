@@ -13,6 +13,7 @@ import {
   renderManifest,
   requestScriptRevision,
   resolveShot,
+  retryStage,
   reviewStoryboard,
   scriptChecks,
   setEpisodeStatus,
@@ -92,6 +93,9 @@ export const POST = route(async (req: Request, { params }: Params) => {
     case "resume":
     case "cancel":
       episode = await setEpisodeStatus(id, b.action);
+      break;
+    case "retry":
+      episode = await retryStage(id);
       break;
     case "dismissReport":
       episode = await dismissReport(id);

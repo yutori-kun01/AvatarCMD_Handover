@@ -471,7 +471,8 @@ export async function setThumbnails(id: string, input: { add?: MediaRef; remove?
   }
   let thumbs = (ep.thumbnails ?? []) as unknown as MediaRef[];
   if (input.add) {
-    if (!input.add.mimeType.startsWith("image/")) throw new ConfigError("画像ファイルを選んでください");
+    if (!input.add.mimeType?.startsWith("image/")) throw new ConfigError("画像ファイルを選んでください");
+    if (!(await mediaExists(input.add.name))) throw new ConfigError("アップロードしたファイルが見つかりません");
     thumbs = [...thumbs, input.add].slice(-6);
   }
   if (input.remove) thumbs = thumbs.filter((t) => t.name !== input.remove);
@@ -650,6 +651,16 @@ async function resumePendingWork(id: string) {
     for (const s of sl.shots.filter((x) => x.status === "storyboard_ok" && !x.assets.final_image)) await enqueueVideoJob(id, "final", s.shot_id, { retries: s.qc.retries, resume: at });
     if (sl.shots.every((s) => s.status !== "storyboard_ok")) await enterVideoStage(ep);
   } else if (ep.stage === "render" && !((ep.thumbnails ?? []) as unknown[]).length) await enqueueVideoJob(id, "thumbnails", null, { resume: at });
+}
+
+/** 失敗した工程を再実行する（設定を直したあとなど）。承認待ちの工程では何もしない */
+export async function retryStage(id: string) {
+  const ep = await loadEpisode(id);
+  if (ep.status !== "active") throw new ConfigError("一時停止中・終了したエピソードは再実行できません（先に再開してください）");
+  if (stageGate(ep.stage)) throw new ConfigError("承認待ちの工程です。画面の承認・差し戻しで進めてください");
+  await prisma.videoEpisode.update({ where: { id }, data: { report: Prisma.JsonNull } });
+  await resumePendingWork(id);
+  return getEpisodeView(id);
 }
 
 /** 画面の「最新の報告を確認済みにする」 */
