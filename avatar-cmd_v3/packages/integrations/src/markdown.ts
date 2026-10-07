@@ -91,7 +91,7 @@ export function markdownToNote(md: string, opts: MdOptions = {}): { html: string
       const url = opts.images?.[img[2]];
       out.push(
         url
-          ? `<figure${attr()}><img src="${esc(url)}" alt="${esc(img[1])}"><figcaption>${img[1] && !/^(image|infographic|eyecatch)$/i.test(img[1]) ? esc(img[1]) : ""}</figcaption></figure>`
+          ? `<figure${attr()}><img src="${esc(url)}" alt="${esc(img[1])}" width="620" height="auto"><figcaption>${img[1] && !/^(image|infographic|eyecatch)$/i.test(img[1]) ? esc(img[1]) : ""}</figcaption></figure>`
           : `<p${attr()}>［画像：${esc(img[1] || "ここに画像")}］</p>`
       );
       i++;

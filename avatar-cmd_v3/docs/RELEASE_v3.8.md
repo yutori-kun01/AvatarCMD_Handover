@@ -22,10 +22,16 @@
   - 入力済みの項目は活かして整え、空の項目を AI が補う。「入力済みの部分は書き換えない」を選ぶと、タイトル・テーマはそのまま、本文は前後に足す部分だけを書く。
   - 入力欄ごとに「入力済み → 活かして整える / 空 → AI が作る」を表示し、ボタンの文言も入力に合わせて変わる。
 
+- **note への画像のアップロードを note のエディタと同じ方式に**
+  - 本文の画像は `POST /api/v3/images/upload/presigned_post`（filename）で S3 の送り先を受け取り、S3 へ直接送って、返った note の画像 URL（assets.st-note.com）を本文の `<figure><img>` に入れる。S3 には Cookie を送らない。
+  - presigned_post が使えないときは旧方式 `POST /api/v1/upload_image` を試す。どちらも失敗した画像は［画像：…］として残し、本文は保存する。
+  - 見出し画像は `POST /api/v1/image_upload/note_eyecatch` に `width=1280`・`height=670` を付けて送る。
+  - 本文の画像は `width="620" height="auto"`（note のエディタと同じ表示幅）を付ける。
+
 ## DB 移行
 
 - `20261007000000_article_jobs`（`article_jobs` テーブルの追加のみ）。`prisma migrate deploy` で適用。
 
 ## 未検証
 
-- 実際の OpenAI / Gemini API での生成（テストはモック）。`gpt-image-2.5-*` に 1280×672 などのサイズ指定が通るかは本番のキーで確認する。
+- 実際の OpenAI / Gemini API での生成と、note の非公式 API（presigned_post・note_eyecatch）への実際のアップロード（テストはモック）。`gpt-image-2.5-*` に 1280×672 などのサイズ指定が通るかは本番のキーで確認する。

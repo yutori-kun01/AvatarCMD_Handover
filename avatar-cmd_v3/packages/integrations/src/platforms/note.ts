@@ -5,8 +5,11 @@
 // エンドポイント（非公式）にログイン Cookie で下書きを作成する。
 //   - GET  https://note.com/api/v2/current_user            ログイン確認・フォロワー数
 //   - POST https://note.com/api/v1/text_notes               空の下書きを作成 → { id, key }
-//   - POST https://note.com/api/v1/upload_image             本文の画像（multipart: file）→ 画像 URL      ※要検証
-//   - POST https://note.com/api/v1/image_upload/note_eyecatch 見出し画像（multipart: note_id, file）     ※要検証
+//   - POST https://note.com/api/v3/images/upload/presigned_post 本文の画像（multipart: filename）
+//          → { action, post: {S3 のフォーム項目}, url } → action（S3）へ post の項目 + file を送ると url で使える
+//          （note の画像置き場 assets.st-note.com に入る。note のエディタと同じ 2 段階の方式）
+//   - POST https://note.com/api/v1/upload_image             旧方式（multipart: file → URL）。上が使えないときだけ使う
+//   - POST https://note.com/api/v1/image_upload/note_eyecatch 見出し画像（multipart: note_id, file, width, height）
 //   - POST https://note.com/api/v1/text_notes/draft_save?id= 本文・タグ・有料ライン（separator）・価格を保存
 //   - GET  https://note.com/api/v1/stats/pv                 記事ごとの累計 PV・スキ（閲覧数の推移に使う）
 // 公開（取り消せない操作）だけは行わない。有料ライン・価格・画像・タグは下書きに入れ、公開ボタンは本人が押す。
@@ -68,6 +71,35 @@ async function upload(cookie: string, path: string, file: MediaFile, fields: Rec
   const d = (await res.json().catch(() => ({}))) as { data?: Record<string, unknown> };
   const url = d.data?.url ?? d.data?.image_url ?? d.data?.eyecatch_url;
   if (typeof url !== "string" || !/^https:\/\//.test(url)) throw new Error("note: 画像の URL が返りませんでした");
+  return url;
+}
+
+/**
+ * 本文の画像を note の画像置き場にアップロードし、本文に埋め込む URL を返す。
+ * note のエディタと同じ 2 段階（presigned_post で S3 の送り先を受け取る → S3 へ直接送る）。
+ * presigned_post が使えない（仕様変更など）ときは旧方式の upload_image を試す。
+ */
+async function uploadBodyImage(cookie: string, file: MediaFile): Promise<string> {
+  let presigned: { action?: unknown; post?: Record<string, unknown>; url?: unknown } | undefined;
+  try {
+    const form = new FormData();
+    form.append("filename", file.filename);
+    const res = await request("note", `${API}/v3/images/upload/presigned_post`, { method: "POST", headers: headers(cookie), body: form, redirect: "manual" });
+    presigned = ((await res.json().catch(() => ({}))) as { data?: typeof presigned }).data;
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) authError(e);
+    presigned = undefined;
+  }
+  const action = typeof presigned?.action === "string" ? presigned.action : "";
+  const url = typeof presigned?.url === "string" ? presigned.url : "";
+  if (!/^https:\/\//.test(action) || !/^https:\/\//.test(url) || !presigned?.post || !Object.keys(presigned.post).length) {
+    return upload(cookie, "/v1/upload_image", file);
+  }
+  // S3 の POST ポリシー: 受け取った項目をすべて送り、file を最後に置く。S3 には Cookie を送らない
+  const s3 = new FormData();
+  for (const [k, v] of Object.entries(presigned.post)) if (v !== null && v !== undefined && v !== "") s3.append(k, String(v));
+  s3.append("file", new Blob([Buffer.from(await file.load())], { type: file.mimeType }), file.filename);
+  await request("note", action, { method: "POST", body: s3 });
   return url;
 }
 
@@ -175,7 +207,7 @@ export const note: PlatformDefinition = {
         continue;
       }
       try {
-        images[src] = await upload(cookie, "/v1/upload_image", file);
+        images[src] = await uploadBodyImage(cookie, file);
       } catch (e) {
         if (e instanceof ConfigError) throw e;
         warnings.push(`画像「${file.filename}」をアップロードできませんでした`);
@@ -187,7 +219,8 @@ export const note: PlatformDefinition = {
     const eyecatch = post.options.eyecatch ? findMedia(post.media, post.options.eyecatch) : undefined;
     if (post.options.eyecatch && !eyecatch) warnings.push("見出し画像が添付に見つかりません");
     if (eyecatch) {
-      await upload(cookie, "/v1/image_upload/note_eyecatch", eyecatch, { note_id: String(created.id) }).catch((e) => {
+      // 見出し画像は 1280×670（記事エディタで生成・アップロードしたものはこのサイズに整えてある）
+      await upload(cookie, "/v1/image_upload/note_eyecatch", eyecatch, { note_id: String(created.id), width: "1280", height: "670" }).catch((e) => {
         if (e instanceof ConfigError) throw e;
         warnings.push("見出し画像を設定できませんでした（編集画面で設定してください）");
       });
