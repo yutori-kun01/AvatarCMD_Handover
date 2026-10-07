@@ -8,9 +8,11 @@
 // ・compareImageProviders(): 同じプロンプトで両方を生成し、時間・使用量・料金表での費用を並べる（品質とコストの比較用）。
 // ・v3.7: 既定は OpenAI・品質 high。生成した画像は用途ごとの note 向けサイズに切り抜いて png / webp で保存する
 //   （見出し画像 1280×670 = note 推奨、本文の見出し下の画像 1280×720）。図解も同じサイズ・形式にそろえる。
+// ・v3.8: モデルは一覧から選べるようにし、入力の表記ゆれ（gpt-image2.5-sunburst など）は API のモデル ID に直す。
+//   gpt-image-2 以降は用途のサイズ（1280×672 → 1280×670 に切り抜き）で直接生成する。
 
 import sharp from "sharp";
-import { ConfigError, requestJson } from "../http";
+import { ApiError, ConfigError, requestJson } from "../http";
 import { providerKey, type InputImage } from "./llm";
 import { saveMedia, type MediaRef } from "./media";
 import { getSetting, setSetting } from "./store";
@@ -40,21 +42,77 @@ export async function fitImage(bytes: Uint8Array, target: ImageTarget | null, fo
   return { bytes: new Uint8Array(out), mimeType: format === "webp" ? "image/webp" : "image/png" };
 }
 
-export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel: string; modelHelp: string; pricingUrl: string }> = {
+export interface ImageModelOption {
+  id: string;
+  label: string;
+  note: string;
+}
+
+export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel: string; modelHelp: string; pricingUrl: string; models: ImageModelOption[] }> = {
   openai: {
     name: "OpenAI",
-    // 推奨（2026-10 決定）。モデル名は設定画面で変えられる
-    defaultModel: "gpt-image2.5-sunburst",
-    modelHelp: "推奨: gpt-image2.5-sunburst（品質 high）。最新のモデル名は platform.openai.com/docs/models",
+    // 推奨（2026-10 決定）。API のモデル ID は「gpt-image-2.5-sunburst」（gpt-image の後にハイフンが入る）
+    defaultModel: "gpt-image-2.5-sunburst",
+    modelHelp: "一覧から選ぶか、API のモデル ID をそのまま入力（例: gpt-image-2.5-sunburst）。最新は platform.openai.com/docs/models",
     pricingUrl: "https://platform.openai.com/docs/pricing",
+    models: [
+      { id: "gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst", note: "推奨。精細・時間はかかる" },
+      { id: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "速い・大量生成向け" },
+      { id: "gpt-image-2", label: "GPT Image 2", note: "前世代" },
+      { id: "gpt-image-1", label: "GPT Image 1", note: "旧世代" },
+      { id: "gpt-image-1-mini", label: "GPT Image 1 Mini", note: "旧世代・安い" },
+    ],
   },
   gemini: {
     name: "Google Gemini",
     defaultModel: "gemini-2.5-flash-image",
-    modelHelp: "gemini-2.5-flash-image など画像出力に対応したモデル。最新は ai.google.dev/gemini-api/docs/models",
+    modelHelp: "一覧から選ぶか、画像出力に対応したモデル ID を入力。最新は ai.google.dev/gemini-api/docs/models",
     pricingUrl: "https://ai.google.dev/gemini-api/docs/pricing",
+    models: [
+      { id: "gemini-3-pro-image-preview", label: "Gemini 3 Pro Image（Nano Banana Pro）", note: "高品質・2K で生成" },
+      { id: "gemini-2.5-flash-image", label: "Gemini 2.5 Flash Image（Nano Banana）", note: "速い・安い" },
+    ],
   },
 };
+
+/**
+ * 入力されたモデル名を API のモデル ID にそろえる。
+ * 表示名（GPT Image 2.5 Sunburst）や、ハイフン抜け（gpt-image2.5-sunburst）・空白・大文字でも正しい ID にする。
+ */
+export function normalizeImageModel(provider: ImageProvider, model: string | null | undefined): string {
+  let m = (model ?? "").trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/-+/g, "-");
+  if (!m) return "";
+  if (provider === "openai") {
+    m = m.replace(/^gpt-?image-?(?=\d)/, "gpt-image-");
+    // 表示名のゆれ（2.5 sunburst / sunburst だけ など）
+    if (/^(gpt-image-)?(2\.5-)?sunburst$/.test(m)) m = "gpt-image-2.5-sunburst";
+    if (/^(gpt-image-)?(2\.5-)?flare$/.test(m)) m = "gpt-image-2.5-flare";
+  }
+  if (provider === "gemini") m = m.replace(/^models\//, "").replace(/^nano-banana-pro$/, "gemini-3-pro-image-preview").replace(/^nano-banana$/, "gemini-2.5-flash-image");
+  return m;
+}
+
+/** gpt-image-1 系が受け付けるサイズ */
+const OPENAI_SIZE: Record<ImageAspect, string> = { "16:9": "1536x1024", "4:3": "1536x1024", "1:1": "1024x1024" };
+
+/** gpt-image-2 以降は 16 の倍数の任意サイズを受け付ける（1 辺 3840 まで・65.5 万〜829 万画素・縦横比 3:1 まで） */
+function openaiFlexibleSize(model: string): boolean {
+  const v = /^gpt-image-(\d+(?:\.\d+)?)/.exec(model);
+  return !!v && Number(v[1]) >= 2;
+}
+const ceil16 = (n: number) => Math.ceil(n / 16) * 16;
+
+/** OpenAI に依頼するサイズ。新しいモデルは用途のサイズ（16 の倍数に切り上げ）で直接作り、切り抜きで構図が崩れないようにする */
+export function openaiImageSize(model: string, aspect: ImageAspect, target?: ImageTarget): string {
+  if (openaiFlexibleSize(model)) {
+    if (target) {
+      const t = IMAGE_TARGETS[target];
+      return `${ceil16(t.width)}x${ceil16(t.height)}`;
+    }
+    return aspect === "1:1" ? "1024x1024" : aspect === "4:3" ? "1536x1152" : "1536x864";
+  }
+  return OPENAI_SIZE[aspect];
+}
 
 export const IMAGE_SETTING_KEYS = {
   provider: "image_provider",
@@ -89,7 +147,8 @@ export async function getImageSettings(): Promise<ImageSettings> {
     quality: q === "low" || q === "medium" ? q : "high",
     // note は PNG を確実に受け付けるため既定は png。webp は容量が小さい
     format: f === "webp" ? "webp" : "png",
-    models: { openai: mo || IMAGE_PROVIDERS.openai.defaultModel, gemini: mg || IMAGE_PROVIDERS.gemini.defaultModel },
+    // 以前に保存したモデル名の表記ゆれ（例: gpt-image2.5-sunburst）も正しい ID にして使う
+    models: { openai: normalizeImageModel("openai", mo) || IMAGE_PROVIDERS.openai.defaultModel, gemini: normalizeImageModel("gemini", mg) || IMAGE_PROVIDERS.gemini.defaultModel },
     keys,
   };
 }
@@ -109,7 +168,10 @@ export async function saveImageSettings(input: { provider?: string | null; quali
   }
   for (const p of Object.keys(IMAGE_PROVIDERS) as ImageProvider[]) {
     const m = input.models?.[p];
-    if (m !== undefined) await setSetting(IMAGE_SETTING_KEYS.model(p), m.trim() || null);
+    if (m === undefined) continue;
+    const id = normalizeImageModel(p, m);
+    // 既定と同じなら保存しない（既定が変わったときに追従する）
+    await setSetting(IMAGE_SETTING_KEYS.model(p), id && id !== IMAGE_PROVIDERS[p].defaultModel ? id : null);
   }
 }
 
@@ -139,12 +201,11 @@ export interface ImageResult {
   ms: number;
 }
 
-const OPENAI_SIZE: Record<ImageAspect, string> = { "16:9": "1536x1024", "4:3": "1536x1024", "1:1": "1024x1024" };
 
 async function callOpenAIImage(apiKey: string, model: string, req: ImageRequest): Promise<Omit<ImageResult, "provider" | "model" | "ms">> {
   const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const headers = { Authorization: `Bearer ${apiKey}` };
-  const size = OPENAI_SIZE[req.aspect ?? "16:9"];
+  const size = openaiImageSize(model, req.aspect ?? "16:9", req.target);
   const quality = req.quality ?? "high";
   const format = req.format ?? "png";
   let d: any;
@@ -174,7 +235,8 @@ async function callGeminiImage(apiKey: string, model: string, req: ImageRequest)
     headers: { "x-goog-api-key": apiKey },
     json: {
       contents: [{ role: "user", parts }],
-      generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: req.aspect ?? "16:9" } },
+      // Gemini 3 系は解像度を指定できる（2K で作って用途のサイズに縮小する）
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: req.aspect ?? "16:9", ...(/^gemini-3/.test(model) ? { imageSize: "2K" } : {}) } },
     },
   });
   const part = (d.candidates?.[0]?.content?.parts ?? []).find((p: any) => p.inlineData?.data || p.inline_data?.data);
@@ -201,7 +263,7 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
   if (!provider) throw new ConfigError("画像生成には OpenAI か Gemini の API キーが必要です（設定 > システム > AI）");
   const apiKey = await providerKey(provider);
   if (!apiKey) throw new ConfigError(`${IMAGE_PROVIDERS[provider].name} の API キーが未設定です（設定 > システム > AI）`);
-  const model = req.model || s.models[provider];
+  const model = normalizeImageModel(provider, req.model) || s.models[provider];
   await assertBudget("画像生成");
   const started = Date.now();
   const purpose = req.purpose ?? "image_generate";
@@ -214,8 +276,18 @@ export async function generateImage(req: ImageRequest): Promise<ImageResult> {
     return { ...out, ...fitted, provider, model, ms: Date.now() - started };
   } catch (e) {
     await recordUsage({ provider, model, purpose, avatarId: req.avatarId, error: e instanceof Error ? e.message : String(e) });
-    throw e;
+    throw explainModelError(e, provider, model);
   }
+}
+
+/** モデル名の誤り（存在しない・権限がない）は、設定で直せるように分かる言葉にする */
+export function explainModelError(e: unknown, provider: ImageProvider, model: string): unknown {
+  if (!(e instanceof ApiError)) return e;
+  const body = e.body.toLowerCase();
+  const modelProblem = e.status === 404 || /model[^"]*(not[ _]found|does not exist|invalid|not supported|unsupported)|invalid[_ ]model|unknown model|must be verified/.test(body);
+  if (!modelProblem) return e;
+  const choices = IMAGE_PROVIDERS[provider].models.map((m) => m.id).join(" / ");
+  return new ConfigError(`${IMAGE_PROVIDERS[provider].name} が画像モデル「${model}」を受け付けませんでした（${e.message.slice(0, 200)}）。設定 > 画像生成 でモデルを選び直してください（例: ${choices}）`);
 }
 
 /** 生成して MEDIA_DIR に保存する */
@@ -249,7 +321,7 @@ export async function compareImageProviders(input: { prompt: string; aspect?: Im
   const prices = await loadPrices();
   return Promise.all(
     targets.map(async (provider): Promise<CompareResult> => {
-      const model = input.models?.[provider] || s.models[provider];
+      const model = normalizeImageModel(provider, input.models?.[provider]) || s.models[provider];
       try {
         const r = await generateImage({ prompt: input.prompt, aspect: input.aspect, target: input.target, references: input.references, quality: input.quality, provider, model, avatarId: input.avatarId, purpose: "image_compare" });
         const ref = await saveMedia(r.bytes, `compare-${provider}`, r.mimeType);

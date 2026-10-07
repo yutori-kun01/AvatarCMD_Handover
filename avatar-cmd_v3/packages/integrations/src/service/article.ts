@@ -2,7 +2,9 @@
 // note 記事の執筆 — 本文・見出しごとの画像／図解・見出し画像
 // ================================================
 // 流れ（記事エディタ）:
-//   1. generateNoteArticle(): アバターの口調・ナレッジで Markdown 記事を書く（有料なら <!-- paywall --> の位置も提案）
+//   1. generateNoteDraft(): アバターの口調・ナレッジで Markdown 記事を書く（有料なら <!-- paywall --> の位置も提案）
+//        タイトルだけ・タイトル＋テーマ・テーマだけ・書きかけの本文のどれからでも書け、入力済みの部分は活かす
+//        （画面からはジョブとして依頼し、worker がバックグラウンドで実行する: article-jobs.ts）
 //   2. planVisuals(): 大見出し・小見出しごとに「画像なし / イメージ画像 / 図解」を決め、目印を本文に入れる
 //        <!-- image: 説明 -->  /  <!-- infographic: 説明 -->
 //   3. renderVisualMarkers(): 目印を順に画像にして ![説明](media:{name}) に置き換える
@@ -13,7 +15,8 @@
 
 import { ConfigError } from "../http";
 import { MARKER_RE } from "../markdown";
-import { generatePostText } from "./ai";
+import { buildPrompts, loadAvatarContext } from "./ai";
+import { cleanPostText } from "../post-text";
 import { fitImage, generateAndSaveImage, getImageSettings, IMAGE_TARGETS, type ImageAspect, type ImageTarget } from "./image-gen";
 import { INFOGRAPHIC_TYPES, LIMITS, normalizeSpec, renderInfographic, type InfographicSpec, type VisualStyle } from "./infographic";
 import { completeJson } from "./llm";
@@ -23,19 +26,127 @@ import { prisma } from "@avatar-cmd/db";
 
 // --- 1. 本文 -----------------------------------------------------------------------
 
-export async function generateNoteArticle(input: { avatarId: string; topic: string; paid?: boolean; extraPrompt?: string }) {
-  const rules = [
-    "note の記事として、## を大見出し、### を小見出しに使ってください（# は使わない）。",
+export interface NoteDraftInput {
+  avatarId: string;
+  /** 記事タイトル（空なら AI が付ける） */
+  title?: string;
+  /** テーマ（空ならタイトル・本文から読み取る） */
+  topic?: string;
+  /** 書きかけの本文（あれば活かして足りない部分を書く） */
+  markdown?: string;
+  paid?: boolean;
+  /** true: 入力済みのタイトル・本文は一字も変えず、足りない部分だけ書く */
+  preserve?: boolean;
+  extraPrompt?: string;
+}
+
+export interface NoteDraft {
+  title: string;
+  topic: string;
+  markdown: string;
+  model: string;
+  /** 入力済みとして扱った項目 */
+  kept: ("title" | "topic" | "markdown")[];
+}
+
+/** 本文を一字も変えない場合: 前に足す部分・後に足す部分だけを書かせる */
+const APPEND_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "topic", "before", "after"],
+  properties: {
+    title: { type: "string", description: "記事タイトル（32 文字前後。# は付けない）" },
+    topic: { type: "string", description: "記事のテーマ（1 文）" },
+    before: { type: "string", description: "書きかけの本文の前に足す Markdown（導入など。不要なら空）" },
+    after: { type: "string", description: "書きかけの本文の後に足す Markdown（続き・まとめなど。不要なら空）" },
+  },
+};
+
+const DRAFT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "topic", "markdown"],
+  properties: {
+    title: { type: "string", description: "記事タイトル（32 文字前後。# は付けない）" },
+    topic: { type: "string", description: "記事のテーマ（1 文）" },
+    markdown: { type: "string", description: "本文の Markdown（タイトル行は含めない）" },
+  },
+};
+
+/**
+ * note の記事を書く。タイトルだけ・タイトルとテーマ・テーマだけ・書きかけの本文、どの組み合わせからでも書ける。
+ * 入力済みの部分は内容を保ったまま磨き（preserve なら一字も変えず）、足りない部分を補う。
+ */
+export async function generateNoteDraft(input: NoteDraftInput): Promise<NoteDraft> {
+  const title = input.title?.trim() ?? "";
+  const topic = input.topic?.trim() ?? "";
+  const body = input.markdown?.trim() ?? "";
+  if (!title && !topic && !body) throw new ConfigError("タイトル・テーマ・本文のどれかを入力してください");
+  const kept = [title && "title", topic && "topic", body && "markdown"].filter(Boolean) as NoteDraft["kept"];
+
+  const query = [title, topic, body.slice(0, 300)].filter(Boolean).join(" ");
+  const { avatar, persona, knowledge } = await loadAvatarContext(input.avatarId, { query, platform: "note" });
+  const { system } = buildPrompts(avatar, persona, { topic: topic || title, platform: "note" }, knowledge);
+
+  const keep = input.preserve
+    ? "入力済みの項目は一字も変えずにそのまま返してください。"
+    : "入力済みの項目は、書いた人の意図・主張・言い回しの良さを保ったまま、読みやすく最適化してください（別の内容に差し替えない）。";
+  const user = [
+    "note の記事を 1 本仕上げてください。次の入力のうち、空の項目はあなたが補います。",
+    "",
+    `## タイトル\n${title || "（未入力 → 内容に合う、読みたくなるタイトルを付ける。32 文字前後）"}`,
+    `## テーマ\n${topic || "（未入力 → タイトルや本文から読み取って 1 文で書く）"}`,
+    `## 本文\n${body ? `以下は書きかけの本文です。\n----\n${body}\n----` : "（未入力 → タイトルとテーマに沿って全文を書く）"}`,
+    "",
+    "# 指示",
+    keep,
+    title && "本文はタイトルが約束している内容に必ず応えてください。",
+    body && (input.preserve
+      ? "書きかけの本文は変えません。その前に足す部分（before: 導入など）と後に足す部分（after: 続き・まとめなど）だけを書いてください。本文と重複する内容は書かないでください。"
+      : "書きかけの本文の構成と内容を土台にして、足りない見出し・段落を補い、全体を 1 本の記事として整えてください。"),
+    "本文は Markdown。## を大見出し、### を小見出しに使う（# は使わない）。本文にタイトル行は入れない。",
     "1 段落は 2〜4 文。大事な一文は **太字** にしてください（1 見出しに 1〜2 か所まで）。",
     input.paid
-      ? "有料記事です。読者が続きを読みたくなる導入と無料部分のあと、有料にする位置に <!-- paywall --> とだけ書いた行を 1 回入れてください。"
+      ? "有料記事です。読者が続きを読みたくなる導入と無料部分のあと、有料にする位置に <!-- paywall --> とだけ書いた行を 1 回入れてください（既にあれば位置を保つ）。"
       : "無料記事です。<!-- paywall --> は入れないでください。",
-    "画像・図解の目印はまだ入れないでください。",
-    input.extraPrompt,
+    "画像・図解の目印（<!-- image: --> など）は新しく入れないでください。書きかけの本文にある目印・画像の行（![...](media:...)）はそのまま残してください。",
+    input.extraPrompt && `追加の指示: ${input.extraPrompt}`,
   ]
     .filter(Boolean)
     .join("\n");
-  return generatePostText({ avatarId: input.avatarId, topic: input.topic, platform: "note", extraPrompt: rules });
+
+  const append = !!(input.preserve && body);
+  const { data, model } = await completeJson<{ title: string; topic: string; markdown?: string; before?: string; after?: string }>({
+    task: "article",
+    system,
+    user,
+    json: append ? { name: "note_article_append", schema: APPEND_SCHEMA } : { name: "note_article", schema: DRAFT_SCHEMA },
+  });
+  const clean = (t: unknown) => cleanPostText(String(t ?? ""), { article: true }).replace(/^\s*#\s+[^\n]*\n+/, "").trim();
+  let md: string;
+  if (append) {
+    md = [clean(data.before), body, clean(data.after)].filter(Boolean).join("\n\n");
+  } else {
+    // 先頭にタイトル行（# …）が入っていたら外す
+    md = clean(data.markdown);
+    if (!md) throw new Error(`${model} から本文が返りませんでした`);
+    // 書きかけの本文にあった画像は必ず残す（AI が落としたら末尾に戻す）
+    const lost = [...body.matchAll(/!\[[^\]]*\]\(media:[^)\s]+\)/g)].map((m) => m[0]).filter((l) => !md.includes(l));
+    if (lost.length) md = `${md}\n\n${lost.join("\n\n")}`;
+  }
+  return {
+    title: (input.preserve && title) || String(data.title ?? "").replace(/^#+\s*/, "").trim() || title || topic,
+    topic: (input.preserve && topic) || String(data.topic ?? "").trim() || topic,
+    markdown: md,
+    model,
+    kept,
+  };
+}
+
+/** 互換: テーマだけから本文を書く（以前の API） */
+export async function generateNoteArticle(input: { avatarId: string; topic: string; paid?: boolean; extraPrompt?: string }) {
+  const d = await generateNoteDraft({ avatarId: input.avatarId, topic: input.topic, paid: input.paid, extraPrompt: input.extraPrompt });
+  return { text: `# ${d.title}\n\n${d.markdown}`, model: d.model, title: d.title, topic: d.topic, markdown: d.markdown };
 }
 
 // --- 2. 見出しごとの画像・図解の計画 ------------------------------------------------
@@ -249,30 +360,51 @@ export async function renderVisual(input: { avatarId: string; kind: "image" | "i
  * 本文中の目印を順に画像にして ![説明](media:{name}) に置き換える。
  * 失敗した目印はそのまま残し、理由を返す（作り直しや手動の差し替えができるように）。
  */
-export async function renderVisualMarkers(input: { avatarId: string; markdown: string; only?: number[] }): Promise<{ markdown: string; media: MediaRef[]; results: (RenderedVisual | { kind: string; description: string; error: string })[] }> {
+export async function renderVisualMarkers(input: {
+  avatarId: string;
+  markdown: string;
+  only?: number[];
+  /** 1 つ作り終えるごと（バックグラウンドの進み具合の表示用） */
+  onProgress?: (done: number, total: number) => unknown;
+}): Promise<{
+  markdown: string;
+  media: MediaRef[];
+  results: (RenderedVisual | { kind: string; description: string; error: string })[];
+  /** 目印の行 → 画像の行（生成中に本文が編集されていても、目印の行だけを置き換えられるように） */
+  replacements: { marker: string; replacement: string }[];
+}> {
   const lines = input.markdown.replace(/\r\n?/g, "\n").split("\n");
   const sections = splitSections(input.markdown);
   const results: (RenderedVisual | { kind: string; description: string; error: string })[] = [];
   const media: MediaRef[] = [];
+  const replacements: { marker: string; replacement: string }[] = [];
+  const targets: number[] = [];
   let n = -1;
   for (let i = 0; i < lines.length; i++) {
     const m = MARKER_RE.exec(lines[i]);
     if (!m || m[1] === "paywall") continue;
     n++;
-    if (input.only && !input.only.includes(n)) continue;
+    if (!input.only || input.only.includes(n)) targets.push(i);
+  }
+  for (const [done, i] of targets.entries()) {
+    await input.onProgress?.(done, targets.length);
+    const m = MARKER_RE.exec(lines[i])!;
     const kind = m[1] as "image" | "infographic";
     const description = (m[2] ?? "").trim() || "記事の内容";
     const section = [...sections].reverse().find((s) => s.line < i);
     try {
       const r = await renderVisual({ avatarId: input.avatarId, kind, description, context: section ? `${section.heading}\n${section.body.replace(MARKER_RE, "")}` : "" });
-      lines[i] = `![${description.replace(/[\[\]]/g, "")}](media:${r.media.name})`;
+      const replacement = `![${description.replace(/[\[\]]/g, "")}](media:${r.media.name})`;
+      replacements.push({ marker: lines[i], replacement });
+      lines[i] = replacement;
       media.push(r.media);
       results.push(r);
     } catch (e) {
       results.push({ kind, description, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  return { markdown: lines.join("\n"), media, results };
+  await input.onProgress?.(targets.length, targets.length);
+  return { markdown: lines.join("\n"), media, results, replacements };
 }
 
 /** 見出し画像（記事タイトルから。note の見出し画像は横長） */

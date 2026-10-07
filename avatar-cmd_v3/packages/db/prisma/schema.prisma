@@ -1152,3 +1152,30 @@ model RssArticle {
   @@index([status])
   @@map("rss_articles")
 }
+
+// ==============================================
+// 24. note 記事の生成ジョブ (v3.8) — 執筆・画像/図解・見出し画像の生成をバックグラウンドで行う
+// ==============================================
+// 画面から依頼すると行を作り、worker（止まっているときは web）が取り出して実行する。
+// 画面を閉じたり別のページに移ったりしても生成は続き、戻ったときに結果を本文へ反映する。
+
+model ArticleJob {
+  id         String    @id @default(uuid())
+  /// write（本文・タイトル・テーマの執筆）/ render（画像・図解の目印を画像に）/ eyecatch（見出し画像）
+  kind       String
+  /// queued / running / done / failed
+  status     String    @default("queued")
+  avatarId   String?   @map("avatar_id")
+  input      Json      @default("{}")
+  result     Json?
+  /// 進み具合の表示（例: 2 / 5 枚）
+  progress   String?
+  error      String?   @db.Text
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("article_jobs")
+}

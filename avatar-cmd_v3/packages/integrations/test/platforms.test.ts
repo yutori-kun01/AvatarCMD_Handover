@@ -440,7 +440,9 @@ test("note: text_notes 作成 → draft_save（下書きのみ）", async () => 
 test("note: 画像・見出し画像・有料ライン・価格・タグまで下書きに入れる（公開はしない）", async () => {
   const m = mockFetch([
     ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 7, key: "nkey" } }],
-    ["POST", /note\.com\/api\/v1\/upload_image$/, { data: { url: "https://assets.st-note.com/img/1.png" } }],
+    // 本文の画像: presigned_post で S3 の送り先を受け取り → S3 へ送る → url を本文に使う
+    ["POST", /note\.com\/api\/v3\/images\/upload\/presigned_post$/, { data: { action: "https://note-assets.s3.example.com/", post: { key: "img/1.png", policy: "P", "x-amz-signature": "SIG" }, url: "https://assets.st-note.com/img/1.png" } }],
+    ["POST", /^https:\/\/note-assets\.s3\.example\.com\/$/, () => ({ status: 201, text: "<PostResponse/>" })],
     ["POST", /note\.com\/api\/v1\/image_upload\/note_eyecatch$/, { data: { url: "https://assets.st-note.com/eye.png" } }],
     ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=7$/, { data: {} }],
   ]);
@@ -454,7 +456,11 @@ test("note: 画像・見出し画像・有料ライン・価格・タグまで�
     assert.equal(save.json.status, "draft");
     assert.equal(save.json.price, 500);
     assert.match(save.json.body, /<strong>大事<\/strong>/);
-    assert.match(save.json.body, /<figure name="[^"]+" id="[^"]+"><img src="https:\/\/assets\.st-note\.com\/img\/1\.png"/);
+    assert.match(save.json.body, /<figure name="[^"]+" id="[^"]+"><img src="https:\/\/assets\.st-note\.com\/img\/1\.png" alt="図解" width="620" height="auto">/);
+    const s3 = m.calls.find((c) => c.url.startsWith("https://note-assets.s3"))!;
+    assert.equal(s3.headers.cookie, undefined); // S3 にはログイン Cookie を送らない
+    assert.equal(m.calls.find((c) => c.url.endsWith("/presigned_post"))!.headers.cookie, "_note_session_v5=S");
+    assert.ok(!m.calls.some((c) => c.url.endsWith("/v1/upload_image")));
     // separator は「有料部分」の段落の ID
     const sepId = save.json.separator as string;
     assert.match(save.json.body, new RegExp(`<p name="${sepId}" id="${sepId}">有料部分</p>`));
@@ -470,6 +476,7 @@ test("note: 有料設定や画像が拒否されても本文の下書きは保�
   let saves = 0;
   const m = mockFetch([
     ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 8, key: "nk" } }],
+    ["POST", /note\.com\/api\/v3\/images\/upload\/presigned_post$/, () => ({ status: 404, text: "not found" })],
     ["POST", /note\.com\/api\/v1\/upload_image$/, () => ({ status: 404, text: "not found" })],
     ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=8$/, (c: any) => (saves++, c.json.price ? { status: 422, text: "bad" } : { json: { data: {} } })],
   ]);
@@ -484,6 +491,23 @@ test("note: 有料設定や画像が拒否されても本文の下書きは保�
     assert.match(last.json.body, /［画像：ここに画像］/);
     assert.match(r.note!, /アップロードできませんでした/);
     assert.match(r.note!, /有料ライン・価格を設定できませんでした/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("note: presigned_post が使えないときは旧方式の upload_image で本文の画像を上げる", async () => {
+  const m = mockFetch([
+    ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 9, key: "nk9" } }],
+    ["POST", /note\.com\/api\/v3\/images\/upload\/presigned_post$/, () => ({ status: 404, text: "not found" })],
+    ["POST", /note\.com\/api\/v1\/upload_image$/, { data: { url: "https://assets.st-note.com/img/old.png" } }],
+    ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=9$/, { data: {} }],
+  ]);
+  try {
+    const r = await PLATFORMS.note.publish!(ctx({ credentials: { cookie: "_note_session_v5=S" } }), post({ text: "本文\n\n![](media:a.png)", media: [media("image/png", 10, "a")] }));
+    const save = m.calls.find((c) => c.url.includes("draft_save"))!;
+    assert.match(save.json.body, /<img src="https:\/\/assets\.st-note\.com\/img\/old\.png"/);
+    assert.match(r.note!, /画像1枚/);
   } finally {
     m.restore();
   }

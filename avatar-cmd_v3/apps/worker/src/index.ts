@@ -4,9 +4,10 @@
 // SCHEDULER_TICK_MS ごとに期限の来た ScheduledPost を取り出し、各SNSへ投稿する。
 // あわせて自動化ルールの実行と、投稿の反応（指標）の定期取得を行う。
 // 「今すぐ投稿」もキュー経由（scheduledAt=現在時刻）で処理される。
+// note 記事の生成ジョブ（執筆・画像・見出し画像）は別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -15,8 +16,22 @@ const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
 const METRICS_EVERY_MS = 10 * 60_000;
 let lastMetricsAt = 0;
 
+// note 記事の生成ジョブは画面で待っている人がいるので短い間隔で見る
+const ARTICLE_JOBS_EVERY_MS = Number(process.env.ARTICLE_JOBS_TICK_MS || 3_000);
+
 let stopping = false;
 let timer: NodeJS.Timeout | undefined;
+let jobsTimer: NodeJS.Timeout | undefined;
+
+async function articleJobsTick() {
+  try {
+    const n = await processArticleJobs();
+    if (n) console.log(`[worker] ${new Date().toISOString()} started ${n} article job(s)`);
+  } catch (e) {
+    console.error("[worker] article jobs failed:", e);
+  }
+  if (!stopping) jobsTimer = setTimeout(articleJobsTick, ARTICLE_JOBS_EVERY_MS);
+}
 
 async function tick() {
   try {
@@ -48,6 +63,7 @@ async function tick() {
       // 引用候補の自動探索（X アカウントの設定で有効にしたものだけ）
       const q = await processQuoteScans().catch((e) => (console.error("[worker] quote scan failed:", e), 0));
       if (q) console.log(`[worker] ${new Date().toISOString()} scanned quote candidates for ${q} account(s)`);
+      await pruneArticleJobs().catch((e) => console.error("[worker] prune article jobs failed:", e));
     }
   } catch (e) {
     console.error("[worker] tick failed:", e);
@@ -62,6 +78,7 @@ async function main() {
   }
   await ensureDefaultAvatar();
   console.log(`[worker] started (tick ${TICK_MS}ms, max retries ${MAX_RETRIES})`);
+  void articleJobsTick();
   await tick();
 }
 
@@ -69,6 +86,7 @@ async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, shutting down`);
   stopping = true;
   if (timer) clearTimeout(timer);
+  if (jobsTimer) clearTimeout(jobsTimer);
   await prisma.$disconnect();
   process.exit(0);
 }

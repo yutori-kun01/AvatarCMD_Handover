@@ -131,7 +131,7 @@ test("画像生成: OpenAI（参考画像なし=generations / あり=edits）と
     await svc.saveImageSettings({ provider: null, quality: null, format: null, models: { openai: "", gemini: "" } });
     const d = await svc.getImageSettings();
     assert.equal(d.provider, "openai");
-    assert.equal(d.models.openai, "gpt-image2.5-sunburst");
+    assert.equal(d.models.openai, "gpt-image-2.5-sunburst");
     assert.equal(d.quality, "high");
     assert.equal(d.format, "png");
     const def = await svc.generateImage({ prompt: "既定", avatarId, target: "eyecatch" });
@@ -139,7 +139,9 @@ test("画像生成: OpenAI（参考画像なし=generations / あり=edits）と
     const meta = await sharp(Buffer.from(def.bytes)).metadata();
     assert.deepEqual([meta.width, meta.height, meta.format], [1280, 670, "png"]);
     assert.equal(m.calls.at(-1)!.json.quality, "high");
-    assert.equal(m.calls.at(-1)!.json.model, "gpt-image2.5-sunburst");
+    assert.equal(m.calls.at(-1)!.json.model, "gpt-image-2.5-sunburst");
+    // gpt-image-2 以降は用途のサイズ（16 の倍数）で直接作る
+    assert.equal(m.calls.at(-1)!.json.size, "1280x672");
 
     await svc.saveImageSettings({ provider: "openai", quality: "low", format: "webp", models: { gemini: "gemini-test-image" } });
     const a = await svc.generateImage({ prompt: "朝の光", avatarId, target: "section" });
@@ -149,7 +151,7 @@ test("画像生成: OpenAI（参考画像なし=generations / あり=edits）と
     assert.deepEqual([am.width, am.height, am.format], [1280, 720, "webp"]);
     const gen = m.calls.filter((c) => c.url.endsWith("/images/generations")).at(-1)!;
     assert.equal(gen.headers.authorization, "Bearer sk-test");
-    assert.equal(gen.json.size, "1536x1024");
+    assert.equal(gen.json.size, "1280x720");
     assert.equal(gen.json.quality, "low");
     assert.equal(gen.json.output_format, "webp");
 
@@ -160,7 +162,7 @@ test("画像生成: OpenAI（参考画像なし=generations / あり=edits）と
     assert.equal(g.mimeType, "image/webp"); // Gemini は形式を指定できないので変換する
     const gc = m.calls.find((c) => c.url.includes("generateContent"))!;
     assert.equal(gc.headers["x-goog-api-key"], "g-test");
-    assert.deepEqual(gc.json.generationConfig, { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "1:1" } });
+    assert.deepEqual(gc.json.generationConfig, { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: "1:1" } });
 
     const rows = await prisma.usageLedger.findMany({ where: { avatarId, purpose: "image_generate" } });
     assert.equal(rows.length, 4);
@@ -195,4 +197,131 @@ test("画像生成: 画像が返らない・キーが無い場合は分かるエ
   assert.match(prompt, /4px rounded corners/);
   assert.match(prompt, /1280x670/);
   await assert.rejects(svc.addStyleReference({ avatarId, kind: "video", mediaName: "x.png" }), /種類/);
+});
+
+test("画像モデル: 表記ゆれを API のモデル ID に直す・モデルごとの依頼サイズ", async () => {
+  const { normalizeImageModel, openaiImageSize, IMAGE_PROVIDERS } = await import("../src/service/image-gen");
+  assert.equal(normalizeImageModel("openai", "gpt-image2.5-sunburst"), "gpt-image-2.5-sunburst");
+  assert.equal(normalizeImageModel("openai", " GPT Image 2.5 Sunburst "), "gpt-image-2.5-sunburst");
+  assert.equal(normalizeImageModel("openai", "gptimage2.5-flare"), "gpt-image-2.5-flare");
+  assert.equal(normalizeImageModel("openai", "gpt-image-1"), "gpt-image-1");
+  assert.equal(normalizeImageModel("openai", ""), "");
+  assert.equal(normalizeImageModel("gemini", "models/gemini-2.5-flash-image"), "gemini-2.5-flash-image");
+  assert.equal(normalizeImageModel("gemini", "Nano Banana Pro"), "gemini-3-pro-image-preview");
+  assert.ok(IMAGE_PROVIDERS.openai.models.some((m) => m.id === IMAGE_PROVIDERS.openai.defaultModel));
+  // 新しいモデル: 用途のサイズ（16 の倍数に切り上げ）。旧モデル: 決まったサイズ
+  assert.equal(openaiImageSize("gpt-image-2.5-sunburst", "16:9", "eyecatch"), "1280x672");
+  assert.equal(openaiImageSize("gpt-image-2", "16:9", "section"), "1280x720");
+  assert.equal(openaiImageSize("gpt-image-2", "16:9"), "1536x864");
+  assert.equal(openaiImageSize("gpt-image-1", "16:9", "eyecatch"), "1536x1024");
+  assert.equal(openaiImageSize("gpt-image-1-mini", "1:1"), "1024x1024");
+});
+
+test("画像モデル: 保存した表記ゆれは正しい ID で使い、受け付けられないモデルは設定で直せるエラーにする", opts, async () => {
+  const m = mockFetch([["POST", /api\.openai\.com\/v1\/images\/generations$/, () => ({ status: 404, json: { error: { message: "The model `gpt-image-9` does not exist", code: "model_not_found" } } })]]);
+  try {
+    await svc.saveImageSettings({ provider: "openai", models: { openai: "gpt-image2.5-sunburst" } });
+    assert.equal((await svc.getImageSettings()).models.openai, "gpt-image-2.5-sunburst");
+    // 既定と同じモデルは保存しない（既定の変更に追従する）
+    assert.ok(!(await svc.getSetting("image_model_openai")));
+    await assert.rejects(svc.generateImage({ prompt: "x", provider: "openai", model: "gpt-image-9", avatarId }), /画像モデル「gpt-image-9」を受け付けませんでした.*設定 > 画像生成/);
+  } finally {
+    m.restore();
+    await svc.saveImageSettings({ models: { openai: "" } });
+  }
+});
+
+/** OpenAI Responses API の応答（文章生成のモック） */
+function openaiText(text: string) {
+  return { id: "resp_1", object: "response", model: "gpt-5", output: [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } };
+}
+
+test("note 記事: タイトルだけ・テーマだけ・書きかけの本文から書き、入力済みの部分を活かす", opts, async () => {
+  let reply: Record<string, string> = {};
+  const m = mockFetch([["POST", /api\.openai\.com\/v1\/responses$/, () => ({ json: openaiText(JSON.stringify(reply)) })]]);
+  try {
+    // タイトルだけ → テーマと本文を補う
+    reply = { title: "朝の30分で人生が変わった話", topic: "朝の過ごし方で集中が続く", markdown: "# 朝の30分で人生が変わった話\n\n## はじめに\n\n本文です。" };
+    const a = await svc.generateNoteDraft({ avatarId, title: "朝の30分で人生が変わった話" });
+    const req = m.calls.at(-1)!.json;
+    assert.match(req.input, /## タイトル\n朝の30分で人生が変わった話/);
+    assert.match(req.input, /## テーマ\n（未入力/);
+    assert.match(req.input, /## 本文\n（未入力/);
+    assert.equal(req.text.format.name, "note_article");
+    assert.equal(a.topic, "朝の過ごし方で集中が続く");
+    assert.equal(a.markdown, "## はじめに\n\n本文です。"); // 先頭のタイトル行は外す
+    assert.deepEqual(a.kept, ["title"]);
+
+    // テーマだけ → タイトルを付ける
+    reply = { title: "AI が付けたタイトル", topic: "朝の集中", markdown: "## 見出し\n\n本文。" };
+    const b = await svc.generateNoteDraft({ avatarId, topic: "朝の集中" });
+    assert.equal(b.title, "AI が付けたタイトル");
+    assert.match(m.calls.at(-1)!.json.input, /## タイトル\n（未入力/);
+
+    // 書きかけの本文を書き換えない → 前後に足す部分だけを書かせ、本文はそのまま
+    reply = { title: "変えたタイトル", topic: "テーマ", before: "## はじめに\n\n導入。", after: "## まとめ\n\nまとめ。" };
+    const body = "## 私のやり方\n\n書きかけの段落。\n\n![図](media:00000000-0000-0000-0000-000000000000.png)";
+    const c = await svc.generateNoteDraft({ avatarId, title: "私のタイトル", markdown: body, preserve: true });
+    assert.equal(m.calls.at(-1)!.json.text.format.name, "note_article_append");
+    assert.equal(c.title, "私のタイトル");
+    assert.equal(c.markdown, `## はじめに\n\n導入。\n\n${body}\n\n## まとめ\n\nまとめ。`);
+
+    // 整える場合も、本文にあった画像は落とさない
+    reply = { title: "t", topic: "p", markdown: "## 私のやり方\n\n整えた段落。" };
+    const d = await svc.generateNoteDraft({ avatarId, markdown: body });
+    assert.match(d.markdown, /media:00000000-0000-0000-0000-000000000000\.png/);
+
+    await assert.rejects(svc.generateNoteDraft({ avatarId, title: " ", topic: "" }), /どれかを入力/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("note 記事: 執筆・見出し画像はバックグラウンドのジョブで実行し、結果を受け取れる", opts, async () => {
+  const m = mockFetch([
+    ["POST", /api\.openai\.com\/v1\/responses$/, () => ({ json: openaiText(JSON.stringify({ title: "ジョブのタイトル", topic: "ジョブ", markdown: "## 見出し\n\n本文。" })) })],
+    ["POST", /api\.openai\.com\/v1\/images\/(generations|edits)$/, { data: [{ b64_json: PNG_B64 }], usage: { input_tokens: 1, output_tokens: 1 } }],
+  ]);
+  const wait = async (id: string) => {
+    for (let i = 0; i < 100; i++) {
+      const j = await svc.getArticleJob(id);
+      if (j && (j.status === "done" || j.status === "failed")) return j;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("ジョブが終わりませんでした");
+  };
+  try {
+    // worker が動いていない（心拍が無い）ので web のプロセスで実行される
+    await svc.setSetting(svc.SETTING_KEYS.workerHeartbeat, null);
+    const w = await svc.enqueueArticleJob("write", avatarId, { title: "ジョブのタイトル" });
+    assert.equal(w.status, "queued");
+    const wd = await wait(w.id);
+    assert.equal(wd.status, "done");
+    assert.equal((wd.result as any).markdown, "## 見出し\n\n本文。");
+    // 実行済みのジョブは二度実行しない
+    assert.equal(await svc.runArticleJob(w.id), false);
+
+    // worker が動いているときは worker が取り出す
+    await svc.setSetting(svc.SETTING_KEYS.workerHeartbeat, new Date().toISOString());
+    const e = await svc.enqueueArticleJob("eyecatch", avatarId, { title: "見出し画像" });
+    assert.equal((await svc.getArticleJob(e.id))!.status, "queued");
+    assert.ok((await svc.processArticleJobs()) >= 1);
+    const ed = await wait(e.id);
+    assert.equal(ed.status, "done", ed.error ?? "");
+    const sharp = (await import("sharp")).default;
+    const meta = await sharp(path.join(process.env.MEDIA_DIR!, (ed.result as any).media.name)).metadata();
+    assert.deepEqual([meta.width, meta.height], [1280, 670]);
+
+    // 失敗は理由を残す
+    const f = await svc.enqueueArticleJob("write", avatarId, {});
+    await svc.processArticleJobs();
+    const fd = await wait(f.id);
+    assert.equal(fd.status, "failed");
+    assert.match(fd.error ?? "", /どれかを入力/);
+    assert.ok((await svc.listArticleJobs({ avatarId })).length >= 3);
+  } finally {
+    m.restore();
+    await svc.setSetting(svc.SETTING_KEYS.workerHeartbeat, null);
+    await prisma.articleJob.deleteMany({ where: { avatarId } });
+  }
 });
