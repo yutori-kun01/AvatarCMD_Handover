@@ -298,7 +298,7 @@ export default function AutomationPage() {
     act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { isActive: false, holdQueued } }), holdQueued ? `停止し、予約 ${queued.length} 件を下書きに戻しました` : "停止しました");
   }
 
-  const avatarAccounts = draft ? accounts.filter((a) => a.avatarId === draft.avatarId && byId[a.platform]?.support !== "manual") : [];
+  const avatarAccounts = draft ? accounts.filter((a) => a.avatarId === draft.avatarId && byId[a.platform]?.support !== "manual" && !byId[a.platform]?.comingSoon) : [];
 
   return (
     <Shell title="自動化ルール" description="AI で投稿文を生成し、下書き作成または自動投稿">

@@ -19,6 +19,8 @@ export interface PlatformInfo {
   name: string;
   icon: string;
   support: "official" | "legacy" | "unofficial" | "manual";
+  /** 配布版で未対応（画面に「準備中」と表示し、接続・投稿はできない） */
+  comingSoon: boolean;
   connection: "oauth" | "credentials" | "none";
   maxLength?: number;
   appFields: FieldDef[];
@@ -64,6 +66,14 @@ export const SUPPORT_LABEL: Record<PlatformInfo["support"], { label: string; cls
   unofficial: { label: "非公式・下書き保存", cls: "bg-orange-500/15 text-orange-300" },
   manual: { label: "自動投稿非対応", cls: "bg-white/10 text-white/50" },
 };
+
+export const COMING_SOON_LABEL = { label: "準備中", cls: "bg-white/10 text-white/50" };
+
+/** 対応状況のバッジ（準備中のプラットフォームは「準備中」） */
+export function SupportBadge({ p }: { p: Pick<PlatformInfo, "support" | "comingSoon"> }) {
+  const s = p.comingSoon ? COMING_SOON_LABEL : SUPPORT_LABEL[p.support];
+  return <Badge className={s.cls}>{s.label}</Badge>;
+}
 
 export function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 ${className}`}>{children}</div>;

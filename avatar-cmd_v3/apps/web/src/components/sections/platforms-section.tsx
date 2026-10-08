@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Embedded, Shell, Stat } from "@/components/dashboard/shell";
-import { api, Badge, Card, DocLinks, Notice, SUPPORT_LABEL, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
+import { api, Card, DocLinks, Notice, SupportBadge, type AccountInfo, type PlatformInfo } from "@/components/settings/ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
 /** 対応プラットフォームの一覧と接続状況（設定 > プラットフォーム） */
@@ -24,7 +24,7 @@ function PlatformsSectionInner() {
       .catch(() => {});
   }, []);
 
-  const auto = platforms.filter((p) => p.support !== "manual");
+  const auto = platforms.filter((p) => p.support !== "manual" && !p.comingSoon);
   const connected = new Set(accounts.map((a) => a.platform));
 
   return (
@@ -40,12 +40,24 @@ function PlatformsSectionInner() {
         {platforms.map((p) => {
           const accs = accounts.filter((a) => a.platform === p.id);
           const appMissing = p.appFields.length > 0 && !p.app?.complete;
+          if (p.comingSoon) {
+            return (
+              <Card key={p.id} className="opacity-60">
+                <div className="flex items-center gap-2">
+                  <PlatformIcon platform={p.id} className="text-lg" />
+                  <span className="flex-1 font-semibold">{p.name}</span>
+                  <SupportBadge p={p} />
+                </div>
+                <p className="mt-3 text-xs text-white/50">準備中です。今後のアップデートで対応予定です。</p>
+              </Card>
+            );
+          }
           return (
             <Card key={p.id} className={p.support === "manual" ? "opacity-60" : ""}>
               <div className="flex items-center gap-2">
                 <PlatformIcon platform={p.id} className="text-lg" />
                 <span className="flex-1 font-semibold">{p.name}</span>
-                <Badge className={SUPPORT_LABEL[p.support].cls}>{SUPPORT_LABEL[p.support].label}</Badge>
+                <SupportBadge p={p} />
               </div>
               <div className="mt-3 space-y-1 text-xs text-white/60">
                 {p.support === "manual" ? (

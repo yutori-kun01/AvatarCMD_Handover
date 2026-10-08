@@ -5,7 +5,7 @@
 //   ・アカウントごとの認証情報の確認（伏せ字）・今すぐ更新・差し替え
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, KeyRound, Link2, RefreshCw, Trash2 } from "lucide-react";
-import { api, Badge, Button, Card, CopyText, Field, inputCls, LastError, LinkButton, SUPPORT_LABEL, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "./ui";
+import { api, Badge, Button, Card, CopyText, Field, inputCls, LastError, LinkButton, SupportBadge, type AccountInfo, type AvatarAppInfo, type PlatformInfo } from "./ui";
 import { PlatformIcon } from "@/components/platform-icon";
 
 /**
@@ -481,12 +481,25 @@ export function AccountsSection({
           {platforms.map((p) => {
             const own = ownApps[p.id];
             const appMissing = p.appFields.length > 0 && !p.app?.complete && !own?.complete;
+            if (p.comingSoon) {
+              return (
+                <div key={p.id} className="rounded-xl border border-white/[0.06] px-4 py-3 opacity-60">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <PlatformIcon platform={p.id} />
+                    <span className="text-sm font-medium">{p.name}</span>
+                    <SupportBadge p={p} />
+                    <span className="flex-1" />
+                    <span className="text-xs text-white/40">今後のアップデートで対応予定です</span>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={p.id} className="rounded-xl border border-white/[0.06] px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <PlatformIcon platform={p.id} />
                   <span className="text-sm font-medium">{p.name}</span>
-                  <Badge className={SUPPORT_LABEL[p.support].cls}>{SUPPORT_LABEL[p.support].label}</Badge>
+                  <SupportBadge p={p} />
                   {p.appFields.length > 0 &&
                     (own ? <Badge className="bg-violet-500/15 text-violet-300">専用アプリ</Badge> : p.app?.complete ? <Badge className="bg-white/5 text-white/40">共通アプリ</Badge> : null)}
                   {p.appFields.length > 0 && (

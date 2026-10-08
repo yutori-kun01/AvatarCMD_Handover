@@ -5,6 +5,7 @@ import { randomBytes } from "crypto";
 import { prisma } from "@avatar-cmd/db";
 import { getPlatform } from "../platforms";
 import { base64url, ConfigError, createPkce } from "../http";
+import { assertPlatformEnabled } from "../edition";
 import { getSystemConfig, resolvePlatformApp } from "./store";
 import { saveConnectedAccount } from "./accounts";
 
@@ -18,6 +19,7 @@ const STATE_TTL_MS = 15 * 60_000;
 async function beginOAuth(platform: string, avatarId: string, mode: OAuthMode) {
   const def = getPlatform(platform);
   if (!def?.oauth) throw new ConfigError(`${platform} は OAuth 接続に対応していません`);
+  assertPlatformEnabled(platform, def.name);
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const system = await getSystemConfig();
@@ -130,6 +132,7 @@ export async function sameAccountWarnings(saved: { avatarId: string; platform: s
 export async function connectWithCredentials(platform: string, avatarId: string, input: Record<string, string>) {
   const def = getPlatform(platform);
   if (!def?.connect) throw new ConfigError(`${platform} はこの方法で接続できません`);
+  assertPlatformEnabled(platform, def.name);
   const avatar = await prisma.avatar.findUnique({ where: { id: avatarId } });
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const { app, scope } = await resolvePlatformApp(platform, avatarId);

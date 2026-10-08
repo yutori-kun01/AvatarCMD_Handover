@@ -250,7 +250,7 @@ function PostsInner() {
   }, [loadPosts]);
 
   const byId = useMemo(() => Object.fromEntries(platforms.map((p) => [p.id, p])), [platforms]);
-  const postable = accounts.filter((a) => a.isActive && byId[a.platform] && byId[a.platform].support !== "manual");
+  const postable = accounts.filter((a) => a.isActive && byId[a.platform] && byId[a.platform].support !== "manual" && !byId[a.platform].comingSoon);
   const selectedPlatforms = [...new Set(accounts.filter((a) => selected.includes(a.id)).map((a) => a.platform))].map((id) => byId[id]).filter(Boolean);
   const needsTitle = selectedPlatforms.some((p) => p.postFields.some((f) => f.key === "title"));
   // 選択中で一番厳しい文字数制限（長文プラットフォームの大きな上限は対象外。X / Threads は自動でツリーに分けるので対象外）

@@ -1,6 +1,6 @@
 // 設定画面用: プラットフォーム定義・開発者アプリの登録状況・接続済みアカウント・システム設定
 import { NextResponse } from "next/server";
-import { PLATFORM_LIST } from "@avatar-cmd/integrations";
+import { isPlatformEnabled, PLATFORM_LIST } from "@avatar-cmd/integrations";
 import {
   describeAi, describeJev, describePlatformApp, ensureDefaultAvatar, getSystemConfig, listAccounts, listAvatarPlatformApps, redirectUriFor,
 } from "@avatar-cmd/integrations/server";
@@ -14,11 +14,13 @@ export const GET = route(async () => {
   await ensureDefaultAvatar();
   const system = await getSystemConfig();
   const platforms = await Promise.all(
-    PLATFORM_LIST.map(async (p) => ({
+    // 使えるプラットフォームを先に、準備中のものを後ろに並べる
+    [...PLATFORM_LIST.filter((p) => isPlatformEnabled(p.id)), ...PLATFORM_LIST.filter((p) => !isPlatformEnabled(p.id))].map(async (p) => ({
       id: p.id,
       name: p.name,
       icon: p.icon,
       support: p.support,
+      comingSoon: !isPlatformEnabled(p.id),
       connection: p.connection,
       maxLength: p.maxLength,
       appFields: p.appFields,

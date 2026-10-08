@@ -7,6 +7,7 @@ import { prisma } from "@avatar-cmd/db";
 import { CredentialVault } from "../security/credential-vault";
 import { DEFAULT_SYSTEM_CONFIG, type SystemConfig } from "../types";
 import { getPlatform } from "../platforms";
+import { assertPlatformEnabled } from "../edition";
 import { ConfigError } from "../http";
 
 let vault: CredentialVault | null = null;
@@ -89,6 +90,7 @@ export async function getPlatformApp(platform: string): Promise<Record<string, s
 function mergeAppInput(platform: string, current: Record<string, string>, input: Record<string, string>): Record<string, string> {
   const def = getPlatform(platform);
   if (!def) throw new Error(`unknown platform: ${platform}`);
+  assertPlatformEnabled(platform, def.name);
   const next: Record<string, string> = {};
   for (const f of def.appFields) {
     const v = (input[f.key] ?? "").trim();

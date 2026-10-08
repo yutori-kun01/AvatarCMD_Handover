@@ -4,6 +4,7 @@
 import { prisma } from "@avatar-cmd/db";
 import type { PostInput } from "../types";
 import { getPlatform } from "../platforms";
+import { assertPlatformEnabled } from "../edition";
 import { ApiError, ConfigError, describeBody } from "../http";
 import { loadFreshCredentials } from "./accounts";
 import { getSystemConfig } from "./store";
@@ -46,6 +47,7 @@ export async function createPosts(input: CreatePostInput) {
   for (const acc of accounts) {
     const def = getPlatform(acc.platform);
     if (!def?.publish) throw new ConfigError(`${def?.name ?? acc.platform} は自動投稿に対応していません`);
+    assertPlatformEnabled(acc.platform, def.name);
     validateMedia(def.name, def.media, input.media ?? []);
     const metadata: ContentMetadata = {
       ...(input.extraMetadata ?? {}),
@@ -90,6 +92,7 @@ export async function publishContent(contentId: string) {
   if (!acc) throw new ConfigError("投稿先アカウントが削除されています");
   const def = getPlatform(acc.platform);
   if (!def?.publish) throw new ConfigError(`${acc.platform} は自動投稿に対応していません`);
+  assertPlatformEnabled(acc.platform, def.name);
 
   const system = await getSystemConfig();
   const { credentials, app } = await loadFreshCredentials(acc.id);

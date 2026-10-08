@@ -6,5 +6,6 @@
 
 export * from "./types";
 export { PLATFORM_LIST, PLATFORMS, getPlatform } from "./platforms";
+export { EDITION_NAME, ENABLED_PLATFORMS, isPlatformEnabled, assertPlatformEnabled } from "./edition";
 export { ApiError, ConfigError } from "./http";
 export { markdownToHtml } from "./markdown";
