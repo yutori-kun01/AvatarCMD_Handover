@@ -52,11 +52,11 @@ const RDF = `<?xml version="1.0" encoding="UTF-8"?>
   <item rdf:about="https://rdf.example.com/a/1"><title>RDF 記事</title><link>https://rdf.example.com/a/1</link><dc:date>2026-10-02T00:00:00+09:00</dc:date><description>説明 & 補足</description></item>
 </rdf:RDF>`;
 
-const NOTE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>朝の集中｜ゆとり</title></head><body>
+const NOTE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>朝の集中｜サンプル</title></head><body>
 <header class="o-navHeader"><a href="/">note</a> ログイン 会員登録</header>
 <main><article>
   <h1>朝の集中</h1>
-  <div class="p-article__creatorInfo">ゆとり フォロー</div>
+  <div class="p-article__creatorInfo">サンプル フォロー</div>
   <div class="note-common-styles__textnote-body">${LONG}</div>
   <div class="p-article__action">スキ 123 シェア</div>
   <div class="m-recommend">おすすめの記事 関連する記事 他の人の記事タイトル</div>
@@ -92,9 +92,9 @@ test("RSS 2.0 / Atom / RSS 1.0 を解析する（HTML は段落を保ったテ�
 });
 
 test("フィードの URL を探す（note のクリエイターページ・<link rel=alternate>）", () => {
-  assert.equal(knownFeedUrl("https://note.com/yutori_kun"), "https://note.com/yutori_kun/rss");
-  assert.equal(knownFeedUrl("https://note.com/yutori_kun/m/mabc123"), "https://note.com/yutori_kun/m/mabc123/rss");
-  assert.equal(knownFeedUrl("https://note.com/yutori_kun/n/n123"), null);
+  assert.equal(knownFeedUrl("https://note.com/sample_user"), "https://note.com/sample_user/rss");
+  assert.equal(knownFeedUrl("https://note.com/sample_user/m/mabc123"), "https://note.com/sample_user/m/mabc123/rss");
+  assert.equal(knownFeedUrl("https://note.com/sample_user/n/n123"), null);
   assert.equal(knownFeedUrl("https://blog.example.com/"), null);
   const html = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed/"><link rel="stylesheet" href="/a.css"></head></html>';
   assert.equal(discoverFeedUrl(html, "https://blog.example.com/posts/"), "https://blog.example.com/feed/");
@@ -102,7 +102,7 @@ test("フィードの URL を探す（note のクリエイターページ・<lin
 });
 
 test("記事ページから本文だけを取り出す（note のスキ・おすすめ・ヘッダー等を除く）", () => {
-  const a = extractArticle(NOTE_PAGE, "https://note.com/yutori_kun/n/n123");
+  const a = extractArticle(NOTE_PAGE, "https://note.com/sample_user/n/n123");
   assert.equal(a.method, "readability");
   assert.ok(a.text.includes("体内時計が整い"));
   for (const noise of ["スキ 123", "おすすめの記事", "利用規約", "ログイン", "フォロー"]) assert.ok(!a.text.includes(noise), noise);
@@ -133,7 +133,7 @@ let avatarId = "";
 const TOUCHED = ["anthropic_api_key"];
 let saved: { key: string; value: string; secret: boolean }[] = [];
 const FEED_URL = "https://blog.example.com/feed";
-const NOTE_FEED = "https://note.com/yutori_test/rss";
+const NOTE_FEED = "https://note.com/sample_test/rss";
 
 before(async () => {
   if (!hasDb) return;
@@ -167,8 +167,8 @@ function mocks() {
   return mockFetch([
     ["GET", /blog\.example\.com\/$/, () => ({ text: '<html><head><link rel="alternate" type="application/rss+xml" href="/feed"></head><body>top</body></html>', headers: { "content-type": "text/html" } })],
     ["GET", /blog\.example\.com\/feed$/, () => ({ text: RSS2([{ guid: "full1", title: "全文のある記事", date: recent, full: LONG }, { guid: "old1", title: "古い記事", date: old, full: LONG }]), headers: { "content-type": "application/rss+xml" } })],
-    ["GET", /note\.com\/yutori_test\/rss$/, () => ({ text: RSS2([{ guid: "n1", title: "note の記事", date: recent, link: "https://note.com/yutori_test/n/n1" }]).replace("集中ブログ &amp; ノート", "ゆとりのnote"), headers: { "content-type": "application/rss+xml" } })],
-    ["GET", /note\.com\/yutori_test\/n\/n1$/, () => (pageStatus === 200 ? { text: NOTE_PAGE, headers: { "content-type": "text/html; charset=utf-8" } } : { status: pageStatus, text: "<!DOCTYPE html><html><title>Service Unavailable</title></html>" })],
+    ["GET", /note\.com\/sample_test\/rss$/, () => ({ text: RSS2([{ guid: "n1", title: "note の記事", date: recent, link: "https://note.com/sample_test/n/n1" }]).replace("集中ブログ &amp; ノート", "サンプルのnote"), headers: { "content-type": "application/rss+xml" } })],
+    ["GET", /note\.com\/sample_test\/n\/n1$/, () => (pageStatus === 200 ? { text: NOTE_PAGE, headers: { "content-type": "text/html; charset=utf-8" } } : { status: pageStatus, text: "<!DOCTYPE html><html><title>Service Unavailable</title></html>" })],
     [
       "POST",
       /api\.anthropic\.com\/v1\/messages/,
@@ -227,7 +227,7 @@ test("サイトの URL からフィードを見つけて登録。全文のある
 test("抜粋しか無い記事（note など）は記事ページから本文を取り出す。取れなければ本文待ち→3回で取得不可。worker で一連の処理", opts, async () => {
   const m = mocks();
   try {
-    const f = await svc.createFeed({ url: "https://note.com/yutori_test", avatarIds: [avatarId] });
+    const f = await svc.createFeed({ url: "https://note.com/sample_test", avatarIds: [avatarId] });
     assert.equal(f.url, NOTE_FEED);
     await svc.pollFeed(f.id);
     const a = await prisma.rssArticle.findFirstOrThrow({ where: { feedRowId: f.id } });

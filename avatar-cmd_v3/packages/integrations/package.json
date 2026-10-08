@@ -6,8 +6,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
-    "compare-images": "tsx scripts/compare-images.ts"
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

@@ -15,15 +15,15 @@
 
 ## 1. 前提
 
-- Docker / Docker Compose v2 が入った VPS（例: Xserver VPS, Ubuntu 22.04）
-- 外部から HTTPS でアクセスできるドメイン（OAuth のリダイレクト先・Instagram/Threads の画像取り込みに必須）
+- Docker / Docker Compose v2 が入った VPS（例: Ubuntu 22.04）
+- 外部から HTTPS でアクセスできるドメイン（OAuth のリダイレクト先・Threads の画像取り込みに必須）
 - 既存の Traefik を使う場合は、そのネットワーク名（`docker network ls | grep traefik`）
 
-## 2. 取得と .env 生成
+## 2. 展開と .env 生成
 
 ```bash
-git clone <このリポジトリ> /opt/avatar-cmd-src
-cd /opt/avatar-cmd-src/avatar-cmd_v3
+unzip avatar-cmd-*.zip -d /opt   # → /opt/avatar-cmd
+cd /opt/avatar-cmd
 
 # 秘密鍵・DBパスワード・管理者パスワードを自動生成（既存の .env は上書きしない）
 bash scripts/setup-env.sh https://avatar-cmd.example.com
@@ -70,7 +70,7 @@ docker compose logs -f worker     # "[worker] started" が出ていれば OK
    | 用途 | 使われる場所 | 推奨（最低限）Claude / OpenAI / Gemini |
    |---|---|---|
    | SNS 投稿文 | 投稿の「AIで下書き」・自動化（短文SNS） | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
-   | 長文記事 | 同上（WordPress / Zenn / note / Medium） | `claude-opus-5` / `gpt-5` / `gemini-3.8-flash` |
+   | 長文記事 | 同上（note） | `claude-opus-5` / `gpt-5` / `gemini-3.8-flash` |
    | 文字数調整 | 「AIで◯文字に調整」・生成結果が文字数を超えたとき | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash` |
    | 投稿前チェック | 「AIでチェック」・自動化の自動投稿モード | `claude-sonnet-5` / `gpt-5-mini` / `gemini-3.8-flash`（品質重視なら `claude-opus-5`） |
    | タグ提案 | タグ欄の「AIで提案」 | `claude-haiku-4-5` / `gpt-5-mini` / `gemini-3.8-flash` |
@@ -88,18 +88,8 @@ SNS ごとに必要なもの:
 |---|---|---|
 | X | OAuth 2.0 Client ID / Secret | OAuth 2.0 有効化・Read and write・リダイレクトURI登録。投稿には API クレジット/プランが必要 |
 | Threads | Threads App ID / Secret | Meta アプリに「Threads API」ユースケース追加・リダイレクトURI登録 |
-| Instagram | Instagram App ID / Secret | 「Instagram ログインによる API 設定」追加・リダイレクトURI登録。プロアカウントのみ |
-| Facebook ページ | App ID / Secret | 「Facebook ログイン for Business」・リダイレクトURI登録 |
-| YouTube | OAuth クライアント ID / シークレット | YouTube Data API v3 有効化・同意画面・リダイレクトURI登録。公開投稿には監査が必要 |
-| TikTok | Client Key / Secret | Login Kit + Content Posting API（Direct Post）。監査前は「自分のみ」公開 |
-| LinkedIn | Client ID / Secret | Share on LinkedIn + Sign In with LinkedIn (OpenID Connect)・リダイレクトURI登録 |
-| Reddit | Client ID / Secret（+User-Agent） | web app 作成・Responsible Builder Policy の API アクセス承認 |
-| Bluesky | ハンドル + アプリパスワード | 不要 |
-| WordPress | サイトURL + ユーザー名 + アプリケーションパスワード | 不要 |
-| Zenn | 連携済み GitHub リポジトリ + Fine-grained PAT | Zenn ダッシュボードで GitHub 連携 |
 | note | ログインCookie（`_note_session_v5`） | 不要（非公式・下書き保存まで） |
-| Medium | 発行済み Integration token | 新規発行は終了 |
-| Substack / Amebaブログ / stand.fm | — | 公開APIが無いため自動投稿非対応 |
+| その他（Instagram / YouTube / Bluesky など） | — | 準備中（今後のアップデートで対応予定） |
 
 ### アバターごとの認証情報の管理
 
@@ -108,8 +98,8 @@ SNS ごとに必要なもの:
 
 - **認証情報**（各アカウントのボタン）: 使用アプリ・取得日時・有効期限・スコープ・自動更新の可否を表示します。
   トークンやパスワードは末尾4文字と文字数だけの伏せ字で、平文は画面・API のどちらにも出しません（閲覧は監査ログに記録）。
-  - **今すぐトークンを更新**: 期限前でもリフレッシュします（X / YouTube / Reddit / TikTok / LinkedIn / Threads / Instagram）。
-    Threads / Instagram は Meta の仕様で発行から24時間以内は更新できません。
+  - **今すぐトークンを更新**: 期限前でもリフレッシュします（X / Threads）。
+    Threads は Meta の仕様で発行から24時間以内は更新できません。
   - **再認証して取り直す**（OAuth）/ **認証情報を差し替え**（アプリパスワード・トークン・Cookie）
 - **このアバター専用のアプリを使う**（OAuth 系 SNS の行）: そのアバターだけ別の開発者アプリ（Client ID / Secret）で認証します。
   ブランドごとにアプリを分けたい、API の利用上限をアプリ単位で分けたい場合に使います。未登録なら「SNS連携アプリ」の共通設定を使います。
@@ -133,19 +123,17 @@ SNS ごとに必要なもの:
 ## 5. 運用
 
 ```bash
-# 更新
-git pull && docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+# 更新: 新しい ZIP を同じ場所に上書き展開（.env はそのまま残す）してから
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 
 # DB バックアップ
 docker compose exec db pg_dump -U avatar avatar_cmd > backup_$(date +%Y%m%d).sql
 ```
 
-- API のバージョン（Meta Graph API / LinkedIn-Version）は **設定 > システム** で変更できます。
 - 失敗した投稿は **投稿** ページから再送できます。通信エラー等は自動で最大3回（指数バックオフ）再試行し、
   認証切れ・設定不備などは即座に「失敗」になります（エラー内容が表示されます）。
-- トークンの自動更新: X / YouTube / Reddit / TikTok / LinkedIn（リフレッシュトークンがある場合）は投稿直前に更新、
-  Threads / Instagram の長期トークンは失効7日前から更新します。Facebook ページのトークンは失効しません。
-  LinkedIn（60日）や note の Cookie は期限が来たら再接続してください。
+- トークンの自動更新: X は投稿直前に更新、Threads の長期トークンは失効7日前から更新します。
+  note の Cookie は期限が来たら再接続してください。
   状態の確認や手動更新は **設定 > アカウント > 認証情報** から行えます。
 
 ## トラブルシューティング
@@ -153,7 +141,7 @@ docker compose exec db pg_dump -U avatar avatar_cmd > backup_$(date +%Y%m%d).sql
 | 症状 | 確認すること |
 |---|---|
 | OAuth で「redirect_uri が一致しない」 | 設定 > システム の公開URLと、開発者ポータルに登録したリダイレクトURIが完全一致しているか |
-| Instagram / Threads の画像投稿が失敗 | `https://<ドメイン>/media/<ファイル>` が外部から見えるか（Traefik・ファイアウォール） |
+| Threads の画像投稿が失敗 | `https://<ドメイン>/media/<ファイル>` が外部から見えるか（Traefik・ファイアウォール） |
 | ダッシュボードに「worker が停止しています」 | `docker compose ps` で worker が running か、`docker compose logs worker` にエラーが無いか |
 | 自動化ルールが「AI の API キーが未設定」で失敗 | 設定 > システム > AI で、その用途に割り当てたプロバイダのキーを入力 |
 | 「ENCRYPTION_KEY が未設定」 | `.env` に値があるか、`docker compose up -d` で再作成したか |

@@ -23,10 +23,10 @@ import { htmlTextLength, markdownImageSources, markdownToNote } from "../markdow
 const API = "https://note.com/api";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 /** note の有料記事の価格（円）。note の仕様: 100〜50,000 円 */
-export const NOTE_PRICE_MIN = 100;
-export const NOTE_PRICE_MAX = 50_000;
+const NOTE_PRICE_MIN = 100;
+const NOTE_PRICE_MAX = 50_000;
 
-export function noteCookie(raw: string): string {
+function noteCookie(raw: string): string {
   const v = raw.trim();
   return v.includes("=") ? v : `_note_session_v5=${v}`;
 }
@@ -104,7 +104,7 @@ async function uploadBodyImage(cookie: string, file: MediaFile): Promise<string>
 }
 
 /** 本文の参照先（media:{name} / /media/{name} / 公開 URL）から添付ファイルを探す */
-export function findMedia(media: MediaFile[], src: string): MediaFile | undefined {
+function findMedia(media: MediaFile[], src: string): MediaFile | undefined {
   const name = src.replace(/^media:/, "").split("/").pop() ?? "";
   return media.find((m) => m.url === src || (name && m.url.endsWith(`/media/${name}`)));
 }

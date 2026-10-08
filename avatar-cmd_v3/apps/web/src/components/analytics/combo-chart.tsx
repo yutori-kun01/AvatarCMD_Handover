@@ -55,7 +55,7 @@ const MODES: { id: Mode; label: string }[] = [
 ];
 
 const axis = { stroke: "rgba(255,255,255,0.3)", fontSize: 10, tickLine: false, axisLine: false } as const;
-export const compact = (v: number) => (Math.abs(v) >= 10000 ? `${Math.round(v / 1000)}k` : v.toLocaleString("ja-JP"));
+const compact = (v: number) => (Math.abs(v) >= 10000 ? `${Math.round(v / 1000)}k` : v.toLocaleString("ja-JP"));
 
 function ChartTooltip({
   active,

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { ApiError, ConfigError } from "@avatar-cmd/integrations";
 import { withUsageContext } from "@avatar-cmd/integrations/server";
 
-export function jsonError(e: unknown) {
+function jsonError(e: unknown) {
   if (e instanceof ConfigError) return NextResponse.json({ error: e.message }, { status: 400 });
   if (e instanceof ApiError) {
     return NextResponse.json({ error: `${e.platform} API エラー (${e.status}): ${e.body.slice(0, 500)}` }, { status: 502 });

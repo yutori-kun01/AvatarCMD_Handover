@@ -124,7 +124,7 @@ const POST_SERIES = [
 ];
 
 /** 前月・翌月に移動するページャー */
-export function MonthPager({ month, prev, next, onChange }: { month: string; prev: string; next: string | null; onChange: (m: string | null) => void }) {
+function MonthPager({ month, prev, next, onChange }: { month: string; prev: string; next: string | null; onChange: (m: string | null) => void }) {
   return (
     <div className="flex items-center gap-1">
       <button onClick={() => onChange(prev)} className="rounded-lg border border-white/10 p-1.5 text-white/60 hover:bg-white/[0.06] hover:text-white" title={`${monthLabel(prev)}へ`}>

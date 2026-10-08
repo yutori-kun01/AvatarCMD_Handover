@@ -21,7 +21,7 @@ test("X: 認可URLは x.com/i/oauth2/authorize + PKCE S256 + media.write", () =>
 test("X: トークン交換は api.x.com + Basic 認証、users/me でアカウント取得", async () => {
   const m = mockFetch([
     ["POST", /api\.x\.com\/2\/oauth2\/token$/, { access_token: "AT", refresh_token: "RT", expires_in: 7200, scope: "tweet.write" }],
-    ["GET", /api\.x\.com\/2\/users\/me$/, { data: { id: "42", username: "yutori" } }],
+    ["GET", /api\.x\.com\/2\/users\/me$/, { data: { id: "42", username: "sample_user" } }],
   ]);
   try {
     const [acc] = await PLATFORMS.x.oauth!.exchangeCode({ clientId: "cid", clientSecret: "sec" }, { code: "C", redirectUri: "https://r/cb", codeVerifier: "V", system });
@@ -41,12 +41,12 @@ test("X: 画像は /2/media/upload、投稿は /2/tweets に media_ids 付き", 
     ["POST", /\/2\/tweets$/, { data: { id: "T1" } }],
   ]);
   try {
-    const r = await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "yutori" } }), post({ media: [media("image/png")] }));
+    const r = await PLATFORMS.x.publish!(ctx({ credentials: { accessToken: "AT", username: "sample_user" } }), post({ media: [media("image/png")] }));
     assert.equal(m.calls[0].json.media_category, "tweet_image");
     assert.ok(typeof m.calls[0].json.media === "string");
     assert.deepEqual(m.calls[1].json, { text: "hello", media: { media_ids: ["M1"] } });
     assert.equal(m.calls[1].headers.authorization, "Bearer AT");
-    assert.equal(r.url, "https://x.com/yutori/status/T1");
+    assert.equal(r.url, "https://x.com/sample_user/status/T1");
   } finally {
     m.restore();
   }

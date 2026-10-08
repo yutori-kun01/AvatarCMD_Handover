@@ -7,7 +7,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { getSetting, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
-export function hashPassword(pw: string): string {
+function hashPassword(pw: string): string {
   const salt = randomBytes(16);
   const hash = scryptSync(pw, salt, 32);
   return `scrypt:${salt.toString("hex")}:${hash.toString("hex")}`;

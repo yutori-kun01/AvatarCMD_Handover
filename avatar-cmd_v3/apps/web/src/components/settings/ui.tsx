@@ -60,14 +60,14 @@ export interface AvatarAppInfo {
   complete: boolean;
 }
 
-export const SUPPORT_LABEL: Record<PlatformInfo["support"], { label: string; cls: string }> = {
+const SUPPORT_LABEL: Record<PlatformInfo["support"], { label: string; cls: string }> = {
   official: { label: "公式API", cls: "bg-emerald-500/15 text-emerald-300" },
   legacy: { label: "公式API（新規受付終了）", cls: "bg-amber-500/15 text-amber-300" },
   unofficial: { label: "非公式・下書き保存", cls: "bg-orange-500/15 text-orange-300" },
   manual: { label: "自動投稿非対応", cls: "bg-white/10 text-white/50" },
 };
 
-export const COMING_SOON_LABEL = { label: "準備中", cls: "bg-white/10 text-white/50" };
+const COMING_SOON_LABEL = { label: "準備中", cls: "bg-white/10 text-white/50" };
 
 /** 対応状況のバッジ（準備中のプラットフォームは「準備中」） */
 export function SupportBadge({ p }: { p: Pick<PlatformInfo, "support" | "comingSoon"> }) {

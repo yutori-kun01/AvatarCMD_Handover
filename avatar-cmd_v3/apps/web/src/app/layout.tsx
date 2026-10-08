@@ -13,9 +13,8 @@ const notoSansJP = Noto_Sans_JP({
 });
 
 export const metadata: Metadata = {
-  title: "Avatar CMD | AIアバター搭載PCセットアップ",
-  description:
-    "OpenClaw × AIアバター × SNS自動運用。AIアバターを統合管理し、コンテンツ制作・収益化を自律的に実行するコマンドセンター。",
+  title: "Avatar CMD",
+  description: "AIアバターで X / Threads / note を運用するコマンドセンター",
 };
 
 export const viewport: Viewport = {

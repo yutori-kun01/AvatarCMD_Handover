@@ -41,19 +41,6 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
 }
 
 /** 簡易棒グラフ（依存なし） */
-export function Bars({ data, format = (v: number) => String(v) }: { data: { label: string; value: number }[]; format?: (v: number) => string }) {
-  const max = Math.max(1, ...data.map((d) => d.value));
-  return (
-    <div className="flex h-40 items-end gap-1">
-      {data.map((d) => (
-        <div key={d.label} className="group relative flex h-full flex-1 flex-col justify-end" title={`${d.label}: ${format(d.value)}`}>
-          <div className="w-full rounded-t bg-gradient-to-t from-[#3b82f6] to-[#8b5cf6] opacity-80 group-hover:opacity-100" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value ? 2 : 0 }} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function relTime(d: string | Date | null | undefined): string {
   if (!d) return "—";
   const t = new Date(d).getTime();

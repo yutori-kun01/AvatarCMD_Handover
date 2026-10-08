@@ -27,7 +27,7 @@ function yamlString(s: string) {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-export function zennSlug(): string {
+function zennSlug(): string {
   return randomBytes(7).toString("hex"); // 14文字
 }
 

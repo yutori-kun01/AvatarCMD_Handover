@@ -16,7 +16,7 @@ import { ApiError, ConfigError, networkError } from "../http";
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 20_000;
 const MAX_REDIRECTS = 5;
-export const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 AvatarCMD/3";
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 AvatarCMD/3";
 
 /** テストで DNS を引かないための差し替え口 */
 export const URL_GUARD = {
