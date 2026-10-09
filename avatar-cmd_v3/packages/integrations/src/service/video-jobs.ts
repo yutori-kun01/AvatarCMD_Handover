@@ -23,9 +23,11 @@ import { VIDEO_PROFILES, type VideoProfileId } from "./video-profiles";
 import { inspectImage, reasonLabel, type QcOutcome } from "./video-qc";
 import { alignShots, assignPseudoMotions, buildCues, EPISODE_FORMATS, estimateSeconds, normalizeShotlist, patchShot, shotImagePrompt, toSrt, type ShotTiming } from "./video-shotlist";
 import { applyReadingDict, CHAPTER_GAP_SEC, scriptMatchRate, synthesize, transcribe } from "./video-tts";
+import { klingConfig, runI2v } from "./video-i2v";
 
-export type VideoJobStep = "topics" | "script" | "narration" | "storyboard" | "final" | "thumbnails";
-const STEPS: VideoJobStep[] = ["topics", "script", "narration", "storyboard", "final", "thumbnails"];
+/** i2v = 動画化（Kling の image-to-video。1 カットずつ） */
+export type VideoJobStep = "topics" | "script" | "narration" | "storyboard" | "final" | "i2v" | "thumbnails";
+const STEPS: VideoJobStep[] = ["topics", "script", "narration", "storyboard", "final", "i2v", "thumbnails"];
 
 const CONCURRENCY = Number(process.env.VIDEO_JOB_CONCURRENCY || 2);
 const STALE_MS = 30 * 60_000;
@@ -169,6 +171,9 @@ async function runStep(step: VideoJobStep, ep: EpisodeRow, shotId: string | null
     case "final":
       if (!shotId) throw new Error("カットが指定されていません");
       return stepImage(step, ep, shotId, input);
+    case "i2v":
+      if (!shotId) throw new Error("カットが指定されていません");
+      return stepI2v(ep, shotId, input, progress);
     case "thumbnails":
       return stepThumbnails(ep, input);
   }
@@ -672,6 +677,84 @@ export async function enterVideoStage(ep: Pick<EpisodeRow, "id">) {
   );
   if (!(await advanceStage(ep.id, "final", needsI2v ? "video" : "render"))) return;
   if (!needsI2v) await enqueueVideoJob(ep.id, "thumbnails", null, { round: 0 });
+  // Kling の自動動画化がオンなら、i2v のカットを順に Kling へ（上限を超える分は人が pseudo に切り替えるか手で始める）
+  else {
+    const cfg = await klingConfig();
+    if (cfg?.auto) await enqueueI2v(ep.id, null);
+  }
+}
+
+// 9. 動画化（Kling i2v） ----------------------------------------------------------------
+
+/** i2v のカット（まだ動画が無いもの）を Kling に回す。shotId を指定するとそのカットだけ。依頼した件数を返す */
+export async function enqueueI2v(episodeId: string, shotId: string | null, feedback = ""): Promise<number> {
+  const ep = await prisma.videoEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+  if (ep.stage !== "video") throw new ConfigError("動画化（i2v）の工程ではありません");
+  if (!(await klingConfig())) throw new ConfigError("Kling の Access Key / Secret Key が未設定です（設定 > 動画 > パイプライン設定）");
+  const limits = await getVideoLimits();
+  const sl = readShotlist(ep);
+  const i2v = sl.shots.filter((s) => s.motion_type === "i2v");
+  // 上限（1 本あたりの i2v カット数）を超える分は回さない
+  const allowed = new Set(i2v.slice(0, limits.maxI2vShots).map((s) => s.shot_id));
+  const targets = i2v.filter((s) => (shotId ? s.shot_id === shotId : s.status !== "video_ok") && s.assets.final_image);
+  if (shotId && !targets.length) throw new ConfigError(`${shotId} は動画化できるカットではありません（i2v で本番画像があるカットだけ）`);
+  if (shotId && !allowed.has(shotId)) throw new ConfigError(`動画化のカット数の上限（${limits.maxI2vShots}）を超えています。上限を上げるか、ほかのカットを pseudo に切り替えてください`);
+  let n = 0;
+  // 作り直しのたびに別のジョブにする（同じ入力のジョブは二重に走らせない仕組みのため、回数・指示を入力に入れる）
+  const round = await prisma.videoJob.count({ where: { episodeId, step: "i2v" } });
+  for (const s of targets) {
+    if (!allowed.has(s.shot_id)) continue;
+    const running = await prisma.videoJob.count({ where: { episodeId, step: "i2v", shotId: s.shot_id, status: { in: ["queued", "running"] } } });
+    if (running) continue;
+    await enqueueVideoJob(episodeId, "i2v", s.shot_id, { round, feedback });
+    n++;
+  }
+  return n;
+}
+
+/** 1 カットを Kling で動画にして登録する */
+async function stepI2v(ep: EpisodeRow, shotId: string, input: Record<string, unknown>, progress: Progress) {
+  const cfg = await klingConfig();
+  if (!cfg) throw new ConfigError("Kling の Access Key / Secret Key が未設定です（設定 > 動画 > パイプライン設定）");
+  const fresh = await prisma.videoEpisode.findUniqueOrThrow({ where: { id: ep.id } });
+  if (fresh.stage !== "video") return { skipped: "動画化の工程ではなくなりました" };
+  const shot = readShotlist(fresh).shots.find((s) => s.shot_id === shotId);
+  if (!shot || shot.motion_type !== "i2v") return { skipped: "i2v のカットではなくなりました" };
+  if (!shot.assets.final_image) throw new ConfigError(`${shotId} の本番画像がありません`);
+  const assets = await getVideoAssets(ep.avatarId);
+  const prompt = [
+    shot.motion_note && `動き: ${shot.motion_note}`,
+    `場面: ${shot.visual.description}`,
+    shot.visual.expression && `表情: ${shot.visual.expression}`,
+    assets.characterText && "キャラクターの顔・髪型・服装は入力画像のまま保つ（別人にしない）。",
+    "カメラワークは控えめ。画面に文字・字幕・ロゴを出さない。音声は不要。",
+    typeof input.feedback === "string" && input.feedback ? `追加の指示: ${input.feedback}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const image = new Uint8Array(await readMedia(shot.assets.final_image));
+  await progress("Kling に依頼中");
+  const r = await runI2v(cfg, { image, prompt }, { onTask: (id) => progress(`Kling タスク ${id}`), onProgress: progress });
+  const ref = await saveMedia(r.bytes, `${ep.episodeKey}-${shotId}.mp4`, "video/mp4");
+  await updateShot(
+    ep.id,
+    shotId,
+    (s) => patchShot(s, "video", { assets: { ...s.assets, video: ref.name }, status: "video_ok", qc: { ...s.qc, phase: "video", engine: "kling", note: `Kling ${cfg.model}（${cfg.mode}・${r.duration ?? cfg.duration} 秒）で生成。人の確認待ち` } }),
+    "video",
+    `Kling で動画化（タスク ${r.taskId}）`
+  );
+  await maybeFinishVideoStage(ep.id);
+  return { taskId: r.taskId, media: ref.name, duration: r.duration };
+}
+
+/** i2v のカットがすべて動画になったら書き出しへ */
+export async function maybeFinishVideoStage(episodeId: string) {
+  const ep = await prisma.videoEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+  const sl = readShotlist(ep);
+  if (!sl.shots.every((s) => s.status === "video_ok" || s.status === "rendered")) return;
+  await mutateShotlist(episodeId, (latest) => ({ ...latest, shots: assignPseudoMotions(latest.shots) }), "video", "擬似アニメの動きを割り当て");
+  const moved = await prisma.videoEpisode.updateMany({ where: { id: episodeId, stage: "video" }, data: { stage: "render" } });
+  if (moved.count) await enqueueVideoJob(episodeId, "thumbnails", null, { round: 0 });
 }
 
 // 10. サムネイル（3 案） ------------------------------------------------------------------

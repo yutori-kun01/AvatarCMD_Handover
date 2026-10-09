@@ -44,3 +44,4 @@ export { applyReadingDict, scriptMatchRate, CHAPTER_GAP_SEC } from "./service/vi
 export { STAGES as VIDEO_STAGES, stageLabel as videoStageLabel, episodeCost, monthlyVideoCost, type EpisodeReport } from "./service/video-episode";
 export { enqueueVideoJob, processVideoJobs, runVideoJob, parseTopics, INSIGHT_MARKER, type TopicCandidate, type NarrationData } from "./service/video-jobs";
 export * from "./service/video-pipeline";
+export { describeKling, saveKlingSettings, klingToken, DEFAULT_KLING, type KlingInput, type KlingSettings } from "./service/video-i2v";

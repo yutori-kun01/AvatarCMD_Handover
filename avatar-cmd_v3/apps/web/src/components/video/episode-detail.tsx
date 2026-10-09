@@ -603,11 +603,22 @@ function UploadButton({ accept, label, busy, onFile }: { accept: string; label: 
 
 function VideoPanel({ ep, act, busy }: { ep: Episode; act: Act; busy: boolean }) {
   const shots = ep.shotlist.shots.filter((s) => s.motion_type === "i2v");
+  const [feedback, setFeedback] = useState<Record<string, string>>({});
+  // カットごとの最新の Kling ジョブ（生成中の表示・失敗の理由）
+  const lastJob = (shotId: string) => ep.jobs.filter((j) => j.step === "i2v" && j.shotId === shotId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const working = (shotId: string) => ["queued", "running"].includes(lastJob(shotId)?.status ?? "");
+  const remaining = shots.filter((s) => s.status !== "video_ok" && !working(s.shot_id)).length;
   return (
     <Card className="space-y-3">
-      <h3 className="text-sm font-semibold">動画化（i2v）</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold">動画化（i2v）</h3>
+        <span className="flex-1" />
+        <Button disabled={busy || !remaining} onClick={() => act("startI2v", {}, "Kling に動画化を依頼しました（1 カット数分かかります）")}>
+          Kling でまとめて動画化（{remaining} カット）
+        </Button>
+      </div>
       <p className="text-xs text-white/50">
-        本番画像を開始フレームに、キャラのエレメントを紐づけて Kling で 5 秒程度の動画を作り（音声生成はオフ）、ここにアップロードしてください。費用を抑える場合は pseudo（ズーム・パン）に切り替えられます。
+        「Kling で動画化」で、本番画像を開始フレームにして Kling で動画を作ります（音声なし。キーは 設定 &gt; 動画 &gt; パイプライン設定）。Kling の画面で作った動画をアップロードすることもできます。費用を抑える場合は pseudo（ズーム・パン）に切り替えられます。できた動画は必ず再生して確認し、気になるカットは指示を書いて作り直してください。
         {ep.pseudoFallback.length > 0 && ` i2v の上限を超えているカット: ${ep.pseudoFallback.join(", ")}`}
       </p>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -624,6 +635,29 @@ function VideoPanel({ ep, act, busy }: { ep: Episode; act: Act; busy: boolean })
               <img src={media(s.assets.final_image)} alt="" className="aspect-square w-full rounded-lg object-cover" />
             )}
             <div className="text-[11px] text-white/60">動き: {s.motion_note || "（指定なし）"}</div>
+            {s.qc?.engine === "kling" && s.qc.note && <div className="text-[11px] text-cyan-200/70">{s.qc.note}</div>}
+            {(() => {
+              const j = lastJob(s.shot_id);
+              if (!j) return null;
+              if (working(s.shot_id)) return <div className="text-[11px] text-cyan-200">Kling: {j.progress ?? "順番待ち"}…</div>;
+              if (j.status === "failed") return <div className="break-all text-[11px] text-red-300">Kling 失敗: {j.error}</div>;
+              return null;
+            })()}
+            <div className="flex flex-wrap gap-1">
+              <input
+                value={feedback[s.shot_id] ?? ""}
+                onChange={(e) => setFeedback({ ...feedback, [s.shot_id]: e.target.value })}
+                placeholder={s.status === "video_ok" ? "作り直しの指示（例: 動きを小さく）" : "追加の指示（任意）"}
+                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px]"
+              />
+              <Button
+                variant="ghost"
+                disabled={busy || working(s.shot_id)}
+                onClick={() => act("startI2v", { shotId: s.shot_id, feedback: feedback[s.shot_id] ?? "" }, `${s.shot_id} を Kling に依頼しました`)}
+              >
+                {working(s.shot_id) ? "生成中…" : s.status === "video_ok" ? "Kling で作り直す" : "Kling で動画化"}
+              </Button>
+            </div>
             {s.status !== "video_ok" && (
               <div className="flex flex-wrap gap-1">
                 <a href={media(s.assets.final_image)} download className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 no-underline hover:bg-white/[0.06]">
