@@ -20,6 +20,7 @@ import {
   setRender,
   setShotVideo,
   setThumbnails,
+  startI2v,
   updateScript,
   updateShotByHuman,
 } from "@avatar-cmd/integrations/server";
@@ -79,6 +80,9 @@ export const POST = route(async (req: Request, { params }: Params) => {
       break;
     case "setShotVideo":
       episode = await setShotVideo(id, s(b.shotId), { media: b.media, switchToPseudo: b.switchToPseudo === true });
+      break;
+    case "startI2v":
+      episode = await startI2v(id, { shotId: s(b.shotId) || undefined, feedback: s(b.feedback) });
       break;
     case "setRender":
       episode = await setRender(id, s(b.target), b.media ?? null);

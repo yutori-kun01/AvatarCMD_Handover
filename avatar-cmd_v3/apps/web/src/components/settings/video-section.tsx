@@ -15,6 +15,18 @@ interface VideoSettings {
   };
   fish: { apiKey: string; fromEnv: boolean; model: string; defaultModel: string };
   measure: { url: string; fromEnv: boolean; token: string };
+  kling: {
+    baseUrl: string;
+    model: string;
+    mode: "std" | "pro";
+    duration: 5 | 10;
+    auto: boolean;
+    negativePrompt: string;
+    accessKey: string;
+    secretKeySet: boolean;
+    fromEnv: boolean;
+    defaults: { baseUrl: string; model: string };
+  };
 }
 
 const PROVIDER_OPTIONS = [
@@ -31,6 +43,7 @@ const QUALITY_OPTIONS = [
 export function VideoSettingsSection({ onChanged }: { onChanged: OnChanged }) {
   const [s, setS] = useState<VideoSettings | null>(null);
   const [keys, setKeys] = useState({ fishApiKey: "", measureToken: "" });
+  const [klingKeys, setKlingKeys] = useState({ accessKey: "", secretKey: "" });
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -56,10 +69,18 @@ export function VideoSettingsSection({ onChanged }: { onChanged: OnChanged }) {
     try {
       const d = await api<{ settings: VideoSettings }>("/api/video/settings", {
         method: "PUT",
-        json: { limits: s.limits, images: s.images, fishModel: s.fish.model, measureUrl: s.measure.url, ...keys },
+        json: {
+          limits: s.limits,
+          images: s.images,
+          fishModel: s.fish.model,
+          measureUrl: s.measure.url,
+          ...keys,
+          kling: { baseUrl: s.kling.baseUrl, model: s.kling.model, mode: s.kling.mode, duration: s.kling.duration, auto: s.kling.auto, negativePrompt: s.kling.negativePrompt, ...klingKeys },
+        },
       });
       setS(d.settings);
       setKeys({ fishApiKey: "", measureToken: "" });
+      setKlingKeys({ accessKey: "", secretKey: "" });
       onChanged("動画の設定を保存しました", true);
     } catch (e) {
       onChanged((e as Error).message, false);
@@ -140,6 +161,45 @@ export function VideoSettingsSection({ onChanged }: { onChanged: OnChanged }) {
             onChange={(x) => setKeys({ ...keys, measureToken: x })}
           />
         </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <h3 className="text-sm font-semibold">動画化（Kling の image-to-video）</h3>
+        <p className="text-xs text-white/50">
+          承認済みの本番画像を開始フレームにして、i2v のカットを Kling で数秒の動画にします（音声なし）。キーを入れると、動画化の工程の画面に「Kling で動画化」が出ます。
+          Kling の開発者コンソール（API）で Access Key / Secret Key を発行し、リソースパック（残高）を用意してください。接続先・モデル名は Kling の変更に合わせてここで変えられます。
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field
+            def={{ key: "kak", label: "Access Key", type: "password", help: s.kling.accessKey ? `保存済み: ${s.kling.accessKey}（削除は「-」）` : s.kling.fromEnv ? ".env の KLING_ACCESS_KEY を使用中" : undefined }}
+            value={klingKeys.accessKey}
+            configured={!!s.kling.accessKey}
+            onChange={(x) => setKlingKeys({ ...klingKeys, accessKey: x })}
+          />
+          <Field
+            def={{ key: "ksk", label: "Secret Key", type: "password", help: s.kling.secretKeySet ? "保存済み（削除は「-」）" : undefined }}
+            value={klingKeys.secretKey}
+            configured={s.kling.secretKeySet}
+            onChange={(x) => setKlingKeys({ ...klingKeys, secretKey: x })}
+          />
+          <Field def={{ key: "kbu", label: "接続先", type: "url", placeholder: s.kling.defaults.baseUrl }} value={s.kling.baseUrl} onChange={(x) => setS({ ...s, kling: { ...s.kling, baseUrl: x } })} />
+          <Field def={{ key: "km", label: "モデル", placeholder: s.kling.defaults.model, help: "例: kling-v3 / kling-v2-1（Kling の API ドキュメントのモデル名）" }} value={s.kling.model} onChange={(x) => setS({ ...s, kling: { ...s.kling, model: x } })} />
+          <Field
+            def={{ key: "kmode", label: "品質", type: "select", options: [{ value: "pro", label: "pro（高品質）" }, { value: "std", label: "std（標準・安い）" }] }}
+            value={s.kling.mode}
+            onChange={(x) => setS({ ...s, kling: { ...s.kling, mode: x === "std" ? "std" : "pro" } })}
+          />
+          <Field
+            def={{ key: "kdur", label: "長さ", type: "select", options: [{ value: "5", label: "5 秒" }, { value: "10", label: "10 秒" }] }}
+            value={String(s.kling.duration)}
+            onChange={(x) => setS({ ...s, kling: { ...s.kling, duration: x === "10" ? 10 : 5 } })}
+          />
+        </div>
+        <Field def={{ key: "kneg", label: "出してほしくないもの（negative prompt）" }} value={s.kling.negativePrompt} onChange={(x) => setS({ ...s, kling: { ...s.kling, negativePrompt: x } })} />
+        <label className="flex items-center gap-2 text-xs text-white/60">
+          <input type="checkbox" checked={s.kling.auto} onChange={(e) => setS({ ...s, kling: { ...s.kling, auto: e.target.checked } })} />
+          本番画像がそろったら、i2v のカットを自動で Kling に回す（オフのときは画面のボタンで始めます）
+        </label>
       </Card>
 
       <Button onClick={save} disabled={busy}>

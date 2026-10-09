@@ -28,7 +28,7 @@ import {
   type EpisodeReport,
   type EpisodeRow,
 } from "./video-episode";
-import { enqueueVideoJob, enterVideoStage, INSIGHT_MARKER, maybeFinishImageStage, type NarrationData, type TopicCandidate } from "./video-jobs";
+import { enqueueI2v, enqueueVideoJob, enterVideoStage, INSIGHT_MARKER, maybeFinishImageStage, maybeFinishVideoStage, type NarrationData, type TopicCandidate } from "./video-jobs";
 import { isVideoProfile, normalizeTargets, VIDEO_PROFILES, VIDEO_TARGETS, type VideoProfileId, type VideoTargetId } from "./video-profiles";
 import { assignPseudoMotions, buildCues, chapterTimestamps, formatRotationIssue, needsDisclosure, normalizeShotlist, patchShot, proposePseudoFallback, validateShotlist, type Shot, type Shotlist } from "./video-shotlist";
 
@@ -386,11 +386,16 @@ export async function setShotVideo(id: string, shotId: string, input: { media?: 
     input.switchToPseudo ? "人が pseudo に切り替え" : "動画化したカットを登録",
     by
   );
-  if (sl.shots.every((s) => s.status === "video_ok" || s.status === "rendered")) {
-    await mutateShotlist(id, (latest) => ({ ...latest, shots: assignPseudoMotions(latest.shots) }), "video", "擬似アニメの動きを割り当て");
-    const moved = await prisma.videoEpisode.updateMany({ where: { id, stage: "video" }, data: { stage: "render" } });
-    if (moved.count) await enqueueVideoJob(id, "thumbnails", null, { round: 0 });
-  }
+  if (sl.shots.every((s) => s.status === "video_ok" || s.status === "rendered")) await maybeFinishVideoStage(id);
+  return getEpisodeView(id);
+}
+
+/** Kling で動画化する（shotId を省略すると、まだ動画が無い i2v のカットすべて）。feedback は作り直しの指示 */
+export async function startI2v(id: string, input: { shotId?: string; feedback?: string } = {}) {
+  const ep = await loadEpisode(id);
+  assertStage(ep, "video");
+  const n = await enqueueI2v(id, input.shotId || null, input.feedback?.trim().slice(0, 500) ?? "");
+  if (!n) throw new ConfigError("動画化するカットがありません（すべて動画があるか、生成中です）");
   return getEpisodeView(id);
 }
 
