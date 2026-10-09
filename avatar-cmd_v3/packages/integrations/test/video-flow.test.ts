@@ -78,13 +78,22 @@ function routes() {
   ]);
 }
 
+/**
+ * ジョブが終わり、エピソードの更新が止まるまで待つ。
+ * 最後のジョブは自分を done にしてから次の工程へ進める（maybeFinishImageStage）ので、
+ * 「実行中のジョブが 0 件」になった直後はまだ工程が進んでいないことがある。
+ */
 async function waitJobs(episodeId: string, timeoutMs = 20_000) {
   const until = Date.now() + timeoutMs;
+  let last = "";
   for (;;) {
     const n = await prisma.videoJob.count({ where: { episodeId, status: { in: ["queued", "running"] } } });
-    if (!n) return;
+    const ep = await prisma.videoEpisode.findUnique({ where: { id: episodeId }, select: { updatedAt: true, stage: true } });
+    const now = `${ep?.updatedAt.toISOString()}:${ep?.stage}`;
+    if (!n && now === last) return;
+    last = n ? "" : now;
     if (Date.now() > until) throw new Error("ジョブが終わりませんでした");
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
   }
 }
 
