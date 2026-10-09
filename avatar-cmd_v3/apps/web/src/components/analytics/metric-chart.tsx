@@ -282,7 +282,7 @@ export function MetricChart({ avatarId, accountId, height = 240, syncUrl = false
           </div>
         ) : (
           <>
-            <ComboChart key={metric} data={chart.data} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={chart.series} formatLeft={chart.format} height={height} modes={false} leftDomain={chart.leftDomain} />
+            <ComboChart key={metric} data={chart.data} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={chart.series} formatLeft={chart.format} height={height} leftDomain={chart.leftDomain} />
             {metric === "followers" && (
               // フォロワー数（総数）は単位の規模が違うので別のグラフにする（1 つのグラフに軸は 1 本）
               <div className="mt-3 border-t border-white/[0.06] pt-3">
@@ -294,7 +294,7 @@ export function MetricChart({ avatarId, accountId, height = 240, syncUrl = false
                   series={[{ key: "followers", label: "フォロワー数", color: C.green, kind: "line" }]}
                   formatLeft={(v) => `${num(v)}人`}
                   height={110}
-                  modes={false}
+                 
                   leftDomain={["auto", "auto"]}
                 />
               </div>

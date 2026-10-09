@@ -1,7 +1,7 @@
 "use client";
 // アカウント分析（バイタルチェック）: アカウントごとの投稿・エラー・収益・フォロワーを月単位で表示する
 // 収益分析ページ（全アカウント）とアバター管理ページ（そのアバターのアカウント）で共通
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
 import { Bar, BarChart, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from "recharts";
 import { CHART_COLORS as C, ComboChart, MetricCard, movingAverage, withCumulative } from "./combo-chart";
@@ -42,6 +42,7 @@ export interface AccountVital {
 }
 interface Vitals {
   month: string;
+  trendMonths: number;
   prevMonth: string;
   nextMonth: string | null;
   currentMonth: boolean;
@@ -91,7 +92,7 @@ const REVENUE_SERIES = [
   { key: "prevRevenue", label: "前月の日別", color: C.violet, kind: "bar" as const, compare: true, hidden: true },
 ];
 
-/** 6か月: 収益（棒）+ 投稿数（折れ線）+ 3か月平均（点線） */
+/** 月別: 収益（棒）+ 投稿数（折れ線）+ 3か月平均（点線） */
 function trendSeries(rows: { month: string; total: number; posts: number }[]) {
   const avg = movingAverage(rows.map((r) => r.total), 3);
   return rows.map((r, i) => ({ ...r, label: shortMonth(r.month), avg: avg[i] }));
@@ -122,6 +123,66 @@ const POST_SERIES = [
   { key: "failed", label: "失敗", color: C.red, kind: "bar" as const },
   { key: "avg", label: "7日平均", color: C.amber, kind: "line" as const, compare: true },
 ];
+
+type LevelFilter = "all" | "attention" | "good" | "inactive";
+type SortKey = "default" | "revenue" | "posts" | "failed" | "followers";
+const LEVEL_FILTERS: { id: LevelFilter; label: string }[] = [
+  { id: "all", label: "すべて" },
+  { id: "attention", label: "要確認" },
+  { id: "good", label: "良好" },
+  { id: "inactive", label: "停止中" },
+];
+const SORTS: { id: SortKey; label: string }[] = [
+  { id: "default", label: "標準" },
+  { id: "revenue", label: "収益が多い順" },
+  { id: "posts", label: "投稿が多い順" },
+  { id: "failed", label: "エラーが多い順" },
+  { id: "followers", label: "フォロワーが多い順" },
+];
+const TREND_RANGES = [3, 6, 12] as const;
+
+/** 小さな切り替え（期間・状態など） */
+function Segmented<T extends string | number>({ value, options, onChange }: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <div className="flex rounded-lg border border-white/[0.08] p-0.5">
+      {options.map((o) => (
+        <button key={o.id} onClick={() => onChange(o.id)} className={`rounded-md px-2 py-0.5 text-[11px] ${value === o.id ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"}`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** null だけの日は null のまま、値がある日は合計する */
+const sumNullable = (xs: (number | null)[]) => (xs.every((x) => x === null) ? null : xs.reduce<number>((s, x) => s + (x ?? 0), 0));
+
+/** 絞り込んだアカウントだけで合計し直す（アカウント未指定の収益は含めない） */
+function totalsOf(rows: AccountVital[], base: Vitals["totals"]): Vitals["totals"] {
+  return {
+    accounts: rows.length,
+    posts: rows.reduce((s, r) => s + r.posts, 0),
+    failed: rows.reduce((s, r) => s + r.failed, 0),
+    revenue: rows.reduce((s, r) => s + r.revenue, 0),
+    prevRevenue: rows.reduce((s, r) => s + r.prevRevenue, 0),
+    unassignedRevenue: 0,
+    followers: rows.reduce((s, r) => s + (r.followers ?? 0), 0),
+    followersDelta: rows.reduce((s, r) => s + (r.followersDelta ?? 0), 0),
+    attention: rows.filter((r) => r.vital.level === "error" || r.vital.level === "warning").length,
+    daily: base.daily.map((d, i) => ({
+      date: d.date,
+      revenue: sumNullable(rows.map((r) => r.daily[i]?.revenue ?? null)),
+      prevRevenue: sumNullable(rows.map((r) => r.daily[i]?.prevRevenue ?? null)),
+      posts: sumNullable(rows.map((r) => r.daily[i]?.posts ?? null)),
+      failed: sumNullable(rows.map((r) => r.daily[i]?.failed ?? null)),
+    })),
+    revenueTrend: base.revenueTrend.map((m, i) => ({
+      month: m.month,
+      total: rows.reduce((s, r) => s + (r.revenueTrend[i]?.total ?? 0), 0),
+      posts: rows.reduce((s, r) => s + (r.revenueTrend[i]?.posts ?? 0), 0),
+    })),
+  };
+}
 
 /** 前月・翌月に移動するページャー */
 export function MonthPager({ month, prev, next, onChange }: { month: string; prev: string; next: string | null; onChange: (m: string | null) => void }) {
@@ -235,7 +296,7 @@ function AccountDetail({ a, onChanged }: { a: AccountVital; onChanged: () => voi
         <MetricCard title="収益（日別・累計・前月比較）" value={yen(a.revenue)} delta={pct(a.revenue, a.prevRevenue)} sub={`前月 ${yen(a.prevRevenue)}`}>
           <ComboChart data={revenueSeries(a.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={REVENUE_SERIES} formatLeft={yen} formatRight={yen} height={200} />
         </MetricCard>
-        <MetricCard title="6か月の推移（収益と投稿数）" value={yen(a.revenueTrend.reduce((s, t) => s + t.total, 0))} sub="6か月合計">
+        <MetricCard title={`${a.revenueTrend.length}か月の推移（収益と投稿数）`} value={yen(a.revenueTrend.reduce((s, t) => s + t.total, 0))} sub={`${a.revenueTrend.length}か月合計`}>
           <ComboChart data={trendSeries(a.revenueTrend)} xKey="label" series={TREND_SERIES} formatLeft={yen} formatRight={count} height={200} />
         </MetricCard>
         <MetricCard title="投稿とエラー（日別）" value={`${a.posts}件`} sub={a.failed ? `失敗 ${a.failed}件` : "失敗なし"}>
@@ -324,6 +385,11 @@ function AccountDetail({ a, onChanged }: { a: AccountVital; onChanged: () => voi
  */
 export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: { avatarId?: string; showOverview?: boolean; reloadKey?: number }) {
   const [month, setMonth] = useState<string | null>(null);
+  const [trend, setTrend] = useState<number>(6);
+  const [platform, setPlatform] = useState("");
+  const [avatar, setAvatar] = useState("");
+  const [level, setLevel] = useState<LevelFilter>("all");
+  const [sort, setSort] = useState<SortKey>("default");
   const [data, setData] = useState<Vitals | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -335,6 +401,7 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
       const q = new URLSearchParams();
       if (month) q.set("month", month);
       if (avatarId) q.set("avatarId", avatarId);
+      q.set("trend", String(trend));
       setData(await api<Vitals>(`/api/analytics/accounts?${q}`));
       setErr(null);
     } catch (e) {
@@ -342,21 +409,97 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
     } finally {
       setLoading(false);
     }
-  }, [month, avatarId]);
+  }, [month, avatarId, trend]);
   useEffect(() => {
     load();
   }, [load, reloadKey]);
 
+  const filtered = !!(platform || avatar || level !== "all");
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const list = data.accounts.filter(
+      (a) =>
+        (!platform || a.platform === platform) &&
+        (!avatar || a.avatarId === avatar) &&
+        (level === "all" || (level === "attention" ? a.vital.level === "error" || a.vital.level === "warning" : a.vital.level === level)),
+    );
+    const by: Record<SortKey, ((a: AccountVital) => number) | null> = {
+      default: null,
+      revenue: (a) => a.revenue,
+      posts: (a) => a.posts,
+      failed: (a) => a.failed,
+      followers: (a) => a.followers ?? -1,
+    };
+    const f = by[sort];
+    return f ? [...list].sort((x, y) => f(y) - f(x)) : list;
+  }, [data, platform, avatar, level, sort]);
+
   if (err) return <p className="text-xs text-red-300">{err}</p>;
   if (!data) return <p className="text-xs text-white/40">読み込み中…</p>;
-  const t = data.totals;
+  const t = filtered ? totalsOf(rows, data.totals) : data.totals;
+  const platforms = [...new Map(data.accounts.map((a) => [a.platform, a.platformName])).entries()];
+  const avatars = [...new Map(data.accounts.map((a) => [a.avatarId, a.avatarName])).entries()];
+  const selectCls = `${inputCls} !w-auto !py-1 !text-xs`;
 
   return (
     <div className={`space-y-4 ${loading ? "opacity-70" : ""}`}>
       <div className="flex flex-wrap items-center gap-3">
         <MonthPager month={data.month} prev={data.prevMonth} next={data.nextMonth} onChange={setMonth} />
+        <div className="flex items-center gap-1.5 text-[11px] text-white/45">
+          推移
+          <Segmented value={trend} options={TREND_RANGES.map((n) => ({ id: n as number, label: `${n}か月` }))} onChange={setTrend} />
+        </div>
         <span className="flex-1" />
-        {t.attention > 0 && <Badge className="bg-amber-500/15 text-amber-300">要確認 {t.attention} アカウント</Badge>}
+        {t.attention > 0 && (
+          <button onClick={() => setLevel("attention")}>
+            <Badge className="bg-amber-500/15 text-amber-300">要確認 {t.attention} アカウント</Badge>
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+        <span className="text-[11px] text-white/45">絞り込み</span>
+        {platforms.length > 1 && (
+          <select value={platform} onChange={(e) => setPlatform(e.target.value)} className={selectCls}>
+            <option value="">すべての媒体</option>
+            {platforms.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        )}
+        {!avatarId && avatars.length > 1 && (
+          <select value={avatar} onChange={(e) => setAvatar(e.target.value)} className={selectCls}>
+            <option value="">すべてのアバター</option>
+            {avatars.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        )}
+        <Segmented value={level} options={LEVEL_FILTERS} onChange={setLevel} />
+        <span className="flex-1" />
+        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className={selectCls} aria-label="並び順">
+          {SORTS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {filtered && (
+          <button
+            onClick={() => {
+              setPlatform("");
+              setAvatar("");
+              setLevel("all");
+            }}
+            className="text-[11px] text-cyan-300 hover:underline"
+          >
+            解除
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
@@ -364,7 +507,11 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
         <Tile label="投稿" value={`${t.posts}件`} tone="text-cyan-300" sub={`${t.accounts} アカウント`} />
         <Tile label="投稿エラー" value={`${t.failed}件`} tone={t.failed ? "text-red-300" : "text-white"} sub={t.posts + t.failed ? `成功率 ${Math.round((t.posts / (t.posts + t.failed)) * 100)}%` : "—"} />
         <Tile label="フォロワー合計" value={num(t.followers)} tone="text-emerald-300" sub={t.followersDelta ? `この月 ${signed(t.followersDelta)}` : "増減の記録なし"} />
-        <Tile label="アカウント未指定の収益" value={yen(t.unassignedRevenue)} sub="記録時にアカウントを選ぶと振り分けられます" />
+        {filtered ? (
+          <Tile label="表示中のアカウント" value={`${rows.length} / ${data.accounts.length}`} sub="絞り込み中（アカウント未指定の収益は含みません）" />
+        ) : (
+          <Tile label="アカウント未指定の収益" value={yen(t.unassignedRevenue)} sub="記録時にアカウントを選ぶと振り分けられます" />
+        )}
       </div>
 
       {showOverview && (
@@ -372,8 +519,8 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
           <MetricCard className="lg:col-span-2" title={`収益（${monthLabel(data.month)}）`} value={yen(t.revenue)} delta={pct(t.revenue, t.prevRevenue)} sub={`前月 ${yen(t.prevRevenue)}`}>
             <ComboChart data={revenueSeries(t.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={REVENUE_SERIES} formatLeft={yen} formatRight={yen} height={240} />
           </MetricCard>
-          <MetricCard title="6か月の推移" value={yen(t.revenueTrend.reduce((s, m) => s + m.total, 0))} sub="6か月合計">
-            <ComboChart data={trendSeries(t.revenueTrend)} xKey="label" series={TREND_SERIES} formatLeft={yen} formatRight={count} height={240} modes={false} />
+          <MetricCard title={`${t.revenueTrend.length}か月の推移`} value={yen(t.revenueTrend.reduce((s, m) => s + m.total, 0))} sub={`${t.revenueTrend.length}か月合計`}>
+            <ComboChart data={trendSeries(t.revenueTrend)} xKey="label" series={TREND_SERIES} formatLeft={yen} formatRight={count} height={240} />
           </MetricCard>
           <MetricCard className="lg:col-span-3" title="投稿とエラー（日別・全アカウント）" value={`${t.posts}件`} sub={t.failed ? `失敗 ${t.failed}件` : "失敗なし"}>
             <ComboChart data={postSeries(t.daily)} xKey="date" xFormat={dayLabel} labelFormat={dayLabel} series={POST_SERIES} formatLeft={count} height={170} />
@@ -383,9 +530,11 @@ export function AccountVitals({ avatarId, showOverview = true, reloadKey = 0 }: 
 
       {data.accounts.length === 0 ? (
         <EmptyState>接続されたアカウントがありません</EmptyState>
+      ) : rows.length === 0 ? (
+        <EmptyState>条件に合うアカウントがありません</EmptyState>
       ) : (
         <div className="space-y-2">
-          {data.accounts.map((a) => {
+          {rows.map((a) => {
             const isOpen = open === a.id;
             return (
               <Card key={a.id} className={`!p-4 ${a.isActive ? "" : "opacity-60"}`}>
