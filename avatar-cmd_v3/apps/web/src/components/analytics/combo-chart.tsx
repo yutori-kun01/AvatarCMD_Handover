@@ -1,6 +1,6 @@
 "use client";
 // 棒・折れ線・面を組み合わせて表示するグラフ（Stripe のダッシュボード風）
-// ・表示切替: 組み合わせ（系列ごとの既定）/ 棒 / 折れ線 / 面
+// ・系列ごとに形（棒・折れ線・面）は固定。表示形式の切り替えはしない
 // ・凡例をクリックすると系列の表示・非表示を切り替え
 // ・比較用の系列（前月など）は点線、右軸に置く系列は right を指定
 import { useId, useMemo, useState } from "react";
@@ -37,7 +37,7 @@ export interface Series {
   kind: SeriesKind;
   /** 右軸（件数・人数など単位が違うもの） */
   right?: boolean;
-  /** 比較用（点線・表示切替の対象外） */
+  /** 比較用（点線） */
   compare?: boolean;
   /** 最初は非表示 */
   hidden?: boolean;
@@ -46,13 +46,6 @@ export interface Series {
   /** 同じ値の棒を積み上げる（増加・減少を 1 本の位置に描くなど） */
   stack?: string;
 }
-type Mode = "combo" | SeriesKind;
-const MODES: { id: Mode; label: string }[] = [
-  { id: "combo", label: "組み合わせ" },
-  { id: "bar", label: "棒" },
-  { id: "line", label: "折れ線" },
-  { id: "area", label: "面" },
-];
 
 const axis = { stroke: "rgba(255,255,255,0.3)", fontSize: 10, tickLine: false, axisLine: false } as const;
 export const compact = (v: number) => (Math.abs(v) >= 10000 ? `${Math.round(v / 1000)}k` : v.toLocaleString("ja-JP"));
@@ -93,7 +86,6 @@ export function ComboChart<T extends Record<string, unknown>>({
   formatRight = compact,
   xFormat,
   labelFormat,
-  modes = true,
   leftDomain,
 }: {
   data: T[];
@@ -104,19 +96,16 @@ export function ComboChart<T extends Record<string, unknown>>({
   formatRight?: (v: number) => string;
   xFormat?: (v: string) => string;
   labelFormat?: (l: string) => string;
-  /** 表示切替ボタンを出すか */
-  modes?: boolean;
   /** 左軸の範囲（フォロワー数など 0 から始めない場合） */
   leftDomain?: [number | string, number | string];
 }) {
   const uid = useId().replace(/:/g, "");
-  const [mode, setMode] = useState<Mode>("combo");
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(series.filter((s) => s.hidden).map((s) => s.key)));
   const visible = series.filter((s) => !hidden.has(s.key));
   const hasRight = visible.some((s) => s.right);
   const interval = Math.max(0, Math.ceil(data.length / 10) - 1);
   // 棒が複数あると細くなりすぎるので、棒の数で太さを調整
-  const bars = visible.filter((s) => (mode === "combo" || s.compare ? s.kind : mode) === "bar").length;
+  const bars = visible.filter((s) => s.kind === "bar").length;
   const barSize = useMemo(() => Math.max(3, Math.min(28, Math.floor(600 / Math.max(1, data.length) / Math.max(1, bars)))), [data.length, bars]);
 
   const toggle = (k: string) =>
@@ -141,23 +130,13 @@ export function ComboChart<T extends Record<string, unknown>>({
               <span className="w-3 border-t-2 border-dashed" style={{ borderColor: hidden.has(s.key) ? "rgba(255,255,255,0.2)" : s.color }} />
             ) : (
               <span
-                className={`h-2.5 w-2.5 ${s.kind === "bar" && mode !== "line" ? "rounded-sm" : "rounded-full"}`}
+                className={`h-2.5 w-2.5 ${s.kind === "bar" ? "rounded-sm" : "rounded-full"}`}
                 style={{ background: hidden.has(s.key) ? "rgba(255,255,255,0.2)" : s.gradient ? `linear-gradient(135deg, ${s.gradient[1]}, ${s.gradient[0]})` : s.color }}
               />
             )}
             {s.label}
           </button>
         ))}
-        <span className="flex-1" />
-        {modes && (
-          <div className="flex rounded-lg border border-white/[0.08] p-0.5">
-            {MODES.map((m) => (
-              <button key={m.id} onClick={() => setMode(m.id)} className={`rounded-md px-2 py-0.5 text-[10px] ${mode === m.id ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"}`}>
-                {m.label}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
       <div style={{ height }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -187,7 +166,7 @@ export function ComboChart<T extends Record<string, unknown>>({
               content={<ChartTooltip series={visible} formatLeft={formatLeft} formatRight={formatRight} labelFormat={labelFormat} />}
             />
             {visible.map((s) => {
-              const kind = s.compare || mode === "combo" ? s.kind : mode;
+              const kind = s.kind;
               const common = { dataKey: s.key, name: s.label, yAxisId: s.right ? "right" : "left", isAnimationActive: false };
               if (kind === "bar") return <Bar key={s.key} {...common} stackId={s.stack} fill={s.gradient ? `url(#${uid}-${s.key}-bar)` : s.color} fillOpacity={s.compare ? 0.35 : 0.9} radius={[3, 3, 0, 0]} barSize={barSize} />;
               if (kind === "area")

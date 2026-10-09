@@ -129,12 +129,46 @@ export async function overview() {
   };
 }
 
-export async function revenueReport() {
-  const rows = await prisma.revenue.findMany({
-    orderBy: { earnedAt: "desc" },
-    take: 500,
-    include: { avatar: { select: { name: true } }, snsAccount: { select: { accountName: true, platform: true } }, item: { select: { name: true } } },
-  });
+/** 収益の集計で選べる期間（月数）。0 は全期間 */
+export const REVENUE_PERIODS = [3, 6, 12, 0] as const;
+
+/**
+ * 収益の集計。months で期間（直近 n か月。0 は全期間）、avatarId / source / platform で絞り込み。
+ * 期間の合計・内訳・月別の推移・記録一覧は、すべて絞り込み後の値。
+ */
+export async function revenueReport(opts: { months?: number | null; avatarId?: string | null; source?: string | null; platform?: string | null } = {}) {
+  const n = REVENUE_PERIODS.includes(Number(opts.months) as (typeof REVENUE_PERIODS)[number]) ? Number(opts.months) : 6;
+  const monthKey = (d: Date) => dayKey(d).slice(0, 7);
+  const thisMonth = monthKey(new Date());
+  const shift = (m: string, delta: number) => {
+    const [y, mo] = m.split("-").map(Number);
+    return new Date(Date.UTC(y, mo - 1 + delta, 1)).toISOString().slice(0, 7);
+  };
+  const filter = {
+    ...(opts.avatarId ? { avatarId: opts.avatarId } : {}),
+    ...(opts.source ? { source: opts.source } : {}),
+    ...(opts.platform ? { platform: opts.platform } : {}),
+  };
+  // 全期間のときは、最初の記録の月から今月まで（最大 36 か月）
+  let first = n ? shift(thisMonth, -(n - 1)) : thisMonth;
+  if (!n) {
+    const oldest = await prisma.revenue.findFirst({ where: filter, orderBy: { earnedAt: "asc" }, select: { earnedAt: true } });
+    if (oldest) first = monthKey(oldest.earnedAt) < shift(thisMonth, -35) ? shift(thisMonth, -35) : monthKey(oldest.earnedAt);
+  }
+  const months: string[] = [];
+  for (let m = first; m <= thisMonth; m = shift(m, 1)) months.push(m);
+  const since = new Date(`${first}-01T00:00:00+09:00`);
+
+  const [rows, options] = await Promise.all([
+    prisma.revenue.findMany({
+      where: { ...filter, ...(n ? { earnedAt: { gte: since } } : {}) },
+      orderBy: { earnedAt: "desc" },
+      take: 5000,
+      include: { avatar: { select: { name: true } }, snsAccount: { select: { accountName: true, platform: true } }, item: { select: { name: true } } },
+    }),
+    // 絞り込みの選択肢（記録のある収益源・プラットフォーム）
+    prisma.revenue.groupBy({ by: ["source", "platform"], _count: { _all: true } }),
+  ]);
   const valid = rows.filter((r) => r.status !== "refunded");
   const sum = (xs: typeof rows) => xs.reduce((s, r) => s + r.amount, 0);
   const group = <K extends string>(key: (r: (typeof rows)[number]) => K) => {
@@ -142,21 +176,21 @@ export async function revenueReport() {
     for (const r of valid) m.set(key(r), (m.get(key(r)) ?? 0) + r.amount);
     return [...m.entries()].map(([k, total]) => ({ key: k, total })).sort((a, b) => b.total - a.total);
   };
-  const monthKey = (d: Date) => dayKey(d).slice(0, 7);
-  const months: string[] = [];
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date();
-    d.setUTCDate(1);
-    d.setUTCMonth(d.getUTCMonth() - i);
-    months.push(monthKey(d));
-  }
   const byMonth = new Map(group((r) => monthKey(r.earnedAt)).map((x) => [x.key, x.total]));
+  const monthly = months.map((m) => ({ month: m, total: byMonth.get(m) ?? 0 }));
   return {
+    months: n,
     total: sum(valid),
+    thisMonth: byMonth.get(thisMonth) ?? 0,
+    lastMonth: byMonth.get(shift(thisMonth, -1)) ?? 0,
     byAvatar: group((r) => r.avatar.name),
     bySource: group((r) => r.source),
     byPlatform: group((r) => r.platform),
-    monthly: months.map((m) => ({ month: m, total: byMonth.get(m) ?? 0 })),
+    monthly,
+    options: {
+      sources: [...new Set(options.map((o) => o.source))].sort(),
+      platforms: [...new Set(options.map((o) => o.platform))].sort(),
+    },
     entries: rows.slice(0, 100).map((r) => ({
       id: r.id,
       avatarName: r.avatar.name,

@@ -7,7 +7,10 @@ import { route } from "@/lib/api";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export const GET = route(async () => NextResponse.json(await revenueReport()));
+export const GET = route(async (req: Request) => {
+  const q = new URL(req.url).searchParams;
+  return NextResponse.json(await revenueReport({ months: q.has("months") ? Number(q.get("months")) : null, avatarId: q.get("avatarId"), source: q.get("source"), platform: q.get("platform") }));
+});
 
 export const POST = route(async (req: Request) => {
   const r = await recordRevenue((await req.json()) as RevenueInput);

@@ -8,5 +8,5 @@ export const dynamic = "force-dynamic";
 
 export const GET = route(async (req: Request) => {
   const q = new URL(req.url).searchParams;
-  return NextResponse.json(await accountVitals({ month: q.get("month"), avatarId: q.get("avatarId") }));
+  return NextResponse.json(await accountVitals({ month: q.get("month"), avatarId: q.get("avatarId"), trendMonths: q.has("trend") ? Number(q.get("trend")) : null }));
 });

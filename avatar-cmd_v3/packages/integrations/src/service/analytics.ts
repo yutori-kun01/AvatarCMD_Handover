@@ -413,12 +413,14 @@ export function followersDelta(snaps: { date: string; followers: number | null }
  * アカウントごとの月次の数値（投稿・エラー・収益・フォロワー・反応）と日別の推移。
  * avatarId を指定するとそのアバターのアカウントだけ。
  */
-export async function accountVitals(opts: { month?: string | null; avatarId?: string | null; now?: Date } = {}) {
+export async function accountVitals(opts: { month?: string | null; avatarId?: string | null; trendMonths?: number | null; now?: Date } = {}) {
   const now = opts.now ?? new Date();
   const month = normalizeMonth(opts.month, now);
+  // 月別の推移に出す月数（3 / 6 / 12。既定 6）
+  const trendLen = [3, 6, 12].includes(Number(opts.trendMonths)) ? Number(opts.trendMonths) : 6;
   const { start, end } = monthRange(month);
   const prev = monthRange(shiftMonth(month, -1));
-  const trendStart = monthRange(shiftMonth(month, -5)).start;
+  const trendStart = monthRange(shiftMonth(month, -(trendLen - 1))).start;
   const days = monthDays(month);
   const currentMonth = month === jstDay(now).slice(0, 7);
   const dayOfMonth = Number(jstDay(now).slice(8, 10));
@@ -427,7 +429,7 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
   const [accounts, published, failed, pending, drafts, revenues, snaps] = await Promise.all([
     prisma.snsAccount.findMany({ where: avatarFilter, orderBy: [{ avatarId: "asc" }, { createdAt: "asc" }], include: { avatar: { select: { name: true } } } }),
     prisma.content.findMany({
-      // 6か月の推移（投稿数）にも使うので trendStart から取る
+      // 月別の推移（投稿数）にも使うので trendStart から取る
       where: { ...avatarFilter, status: "PUBLISHED", publishedAt: { gte: trendStart, lt: end }, snsAccountId: { not: null } },
       select: { snsAccountId: true, publishedAt: true, engagement: true },
     }),
@@ -448,7 +450,7 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
     }),
   ]);
 
-  const trendMonths = Array.from({ length: 6 }, (_, i) => shiftMonth(month, i - 5));
+  const trendMonths = Array.from({ length: trendLen }, (_, i) => shiftMonth(month, i - (trendLen - 1)));
   const today = jstDay(now);
   // 前月の同じ日（前月の方が短い月は null）。今月の未来の日は null（累計線を今日で止める）
   const prevDays = monthDays(shiftMonth(month, -1));
@@ -568,6 +570,7 @@ export async function accountVitals(opts: { month?: string | null; avatarId?: st
     prevMonth: shiftMonth(month, -1),
     nextMonth: currentMonth ? null : shiftMonth(month, 1),
     currentMonth,
+    trendMonths: trendLen,
     days,
     totals: {
       accounts: rows.length,

@@ -8,7 +8,11 @@ import { AccountVitals } from "@/components/analytics/account-vitals";
 import { CHART_COLORS as C, ComboChart, MetricCard, movingAverage, withCumulative } from "@/components/analytics/combo-chart";
 
 interface Report {
+  months: number;
   total: number;
+  thisMonth: number;
+  lastMonth: number;
+  options: { sources: string[]; platforms: string[] };
   byAvatar: { key: string; total: number }[];
   bySource: { key: string; total: number }[];
   byPlatform: { key: string; total: number }[];
@@ -65,6 +69,20 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "全体・記録一覧" },
 ];
 
+interface ReportFilter {
+  months: number;
+  avatarId: string;
+  source: string;
+  platform: string;
+}
+const PERIODS = [
+  { id: 3, label: "3か月" },
+  { id: 6, label: "6か月" },
+  { id: 12, label: "12か月" },
+  { id: 0, label: "全期間" },
+];
+const NO_FILTER: ReportFilter = { months: 6, avatarId: "", source: "", platform: "" };
+
 const today = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 const toIso = (day: string) => new Date(`${day}T12:00:00+09:00`).toISOString();
 
@@ -78,10 +96,15 @@ function RevenueInner() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [filter, setFilter] = useState<ReportFilter>(NO_FILTER);
 
   const load = useCallback(async () => {
+    const q = new URLSearchParams({ months: String(filter.months) });
+    if (filter.avatarId) q.set("avatarId", filter.avatarId);
+    if (filter.source) q.set("source", filter.source);
+    if (filter.platform) q.set("platform", filter.platform);
     const [rep, it, integ] = await Promise.all([
-      api<Report>("/api/revenue"),
+      api<Report>(`/api/revenue?${q}`),
       api<{ items: Item[] }>("/api/revenue/items"),
       api<{ avatars: { id: string; name: string }[]; accounts: AccountInfo[] }>("/api/integrations"),
     ]);
@@ -89,7 +112,7 @@ function RevenueInner() {
     setItems(it.items);
     setAvatars(integ.avatars);
     setAccounts(integ.accounts);
-  }, []);
+  }, [filter]);
   useEffect(() => {
     load().catch((e) => setNotice({ kind: "error", msg: e.message }));
   }, [load]);
@@ -122,7 +145,7 @@ function RevenueInner() {
 
       {tab === "accounts" && <AccountVitals reloadKey={reloadKey} />}
       {tab === "record" && <RecordTab items={items} avatars={avatars} accounts={accounts} recent={r?.entries ?? []} onDone={done} onError={fail} />}
-      {tab === "overview" && r && <Overview r={r} onRemove={(id) => api(`/api/revenue/${id}`, { method: "DELETE" }).then(() => done("削除しました"), fail)} />}
+      {tab === "overview" && r && <Overview r={r} avatars={avatars} filter={filter} onFilter={setFilter} onRemove={(id) => api(`/api/revenue/${id}`, { method: "DELETE" }).then(() => done("削除しました"), fail)} />}
     </Shell>
   );
 }
@@ -508,7 +531,23 @@ function Entries({ entries, onRemove }: { entries: Report["entries"]; onRemove?:
   );
 }
 
-function Overview({ r, onRemove }: { r: Report; onRemove: (id: string) => void }) {
+function Overview({
+  r,
+  avatars,
+  filter,
+  onFilter,
+  onRemove,
+}: {
+  r: Report;
+  avatars: { id: string; name: string }[];
+  filter: ReportFilter;
+  onFilter: (f: ReportFilter) => void;
+  onRemove: (id: string) => void;
+}) {
+  const set = (patch: Partial<ReportFilter>) => onFilter({ ...filter, ...patch });
+  const filtered = !!(filter.avatarId || filter.source || filter.platform);
+  const selectCls = `${inputCls} !w-auto !py-1 !text-xs`;
+  const periodLabel = filter.months ? `${filter.months}か月` : "全期間";
   const List = ({ title, rows, label = (k: string) => k }: { title: string; rows: { key: string; total: number }[]; label?: (k: string) => string }) => (
     <Card>
       <h3 className="mb-3 text-sm font-semibold">{title}</h3>
@@ -533,12 +572,54 @@ function Overview({ r, onRemove }: { r: Report; onRemove: (id: string) => void }
   );
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-        <Stat label="累計（記録分）" value={yen(r.total)} tone="text-violet-300" />
-        <Stat label="今月" value={yen(r.monthly[r.monthly.length - 1]?.total ?? 0)} tone="text-cyan-300" />
-        <Stat label="先月" value={yen(r.monthly[r.monthly.length - 2]?.total ?? 0)} />
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+        <span className="text-[11px] text-white/45">期間</span>
+        <div className="flex rounded-lg border border-white/[0.08] p-0.5">
+          {PERIODS.map((p) => (
+            <button key={p.id} onClick={() => set({ months: p.id })} className={`rounded-md px-2 py-0.5 text-[11px] ${filter.months === p.id ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <span className="ml-2 text-[11px] text-white/45">絞り込み</span>
+        {avatars.length > 1 && (
+          <select value={filter.avatarId} onChange={(e) => set({ avatarId: e.target.value })} className={selectCls}>
+            <option value="">すべてのアバター</option>
+            {avatars.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <select value={filter.source} onChange={(e) => set({ source: e.target.value })} className={selectCls}>
+          <option value="">すべての収益源</option>
+          {r.options.sources.map((x) => (
+            <option key={x} value={x}>
+              {sourceLabel(x)}
+            </option>
+          ))}
+        </select>
+        <select value={filter.platform} onChange={(e) => set({ platform: e.target.value })} className={selectCls}>
+          <option value="">すべてのプラットフォーム</option>
+          {r.options.platforms.map((x) => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
+        </select>
+        {filtered && (
+          <button onClick={() => onFilter({ ...NO_FILTER, months: filter.months })} className="text-[11px] text-cyan-300 hover:underline">
+            解除
+          </button>
+        )}
       </div>
-      <MetricCard title="月別（6か月）" value={yen(r.monthly.reduce((s, m) => s + m.total, 0))} sub="6か月合計">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <Stat label={`${periodLabel}の合計${filtered ? "（絞り込み）" : ""}`} value={yen(r.total)} tone="text-violet-300" />
+        <Stat label="今月" value={yen(r.thisMonth)} tone="text-cyan-300" />
+        <Stat label="先月" value={yen(r.lastMonth)} />
+      </div>
+      <MetricCard title={`月別（${periodLabel}）`} value={yen(r.monthly.reduce((s, m) => s + m.total, 0))} sub={`${periodLabel}合計`}>
         <ComboChart
           data={(() => {
             const avg = movingAverage(r.monthly.map((m) => m.total), 3);
