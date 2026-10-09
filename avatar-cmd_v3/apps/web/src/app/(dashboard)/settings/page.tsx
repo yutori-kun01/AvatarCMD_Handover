@@ -11,6 +11,7 @@ import { AccountsSection } from "@/components/settings/accounts-section";
 import { ApiKeysSection } from "@/components/settings/api-keys-section";
 import { AiKeysSection, AiTasksSection, JevSection, SecuritySection, SystemBasicsSection, type AiInfo, type JevInfo, type SystemInfo } from "@/components/settings/system-section";
 import { ImageSection } from "@/components/settings/image-section";
+import { MediaStorageSection } from "@/components/settings/media-section";
 import { VideoAssetsSection, VideoSettingsSection } from "@/components/settings/video-section";
 import { PlatformsSection } from "@/components/sections/platforms-section";
 import { CostsSection } from "@/components/sections/costs-section";
@@ -98,6 +99,7 @@ const GROUPS: NavGroup[] = [
     icon: Settings2,
     items: [
       { key: "system", label: "基本設定" },
+      { key: "media", label: "メディアの保存先" },
       { key: "costs", label: "API コスト", wide: true },
       { key: "api", label: "外部AI API" },
       { key: "security", label: "セキュリティ" },
@@ -230,7 +232,7 @@ function SettingsInner() {
                 </Notice>
               )}
               {loadError && <Notice kind="error">設定を読み込めませんでした: {loadError}</Notice>}
-              {!data && !loadError && !["platforms", "costs", "video"].includes(tab) && <p className="text-sm text-white/40">読み込み中…</p>}
+              {!data && !loadError && !["platforms", "costs", "video", "media"].includes(tab) && <p className="text-sm text-white/40">読み込み中…</p>}
               {data && tab === "accounts" && (
                 <AccountsSection platforms={data.platforms} accounts={data.accounts} avatars={data.avatars} avatarApps={data.avatarApps} onChanged={onChanged} />
               )}
@@ -244,6 +246,7 @@ function SettingsInner() {
               {tab === "video" && <VideoSettingsSection onChanged={onChanged} />}
               {data && tab === "video-assets" && <VideoAssetsSection avatars={data.avatars} onChanged={onChanged} />}
               {tab === "costs" && <CostsSection />}
+              {tab === "media" && <MediaStorageSection onChanged={onChanged} />}
               {data && tab === "security" && <SecuritySection encryptionReady={data.encryptionReady} onChanged={onChanged} />}
               {data && tab === "api" && <ApiKeysSection avatars={data.avatars} onChanged={onChanged} />}
             </section>

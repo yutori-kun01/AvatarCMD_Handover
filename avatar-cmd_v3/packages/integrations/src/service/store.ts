@@ -41,6 +41,12 @@ export const SETTING_KEYS = {
   /** 動画パイプライン（video-config.ts の VIDEO_SETTING_KEYS と同じ値） */
   videoFishApiKey: "video_fish_api_key",
   videoMeasureToken: "video_measure_token",
+  /** メディアの保存先（local / r2）と Cloudflare R2 の接続情報（media.ts） */
+  mediaStorage: "media_storage",
+  r2AccountId: "r2_account_id",
+  r2Bucket: "r2_bucket",
+  r2AccessKeyId: "r2_access_key_id",
+  r2SecretAccessKey: "r2_secret_access_key",
   workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;
@@ -52,6 +58,8 @@ const SECRET_KEYS = new Set<string>([
   SETTING_KEYS.jevApiKey,
   SETTING_KEYS.videoFishApiKey,
   SETTING_KEYS.videoMeasureToken,
+  SETTING_KEYS.r2AccessKeyId,
+  SETTING_KEYS.r2SecretAccessKey,
   SETTING_KEYS.adminPasswordHash,
 ]);
 

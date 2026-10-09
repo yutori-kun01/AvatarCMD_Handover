@@ -7,9 +7,8 @@
 //   手動で設定したアイコン（avatarImageSource = manual）は自動取得で上書きしない。
 
 import { createHash } from "crypto";
-import { unlink } from "fs/promises";
 import { prisma } from "@avatar-cmd/db";
-import { mediaPath, saveMedia } from "./media";
+import { deleteMedia, mediaPath, saveMedia } from "./media";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
@@ -53,7 +52,7 @@ export async function saveProfileImage(accountId: string, imageUrl: string, fetc
   await selectAvatarIcon(acc.avatarId);
   // 古い画像は、選び直しの後もどのアバターのアイコンにも使われていなければ消す（手動で同じ画像を選んでいる場合は残す）
   const old = ownMediaName(acc.profileImageUrl);
-  if (old && !(await prisma.avatar.count({ where: { avatarImageUrl: acc.profileImageUrl } }))) await unlink(mediaPath(old)).catch(() => undefined);
+  if (old && !(await prisma.avatar.count({ where: { avatarImageUrl: acc.profileImageUrl } }))) await deleteMedia(old);
   return url;
 }
 
