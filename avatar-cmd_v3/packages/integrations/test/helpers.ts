@@ -27,7 +27,7 @@ export function mockFetch(routes: [string, RegExp, Handler | object][]) {
     const headers: Record<string, string> = {};
     new Headers(init.headers).forEach((v, k) => (headers[k] = v));
     const raw = init.body;
-    const isText = /json|x-www-form-urlencoded|text\//.test(headers["content-type"] ?? "");
+    const isText = /json|x-www-form-urlencoded|text\/|multipart\/related/.test(headers["content-type"] ?? "");
     const body =
       typeof raw === "string" ? raw
       : raw instanceof Uint8Array || raw instanceof ArrayBuffer ? (isText ? new TextDecoder().decode(raw) : `<${raw.byteLength} bytes>`)

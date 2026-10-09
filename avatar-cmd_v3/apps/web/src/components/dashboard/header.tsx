@@ -8,6 +8,7 @@ const pageTitles: Record<string, { title: string; description: string }> = {
   "/": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
   "/dashboard": { title: "ダッシュボード", description: "AIアバター運用コマンドセンター" },
   "/posts": { title: "投稿・記事", description: "SNSへの投稿・予約・送信状況と note 記事" },
+  "/video": { title: "動画", description: "動画パイプライン（企画から予約投稿まで）" },
   "/avatars": { title: "アバター", description: "アバターごとの分析・プロフィール・画像スタイル" },
   "/revenue": { title: "分析・収益", description: "アカウント別のバイタルと収益" },
   "/automation": { title: "自動化", description: "タスク自動化の設定と管理" },

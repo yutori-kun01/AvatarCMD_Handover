@@ -310,8 +310,8 @@ export default function AutomationPage() {
       {!aiReady && (
         <Notice kind="error">
           AI の API キー（Claude / OpenAI / Gemini）が未設定のため、ルールを実行すると失敗します。{" "}
-          <Link href="/settings?tab=system" className="underline">
-            設定 → システム
+          <Link href="/settings?tab=ai-keys" className="underline">
+            設定 → AI 共通 → API キー
           </Link>{" "}
           で入力してください。
         </Notice>

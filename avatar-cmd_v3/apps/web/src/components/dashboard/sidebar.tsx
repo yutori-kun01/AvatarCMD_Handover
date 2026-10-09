@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Send,
   BookOpen,
+  Clapperboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AvatarIcon } from "@/components/avatar-icon"
@@ -27,6 +28,7 @@ const navItems: {
   // v3.7 — 10 項目から 6 項目に統合（アクティビティ → ダッシュボード、SNS運用・API コスト → 設定、YouTube 学習 → ナレッジ）
   { icon: LayoutDashboard, label: "ダッシュボード", href: "/dashboard" },
   { icon: Send, label: "投稿・記事", href: "/posts" },
+  { icon: Clapperboard, label: "動画", href: "/video" },
   { icon: Users, label: "アバター", href: "/avatars" },
   { icon: TrendingUp, label: "分析・収益", href: "/revenue" },
   { icon: Zap, label: "自動化", href: "/automation" },

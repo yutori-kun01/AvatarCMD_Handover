@@ -108,6 +108,8 @@ Idempotency-Key: 2026-10-03-draft-0001   # 8〜128文字の英数字・_-.:
 | GET | `/runs` | read | 実行履歴（アクティビティ・判定ログ・改善処理） |
 | GET | `/analytics?days=30` | read | 公開済み投稿と指標（表示回数・反応数・反応率）、平均反応率 |
 | GET | `/costs` | read | 今月の使用量と費用の概算（**請求確定額ではない**。単価未登録は `unpricedRows`） |
+| GET | `/video/episodes?avatarId=&stage=` | read | 動画パイプラインのエピソード一覧（工程・承認待ちの記号 `gate`・報告） |
+| GET | `/video/episodes/{id}/manifest` | read | 書き出し（Remotion + FFmpeg）に必要な情報: カットの開始・終了、画像・動画の URL、擬似アニメの動き、字幕（区切りと SRT）、ブランド、ナレーション音声、出力先ごとの画角・安全エリア（docs/VIDEO_PIPELINE.md） |
 
 投稿は必ず予約キューを通り、送信直前にアカウント・アバター・ルールの状態を再確認します（停止中なら下書きに戻ります）。
 

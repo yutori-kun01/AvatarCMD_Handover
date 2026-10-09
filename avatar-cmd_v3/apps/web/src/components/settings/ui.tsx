@@ -231,3 +231,20 @@ export function LastError({ message, onDismiss }: { message: string; onDismiss?:
     </div>
   );
 }
+
+export interface UploadedMedia {
+  name: string;
+  mimeType: string;
+  size: number;
+  filename: string;
+}
+
+/** /api/media にファイルをアップロードして MediaRef を返す */
+export async function uploadMedia(file: File): Promise<UploadedMedia> {
+  const form = new FormData();
+  form.append("file", file);
+  const r = await fetch("/api/media", { method: "POST", body: form });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error ?? "アップロードに失敗しました");
+  return d.media as UploadedMedia;
+}

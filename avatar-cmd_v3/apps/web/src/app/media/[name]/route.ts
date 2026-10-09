@@ -5,7 +5,7 @@ import { mediaExists, readMedia } from "@avatar-cmd/integrations/server";
 export const runtime = "nodejs";
 
 const TYPES: Record<string, string> = {
-  jpg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
+  jpg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", mp3: "audio/mpeg", wav: "audio/wav",
 };
 
 export async function GET(_req: Request, { params }: { params: Promise<{ name: string }> }) {

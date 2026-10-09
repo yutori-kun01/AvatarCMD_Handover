@@ -4,10 +4,10 @@
 // SCHEDULER_TICK_MS ごとに期限の来た ScheduledPost を取り出し、各SNSへ投稿する。
 // あわせて自動化ルールの実行と、投稿の反応（指標）の定期取得を行う。
 // 「今すぐ投稿」もキュー経由（scheduledAt=現在時刻）で処理される。
-// note 記事の生成ジョブ（執筆・画像・見出し画像）は別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
+// note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -29,6 +29,12 @@ async function articleJobsTick() {
     if (n) console.log(`[worker] ${new Date().toISOString()} started ${n} article job(s)`);
   } catch (e) {
     console.error("[worker] article jobs failed:", e);
+  }
+  try {
+    const v = await processVideoJobs();
+    if (v) console.log(`[worker] ${new Date().toISOString()} started ${v} video job(s)`);
+  } catch (e) {
+    console.error("[worker] video jobs failed:", e);
   }
   if (!stopping) jobsTimer = setTimeout(articleJobsTick, ARTICLE_JOBS_EVERY_MS);
 }

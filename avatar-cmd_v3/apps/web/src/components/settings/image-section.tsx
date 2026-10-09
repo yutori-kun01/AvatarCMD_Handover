@@ -134,7 +134,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
         <div>
           <h3 className="text-sm font-semibold">画像生成（記事のイメージ画像・見出し画像）</h3>
           <p className="mt-1 text-xs text-white/50">
-            API キーは文章生成と共通です（<Link href="/settings?tab=system" className="text-cyan-300 underline">システム &gt; AI</Link>）。Claude は画像を生成しないため、OpenAI か Gemini のキーが必要です。図解（インフォグラフィック）はテンプレートで描くので画像生成の費用はかかりません。
+            API キーは文章生成と共通です（<Link href="/settings?tab=ai-keys" className="text-cyan-300 underline">AI 共通 &gt; API キー</Link>）。Claude は画像を生成しないため、OpenAI か Gemini のキーが必要です。図解（インフォグラフィック）はテンプレートで描くので画像生成の費用はかかりません。
           </p>
         </div>
         {noKey && <p className="rounded-lg bg-amber-500/10 p-3 text-xs text-amber-200">OpenAI / Gemini の API キーが未設定です。</p>}

@@ -38,6 +38,9 @@ export const SETTING_KEYS = {
   jevApiKey: "jev_api_key",
   jevModel: "jev_model",
   jevMode: "jev_mode",
+  /** 動画パイプライン（video-config.ts の VIDEO_SETTING_KEYS と同じ値） */
+  videoFishApiKey: "video_fish_api_key",
+  videoMeasureToken: "video_measure_token",
   workerHeartbeat: "worker_heartbeat",
   adminPasswordHash: "admin_password_hash",
 } as const;
@@ -47,6 +50,8 @@ const SECRET_KEYS = new Set<string>([
   SETTING_KEYS.anthropicApiKey,
   SETTING_KEYS.openaiApiKey,
   SETTING_KEYS.jevApiKey,
+  SETTING_KEYS.videoFishApiKey,
+  SETTING_KEYS.videoMeasureToken,
   SETTING_KEYS.adminPasswordHash,
 ]);
 

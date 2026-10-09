@@ -33,6 +33,7 @@ import { listImprovementCycles } from "./improvement";
 import { parseProvidedSummary } from "./learning-summary";
 import { submitTranscript, summarizeVideo } from "./youtube-learning";
 import { submitArticleContent, summarizeArticle } from "./rss-learning";
+import { listEpisodes, renderManifest } from "./video-pipeline";
 
 interface Ctx {
   p: ApiPrincipal;
@@ -288,6 +289,29 @@ const ROUTES: RouteDef[] = [
       if (b.content !== undefined) await submitArticleContent(a.id, String(b.content), `api:${c.p.id}`);
       if (b.summarize !== false) await summarizeArticle(a.id, provided);
       return { body: { article: articleView(await ownedArticle(c, a.id)) } };
+    },
+  },
+  // --- 動画パイプライン: 外部の書き出しサーバー（Remotion + FFmpeg）が書き出しに必要な情報を読む ---
+  {
+    method: "GET",
+    path: "video/episodes",
+    scope: "read",
+    handler: async (c) => {
+      const f = avatarFilter(c) as { avatarId?: string | { in: string[] } };
+      const rows = (await listEpisodes({ avatarId: typeof f.avatarId === "string" ? f.avatarId : undefined, limit: 200 })).filter((e) => canAccessAvatar(c.p, e.avatarId));
+      const stage = c.query.get("stage");
+      return { body: { episodes: rows.filter((e) => !stage || e.stage === stage).slice(0, limitOf(c.query)) } };
+    },
+  },
+  {
+    method: "GET",
+    path: "video/episodes/:id/manifest",
+    scope: "read",
+    handler: async (c) => {
+      const ep = await prisma.videoEpisode.findUnique({ where: { id: c.params[0] }, select: { avatarId: true } });
+      if (!ep || !canAccessAvatar(c.p, ep.avatarId)) throw new ApiV1Error(404, "not_found", "エピソードが見つかりません");
+      c.avatarId = ep.avatarId;
+      return { body: { manifest: await renderManifest(c.params[0]) } };
     },
   },
   // --- 自動化ルール ---
