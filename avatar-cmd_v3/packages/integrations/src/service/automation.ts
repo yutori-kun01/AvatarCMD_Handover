@@ -23,6 +23,8 @@ import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
 import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
 import { effectiveXPolicy, nextPostSlot } from "./x-policy";
+import { enqueueArticleJob } from "./article-jobs";
+import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -149,7 +151,24 @@ export function validateAction(a: ActionConfig, opts: { requireApproval?: boolea
   return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
 }
 
-export type RuleActionType = "generate_post" | "quote_post";
+export type RuleActionType = "generate_post" | "quote_post" | "note_article";
+
+/** note 記事ルール: テーマを順に使い、テンプレートの型で 執筆 → 画像 → 見出し画像 → 入稿 まで全自動で行う */
+export interface NoteArticleActionConfig {
+  accountId: string;
+  templateId: string;
+  topics: string[];
+  /** 入稿のしかた（省略時はテンプレートの設定） */
+  publish?: ArticlePublishMode;
+}
+
+export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): NoteArticleActionConfig {
+  if (!a.accountId) throw new ConfigError("note アカウントを選択してください");
+  if (!a.templateId) throw new ConfigError("記事テンプレートを選択してください");
+  const topics = (a.topics ?? []).map((t) => String(t).trim()).filter(Boolean);
+  if (!topics.length) throw new ConfigError("テーマを1つ以上入力してください");
+  return { accountId: a.accountId, templateId: a.templateId, topics, ...(a.publish === "publish" || a.publish === "draft" ? { publish: a.publish } : {}) };
+}
 
 export interface RuleInput {
   avatarId?: string;
@@ -160,7 +179,7 @@ export interface RuleInput {
   isActive?: boolean;
   clearError?: boolean;
   trigger?: TriggerConfig;
-  action?: ActionConfig | QuoteActionConfig;
+  action?: ActionConfig | QuoteActionConfig | NoteArticleActionConfig;
   /** 停止時に、このルールで自動承認されて予約キューにある投稿も止める（下書きに戻す） */
   holdQueued?: boolean;
 }
@@ -171,7 +190,7 @@ export async function createRule(b: RuleInput) {
   if (!b.name?.trim()) throw new ConfigError("ルール名を入力してください");
   if (!b.trigger || !b.action) throw new ConfigError("実行タイミングと動作を指定してください");
   const trigger = validateTrigger(b.trigger);
-  const actionType: RuleActionType = b.actionType === "quote_post" ? "quote_post" : "generate_post";
+  const actionType: RuleActionType = b.actionType === "quote_post" || b.actionType === "note_article" ? b.actionType : "generate_post";
   const action = await validateRuleAction(actionType, b.avatarId, b.action);
   return prisma.automationRule.create({
     data: {
@@ -189,7 +208,15 @@ export async function createRule(b: RuleInput) {
 }
 
 /** 画面・API からの作成/更新時の actionConfig の検証（種類ごと） */
-async function validateRuleAction(actionType: RuleActionType, avatarId: string, raw: unknown): Promise<ActionConfig | QuoteActionConfig> {
+async function validateRuleAction(actionType: RuleActionType, avatarId: string, raw: unknown): Promise<ActionConfig | QuoteActionConfig | NoteArticleActionConfig> {
+  if (actionType === "note_article") {
+    const n = validateNoteArticleAction(raw as NoteArticleActionConfig);
+    await assertAccountsOf(avatarId, [n.accountId]);
+    const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: n.accountId } });
+    if (acc.platform !== "note") throw new ConfigError("note 記事ルールは note のアカウントだけに対応しています");
+    await getArticleTemplate(n.templateId);
+    return n;
+  }
   if (actionType === "quote_post") {
     const q = validateQuoteAction(raw as QuoteActionConfig, { requireApproval: true });
     await assertAccountsOf(avatarId, [q.accountId]);
@@ -252,6 +279,14 @@ export async function runRule(ruleId: string): Promise<number> {
     const r = await scanQuoteCandidates(config.accountId, { config, ruleId: rule.id, scheduled: true });
     if (r.errors.length && !r.drafted) throw new Error(`引用案の作成に失敗: ${r.errors[0]}`);
     return r.drafted;
+  }
+  if (rule.actionType === "note_article") {
+    // 画像生成に数分かかるので、記事ジョブに依頼して戻る（結果は投稿一覧、失敗はルールのエラーに出る）
+    const config = validateNoteArticleAction(rule.actionConfig as unknown as NoteArticleActionConfig);
+    await getArticleTemplate(config.templateId);
+    const topic = config.topics[rule.executionCount % config.topics.length];
+    await enqueueArticleJob("full", rule.avatarId, { accountId: config.accountId, templateId: config.templateId, topic, publish: config.publish, ruleId: rule.id });
+    return 1;
   }
   return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));
 }
@@ -418,7 +453,7 @@ export async function processDueRules(): Promise<number> {
   const now = new Date();
   const due = await prisma.automationRule.findMany({
     // 一時停止中のアバターのルールは実行しない
-    where: { isActive: true, actionType: { in: ["generate_post", "quote_post"] }, nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
+    where: { isActive: true, actionType: { in: ["generate_post", "quote_post", "note_article"] }, nextRunAt: { lte: now }, avatar: { status: "ACTIVE" } },
     take: 5,
   });
   let n = 0;

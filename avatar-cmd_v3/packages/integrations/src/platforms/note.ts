@@ -11,8 +11,12 @@
 //   - POST https://note.com/api/v1/upload_image             旧方式（multipart: file → URL）。上が使えないときだけ使う
 //   - POST https://note.com/api/v1/image_upload/note_eyecatch 見出し画像（multipart: note_id, file, width, height）
 //   - POST https://note.com/api/v1/text_notes/draft_save?id= 本文・タグ・有料ライン（separator）・価格を保存
+//   - PUT  https://note.com/api/v1/text_notes/{id}          公開（status: "published"。全項目を送る。差分更新はない）
+//   - GET  https://note.com/api/v3/notes/{key}              公開できたかの確認（status）
 //   - GET  https://note.com/api/v1/stats/pv                 記事ごとの累計 PV・スキ（閲覧数の推移に使う）
-// 公開（取り消せない操作）だけは行わない。有料ライン・価格・画像・タグは下書きに入れ、公開ボタンは本人が押す。
+// 既定は下書き保存まで（公開ボタンは本人が押す）。投稿のオプション mode: "publish" を指定したときだけ公開まで行う。
+// 予約公開は Avatar CMD の予約（scheduledAt）で、その時刻に mode: "publish" の投稿を実行する（note 側の予約機能は使わない）。
+// 公開に失敗した場合は下書きのまま残し（同じ記事を二重に作らないよう失敗扱いにはしない）、その旨を返す。
 // 画像や有料設定が受け付けられなかった場合も本文の下書きは保存し、何が入らなかったかを返す。
 // 仕様変更で動かなくなる可能性がある。
 
@@ -109,6 +113,18 @@ export function findMedia(media: MediaFile[], src: string): MediaFile | undefine
   return media.find((m) => m.url === src || (name && m.url.endsWith(`/media/${name}`)));
 }
 
+/**
+ * 本文の HTML を有料ライン（separator の要素）の手前と以降に分ける。
+ * separator は有料ラインの直後の要素の name / id（markdownToNote が付ける UUID）
+ */
+export function splitPaywall(html: string, separator: string | undefined): { free: string; pay: string } {
+  if (!separator) return { free: html, pay: "" };
+  const at = html.indexOf(` name="${separator}"`);
+  const start = at === -1 ? -1 : html.lastIndexOf("<", at);
+  if (start === -1) return { free: html, pay: "" };
+  return { free: html.slice(0, start), pay: html.slice(start) };
+}
+
 /** 価格の検証。空・0 は無料（null） */
 export function notePrice(raw: string | undefined): number | null {
   const v = String(raw ?? "").replace(/[,，¥円\s]/g, "");
@@ -140,11 +156,22 @@ export const note: PlatformDefinition = {
     { key: "title", label: "記事タイトル" },
     { key: "price", label: "価格（円・有料記事のみ）", placeholder: "例: 500（空なら無料）", help: "本文の <!-- paywall --> の位置から有料になります。公開は note の編集画面で行います" },
     { key: "eyecatch", label: "見出し画像（添付ファイル名）", help: "記事エディタで選ぶと自動で入ります" },
+    {
+      key: "mode",
+      label: "入稿のしかた",
+      type: "select",
+      options: [
+        { value: "draft", label: "下書きに保存（公開は note で）" },
+        { value: "publish", label: "公開まで行う" },
+      ],
+      help: "「公開まで行う」は予約日時を指定するとその時刻に公開します。公開に失敗したときは下書きとして残ります",
+    },
   ],
   media: { image: true, video: false, maxCount: 40 },
   docs: [{ label: "note ヘルプ", url: "https://www.help-note.com/hc/ja" }],
   notes: [
-    "note には公開APIがないため、ログインCookieを使って下書きに本文・画像・見出し画像・タグ・有料ライン・価格まで入れます。公開ボタンは note の編集画面で押してください。",
+    "note には公開APIがないため、ログインCookieを使って下書きに本文・画像・見出し画像・タグ・有料ライン・価格まで入れます。既定では公開ボタンは note の編集画面で押してください。",
+    "入稿のしかたを「公開まで行う」にすると、下書き保存のあと公開まで行います（予約日時を指定するとその時刻に公開）。公開に失敗した場合は下書きのまま残ります。",
     "有料ラインは本文に <!-- paywall --> と書いた位置に入ります。価格を入れずに有料ラインだけ書いた場合は無料記事として保存します。",
     "Cookie はログアウトすると無効になります。期限切れのエラーが出たら取り直して再接続してください。",
     "非公式の仕組みのため、note 側の変更で画像・有料設定が入らなくなる場合があります。その場合も本文は保存し、入らなかった項目をお知らせします。",
@@ -254,10 +281,61 @@ export const note: PlatformDefinition = {
       "price" in paid ? `有料ライン・価格${price}円` : "",
       tags.length ? `タグ${tags.length}件` : "",
     ].filter(Boolean);
-    return {
+    const draftResult = (prefix = "") => ({
       postId: String(created.key),
       url: `https://note.com/notes/${created.key}/edit`,
-      note: [`下書きに保存しました${done.length ? `（${done.join("・")}）` : ""}。note の編集画面で確認して公開してください`, ...warnings].join(" / "),
+      note: [`${prefix}下書きに保存しました${done.length ? `（${done.join("・")}）` : ""}。note の編集画面で確認して公開してください`, ...warnings].join(" / "),
+    });
+    if (post.options.mode !== "publish") return draftResult();
+
+    // --- 公開 ---------------------------------------------------------------
+    // 公開は全項目を送る（差分更新がない）。有料記事は有料ラインの手前（free_body）と以降（pay_body）に分ける
+    const { free, pay } = splitPaywall(html, "price" in paid ? separator : undefined);
+    const body = {
+      ...base,
+      status: "published",
+      price: "price" in paid ? price : 0,
+      separator: "price" in paid ? separator : null,
+      free_body: free,
+      pay_body: pay,
+      hashtags: tags.map((t) => `#${t}`),
+      slug: `slug-${created.key}`,
+      is_refund: false,
+      limited: false,
+      magazine_ids: [],
+      magazine_keys: [],
+      send_notifications_flag: true,
+      disable_comment: false,
+      image_keys: [],
+      circle_permissions: [],
+      discount_campaigns: [],
+    };
+    try {
+      await call(cookie, `/v1/text_notes/${created.id}`, { method: "PUT", json: body });
+    } catch (e) {
+      if (e instanceof ConfigError) throw e;
+      warnings.unshift(`公開できませんでした（${(e as Error).message.slice(0, 120)}）`);
+      return draftResult("⚠ 公開に失敗したため、");
+    }
+    // 本当に公開されたかを確かめる（確認できないときは公開できた前提で URL を返す）
+    let status: string | undefined;
+    let urlname: string | undefined;
+    try {
+      const n = (await call(cookie, `/v3/notes/${created.key}`)).data ?? {};
+      status = typeof n.status === "string" ? n.status : undefined;
+      urlname = n.user?.urlname;
+    } catch (e) {
+      if (e instanceof ConfigError) throw e;
+    }
+    if (status && status !== "published") {
+      warnings.unshift(`公開の操作は受け付けられましたが、状態が「${status}」のままです`);
+      return draftResult("⚠ 公開を確認できなかったため、");
+    }
+    if (!urlname) urlname = (await call(cookie, "/v2/current_user").catch(() => ({ data: {} }))).data?.urlname;
+    return {
+      postId: String(created.key),
+      url: urlname ? `https://note.com/${urlname}/n/${created.key}` : `https://note.com/notes/${created.key}`,
+      note: [`公開しました${done.length ? `（${done.join("・")}）` : ""}`, ...warnings].join(" / "),
     };
   },
 };

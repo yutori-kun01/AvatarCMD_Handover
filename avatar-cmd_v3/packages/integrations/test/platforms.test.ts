@@ -472,6 +472,46 @@ test("note: 画像・見出し画像・有料ライン・価格・タグまで�
   }
 });
 
+test("note: mode=publish は下書き保存のあと PUT text_notes/{id} で公開し、公開 URL を返す", async () => {
+  const m = mockFetch([
+    ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 5, key: "npub" } }],
+    ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=5$/, { data: {} }],
+    ["PUT", /note\.com\/api\/v1\/text_notes\/5$/, { data: {} }],
+    ["GET", /note\.com\/api\/v3\/notes\/npub$/, { data: { status: "published", user: { urlname: "yutori" } } }],
+  ]);
+  try {
+    const text = "# T\n\n無料部分\n\n<!-- paywall -->\n\n有料部分";
+    const r = await PLATFORMS.note.publish!(ctx({ credentials: { cookie: "_note_session_v5=S" } }), post({ text, tags: ["AI"], options: { price: "500", mode: "publish" } }));
+    const put = m.calls.find((c) => c.method === "PUT")!;
+    assert.equal(put.json.status, "published");
+    assert.equal(put.json.price, 500);
+    assert.match(put.json.free_body, /無料部分/);
+    assert.doesNotMatch(put.json.free_body, /有料部分/);
+    assert.match(put.json.pay_body, new RegExp(`^<p name="${put.json.separator}"`));
+    assert.deepEqual(put.json.hashtags, ["#AI"]);
+    assert.equal(r.url, "https://note.com/yutori/n/npub");
+    assert.match(r.note!, /^公開しました/);
+  } finally {
+    m.restore();
+  }
+});
+
+test("note: 公開に失敗したら下書きのまま残し、失敗したことを返す（エラーにはしない）", async () => {
+  const m = mockFetch([
+    ["POST", /note\.com\/api\/v1\/text_notes$/, { data: { id: 6, key: "nfail" } }],
+    ["POST", /note\.com\/api\/v1\/text_notes\/draft_save\?id=6$/, { data: {} }],
+    ["PUT", /note\.com\/api\/v1\/text_notes\/6$/, () => ({ status: 422, text: "invalid" })],
+  ]);
+  try {
+    const r = await PLATFORMS.note.publish!(ctx({ credentials: { cookie: "_note_session_v5=S" } }), post({ text: "# T\n\n本文", options: { mode: "publish" } }));
+    assert.equal(r.url, "https://note.com/notes/nfail/edit");
+    assert.match(r.note!, /公開に失敗/);
+    assert.match(r.note!, /公開できませんでした/);
+  } finally {
+    m.restore();
+  }
+});
+
 test("note: 有料設定や画像が拒否されても本文の下書きは保存し、入らなかった項目を返す", async () => {
   let saves = 0;
   const m = mockFetch([
