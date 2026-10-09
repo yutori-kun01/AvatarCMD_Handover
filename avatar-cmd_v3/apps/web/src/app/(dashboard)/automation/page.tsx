@@ -14,8 +14,11 @@ interface Rule {
   description: string | null;
   isActive: boolean;
   trigger: { type: "daily"; times: string[]; timezone?: string } | { type: "interval"; hours: number };
-  actionType: "generate_post" | "quote_post";
+  actionType: "generate_post" | "quote_post" | "note_article";
   action: {
+    // note 記事ルール（note_article）は accountId・topics と templateId・publish
+    templateId?: string;
+    publish?: "draft" | "publish";
     accountIds: string[];
     topics: string[];
     mode: "draft" | "auto";
@@ -129,6 +132,10 @@ interface Draft {
   cooldownDays: string;
   excludeAuthors: string;
   allowReuse: boolean;
+  // note 記事ルール
+  noteAccountId: string;
+  templateId: string;
+  notePublish: "" | "draft" | "publish";
 }
 
 function toDraft(r: Rule): Draft {
@@ -153,6 +160,9 @@ function toDraft(r: Rule): Draft {
     cooldownDays: String(r.action.sameAuthorCooldownDays ?? 7),
     excludeAuthors: (r.action.excludeAuthors ?? []).join(", "),
     allowReuse: !!r.action.allowReuseAcrossAvatars,
+    noteAccountId: r.actionType === "note_article" ? r.action.accountId ?? "" : "",
+    templateId: r.action.templateId ?? "",
+    notePublish: r.action.publish ?? "",
   };
 }
 
@@ -174,6 +184,9 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   cooldownDays: "7",
   excludeAuthors: "",
   allowReuse: false,
+  noteAccountId: "",
+  templateId: "",
+  notePublish: "",
 };
 
 function scheduleLabel(t: Rule["trigger"]) {
@@ -189,14 +202,17 @@ export default function AutomationPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
+  const [templates, setTemplates] = useState<{ id: string; name: string; publish: "draft" | "publish" }[]>([]);
   const [estimate, setEstimate] = useState<{ amounts: Record<string, number>; unpriced: string[]; runsPerMonth: number; notes: string[] } | null>(null);
 
   const load = useCallback(async () => {
-    const [r, i] = await Promise.all([
+    const [r, t, i] = await Promise.all([
       api<{ rules: Rule[] }>("/api/automations"),
+      api<{ templates: { id: string; name: string; publish: "draft" | "publish" }[] }>("/api/articles/templates").catch(() => ({ templates: [] })),
       api<{ avatars: { id: string; name: string }[]; accounts: AccountInfo[]; platforms: PlatformInfo[]; ai: { ready: boolean } }>("/api/integrations"),
     ]);
     setRules(r.rules);
+    setTemplates(t.templates);
     setAvatars(i.avatars);
     setAccounts(i.accounts);
     setPlatforms(i.platforms);
@@ -234,7 +250,9 @@ export default function AutomationPage() {
           ? { type: "daily", times: draft.times.split(/[,、\s]+/).filter(Boolean), timezone: "Asia/Tokyo" }
           : { type: "interval", hours: Number(draft.hours) },
       action:
-        draft.actionType === "quote_post"
+        draft.actionType === "note_article"
+          ? { accountId: draft.noteAccountId, templateId: draft.templateId, topics: draft.topics.split("\n"), publish: draft.notePublish || undefined }
+          : draft.actionType === "quote_post"
           ? {
               accountId: draft.quoteAccountId,
               mode: draft.mode,
@@ -346,6 +364,7 @@ export default function AutomationPage() {
               options: [
                 { value: "generate_post", label: "AI で投稿文を生成" },
                 { value: "quote_post", label: "X の引用投稿（タイムラインから探して、元投稿の URL を本文に入れて引用）" },
+                { value: "note_article", label: "note 記事を全自動で作成（テンプレートの型で 執筆 → 画像 → 見出し画像 → 入稿）" },
               ],
             }}
             value={draft.actionType}
@@ -363,13 +382,15 @@ export default function AutomationPage() {
             ) : (
               <Field def={{ key: "hours", label: "間隔（時間）", placeholder: "6" }} value={draft.hours} onChange={(v) => setDraft({ ...draft, hours: v })} />
             )}
-            <Field
-              def={{ key: "mode", label: "生成後の動作", type: "select", options: [{ value: "draft", label: "下書き（承認してから投稿）" }, { value: "auto", label: "そのまま自動投稿" }] }}
-              value={draft.mode}
-              onChange={(v) => setDraft({ ...draft, mode: v as Draft["mode"] })}
-            />
+            {draft.actionType !== "note_article" && (
+              <Field
+                def={{ key: "mode", label: "生成後の動作", type: "select", options: [{ value: "draft", label: "下書き（承認してから投稿）" }, { value: "auto", label: "そのまま自動投稿" }] }}
+                value={draft.mode}
+                onChange={(v) => setDraft({ ...draft, mode: v as Draft["mode"] })}
+              />
+            )}
           </div>
-          {draft.mode === "auto" && (
+          {draft.actionType !== "note_article" && draft.mode === "auto" && (
             <div>
               <Field
                 def={{
@@ -392,7 +413,48 @@ export default function AutomationPage() {
               </p>
             </div>
           )}
-          {draft.actionType === "quote_post" ? (
+          {draft.actionType === "note_article" ? (
+            <div className="space-y-3 rounded-lg border border-white/[0.06] p-3">
+              <p className="text-[11px] text-white/45">
+                実行ごとにテーマを順に 1 つ使い、記事テンプレートの型（構成・有料/価格・タグ・画像の入れ方）で 1 本書いて note へ入稿します。画像の生成に数分かかるため、バックグラウンドで作ります（結果は「SNS 投稿」の一覧、失敗はこのルールのエラーに出ます）。
+                テンプレートは <Link href="/posts" className="underline">投稿 → note 記事</Link> で作れます。
+              </p>
+              <div className="grid gap-3 md:grid-cols-3">
+                <Field
+                  def={{ key: "nacc", label: "note アカウント", type: "select", options: [{ value: "", label: "選択してください" }, ...avatarAccounts.filter((a) => a.platform === "note").map((a) => ({ value: a.id, label: a.accountName }))] }}
+                  value={draft.noteAccountId}
+                  onChange={(v) => setDraft({ ...draft, noteAccountId: v })}
+                />
+                <Field
+                  def={{ key: "tpl", label: "記事テンプレート", type: "select", options: [{ value: "", label: templates.length ? "選択してください" : "テンプレートがありません" }, ...templates.map((t) => ({ value: t.id, label: t.name }))] }}
+                  value={draft.templateId}
+                  onChange={(v) => setDraft({ ...draft, templateId: v })}
+                />
+                <Field
+                  def={{
+                    key: "npub",
+                    label: "入稿のしかた",
+                    type: "select",
+                    options: [
+                      { value: "", label: "テンプレートの設定どおり" },
+                      { value: "draft", label: "下書きに保存（公開は note で）" },
+                      { value: "publish", label: "公開まで行う" },
+                    ],
+                  }}
+                  value={draft.notePublish}
+                  onChange={(v) => setDraft({ ...draft, notePublish: v as Draft["notePublish"] })}
+                />
+              </div>
+              {(draft.notePublish === "publish" || (!draft.notePublish && templates.find((t) => t.id === draft.templateId)?.publish === "publish")) && (
+                <p className="text-[11px] text-amber-300">人の確認なしで note に公開されます。最初は「下書きに保存」で内容を確かめてから切り替えるのがおすすめです。</p>
+              )}
+              <Field
+                def={{ key: "ntopics", label: "テーマ（1行に1つ。実行ごとに順番に使います）", type: "textarea", placeholder: "ADHD でも続く朝の集中ルーティン\n先延ばしを減らす 3 つの仕組み" }}
+                value={draft.topics}
+                onChange={(v) => setDraft({ ...draft, topics: v })}
+              />
+            </div>
+          ) : draft.actionType === "quote_post" ? (
             <div className="space-y-3 rounded-lg border border-white/[0.06] p-3">
               <p className="text-[11px] text-white/45">
                 ホームタイムラインから、アバターの人格・ナレッジ・対象読者に合う投稿を選んで、独自の意見や補足を添えた引用案を作ります。投稿時は元投稿の URL
@@ -466,7 +528,7 @@ export default function AutomationPage() {
             </p>
           )}
           <div className="flex gap-2">
-            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.mode === "auto" && !draft.approval) || (draft.actionType === "quote_post" && !draft.quoteAccountId)}>
+            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.actionType !== "note_article" && draft.mode === "auto" && !draft.approval) || (draft.actionType === "quote_post" && !draft.quoteAccountId) || (draft.actionType === "note_article" && (!draft.noteAccountId || !draft.templateId || !draft.topics.trim()))}>
               {busy === "save" ? "保存中…" : "保存"}
             </Button>
             <Button variant="ghost" onClick={() => setDraft(null)}>
@@ -497,12 +559,25 @@ export default function AutomationPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold">{r.name}</span>
                     <Badge className="bg-white/5 text-white/50">{r.avatarName}</Badge>
-                    <Badge className={r.action.mode === "auto" ? ((r.action.approval ?? "all") === "all" ? "bg-amber-500/15 text-amber-300" : "bg-violet-500/15 text-violet-300") : "bg-cyan-500/15 text-cyan-300"}>
-                      {r.action.mode === "auto" ? `自動投稿・${APPROVAL[r.action.approval ?? "all"].badge}` : "下書き→承認"}
-                    </Badge>
+                    {r.actionType === "note_article" ? (
+                      <Badge className={r.action.publish === "publish" ? "bg-amber-500/15 text-amber-300" : "bg-cyan-500/15 text-cyan-300"}>
+                        note 記事・{r.action.publish === "publish" ? "公開まで" : r.action.publish === "draft" ? "下書きまで" : "テンプレートどおり"}
+                      </Badge>
+                    ) : (
+                      <Badge className={r.action.mode === "auto" ? ((r.action.approval ?? "all") === "all" ? "bg-amber-500/15 text-amber-300" : "bg-violet-500/15 text-violet-300") : "bg-cyan-500/15 text-cyan-300"}>
+                        {r.action.mode === "auto" ? `自動投稿・${APPROVAL[r.action.approval ?? "all"].badge}` : "下書き→承認"}
+                      </Badge>
+                    )}
                   </div>
                   <div className="mt-1 text-xs text-white/50">{scheduleLabel(r.trigger)}</div>
-                  {r.actionType === "quote_post" ? (
+                  {r.actionType === "note_article" ? (
+                    <>
+                      <div className="mt-1 text-xs text-white/50">
+                        note: {accountName(r.action.accountId ?? "")}・テンプレート「{templates.find((t) => t.id === r.action.templateId)?.name ?? "（削除済み）"}」
+                      </div>
+                      <div className="mt-1 text-xs text-white/40">テーマ: {(r.action.topics ?? []).join(" / ")}</div>
+                    </>
+                  ) : r.actionType === "quote_post" ? (
                     <div className="mt-1 text-xs text-white/50">
                       X 引用（URL を本文に挿入）: {accountName(r.action.accountId ?? "")}・1回 {r.action.scanPosts ?? 30} 件を読み、最大 {r.action.maxDrafts ?? 3} 件
                       {r.action.excludeAuthors?.length ? `・除外 ${r.action.excludeAuthors.length} 人` : ""}

@@ -11,14 +11,17 @@ import { ConfigError } from "../http";
 import { withUsageContext } from "./usage";
 import { generateEyecatch, generateNoteDraft, renderVisualMarkers, type NoteDraftInput } from "./article";
 import { getSetting, SETTING_KEYS } from "./store";
+import { runFullArticle, type ArticlePublishMode } from "./article-templates";
 
-export type ArticleJobKind = "write" | "render" | "eyecatch";
+/** full = テーマから入稿まで全自動（article-templates.ts の runFullArticle） */
+export type ArticleJobKind = "write" | "render" | "eyecatch" | "full";
 export type ArticleJobStatus = "queued" | "running" | "done" | "failed";
 
 export interface ArticleJobInputs {
   write: Omit<NoteDraftInput, "avatarId">;
   render: { markdown: string; only?: number[] };
   eyecatch: { title: string; summary?: string };
+  full: { accountId?: string; templateId?: string; title?: string; topic?: string; publish?: ArticlePublishMode; scheduledAt?: string; ruleId?: string };
 }
 
 export interface ArticleJobView {
@@ -53,7 +56,7 @@ async function workerAlive(): Promise<boolean> {
 /** 生成を依頼する（すぐ戻る）。worker が動いていなければこのプロセスで始める */
 export async function enqueueArticleJob<K extends ArticleJobKind>(kind: K, avatarId: string, input: ArticleJobInputs[K]): Promise<ArticleJobView> {
   if (!avatarId) throw new ConfigError("アバター（note アカウント）を選択してください");
-  if (!["write", "render", "eyecatch"].includes(kind)) throw new ConfigError("ジョブの種類が不正です");
+  if (!["write", "render", "eyecatch", "full"].includes(kind)) throw new ConfigError("ジョブの種類が不正です");
   const job = await prisma.articleJob.create({ data: { kind, avatarId, input: input as unknown as Prisma.InputJsonValue } });
   if (!(await workerAlive())) void runArticleJob(job.id);
   return view(job);
@@ -82,7 +85,8 @@ export async function runArticleJob(id: string): Promise<boolean> {
     const avatarId = job.avatarId ?? "";
     const progress = (text: string) => prisma.articleJob.update({ where: { id }, data: { progress: text } }).catch(() => undefined);
     let result: unknown;
-    await withUsageContext({ context: "manual" }, async () => {
+    const ruleId = typeof input.ruleId === "string" ? input.ruleId : undefined;
+    await withUsageContext(ruleId ? { avatarId, context: "automation", subjectId: ruleId } : { context: "manual" }, async () => {
       if (job.kind === "write") {
         await progress("執筆中");
         result = await generateNoteDraft({ ...input, avatarId });
@@ -91,13 +95,38 @@ export async function runArticleJob(id: string): Promise<boolean> {
       } else if (job.kind === "eyecatch") {
         await progress("生成中");
         result = { media: await generateEyecatch({ avatarId, title: String(input.title ?? ""), summary: input.summary }) };
+      } else if (job.kind === "full") {
+        const at = input.scheduledAt ? new Date(input.scheduledAt) : undefined;
+        if (at && Number.isNaN(at.getTime())) throw new ConfigError("予約日時が不正です");
+        result = await runFullArticle({
+          avatarId,
+          accountId: input.accountId || undefined,
+          templateId: input.templateId || undefined,
+          title: input.title,
+          topic: input.topic,
+          publish: input.publish === "publish" ? "publish" : input.publish === "draft" ? "draft" : undefined,
+          scheduledAt: at && at.getTime() > Date.now() ? at : undefined,
+          ruleId,
+          onProgress: progress,
+        });
       } else throw new Error(`不明なジョブ: ${job.kind}`);
     });
     await prisma.articleJob.update({ where: { id }, data: { status: "done", result: result as Prisma.InputJsonValue, finishedAt: new Date() } });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     await prisma.articleJob
-      .update({ where: { id }, data: { status: "failed", error: e instanceof Error ? e.message : String(e), finishedAt: new Date() } })
+      .update({ where: { id }, data: { status: "failed", error: message, finishedAt: new Date() } })
       .catch((err) => console.error("[article-jobs] failed to record error:", err));
+    // 自動化ルールからの全自動記事は、失敗をルールとアクティビティに残す（画面で結果を待っている人がいない）
+    const job = await prisma.articleJob.findUnique({ where: { id } }).catch(() => null);
+    const ruleId = (job?.input as any)?.ruleId;
+    if (job?.kind === "full" && typeof ruleId === "string") {
+      await prisma.automationRule.update({ where: { id: ruleId }, data: { lastError: `note 記事の作成に失敗: ${message}`.slice(0, 1000) } }).catch(() => undefined);
+      if (job.avatarId)
+        await prisma.activityLog
+          .create({ data: { avatarId: job.avatarId, action: "automation_failed", category: "content", level: "error", description: `note 記事の自動作成に失敗: ${message.slice(0, 300)}` } })
+          .catch(() => undefined);
+    }
   } finally {
     running.delete(id);
   }

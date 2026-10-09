@@ -18,5 +18,10 @@ export const POST = route(async (req: Request) => {
     return NextResponse.json({ error: "タイトル・テーマ・本文のどれかを入力してください" }, { status: 400 });
   if (b.kind === "eyecatch" && !input.title?.trim()) return NextResponse.json({ error: "タイトルを入力してください" }, { status: 400 });
   if (b.kind === "render" && !input.markdown?.trim()) return NextResponse.json({ error: "本文が空です" }, { status: 400 });
+  if (b.kind === "full") {
+    if (![input.title, input.topic].some((v) => typeof v === "string" && v.trim())) return NextResponse.json({ error: "テーマかタイトルを入力してください" }, { status: 400 });
+    // ruleId は自動化ルールの実行だけが付ける（画面からの依頼では受け付けない）
+    delete input.ruleId;
+  }
   return NextResponse.json({ job: await enqueueArticleJob(b.kind, b.avatarId, input) });
 });
