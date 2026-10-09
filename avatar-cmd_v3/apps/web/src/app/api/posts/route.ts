@@ -26,6 +26,8 @@ export const GET = route(async () => {
       postUrl: r.postUrl,
       note: ((r.metadata as any)?.result?.note as string) ?? (r.status === "DRAFT" ? draftNote(r.metadata as any) : undefined) ?? null,
       category: r.category,
+      // note: 予約の時刻に「公開」まで行うか、「下書き保存」だけか
+      noteMode: r.platform === "note" ? ((r.metadata as any)?.options?.mode === "publish" ? "publish" : "draft") : null,
       quote: (r.metadata as any)?.quote ? { url: (r.metadata as any).quote.url ?? null, authorUsername: (r.metadata as any).quote.authorUsername ?? null, text: (r.metadata as any).quote.text ?? "" } : null,
       metrics: metricsOf(r.engagement),
       scheduledAt: r.scheduledPost?.scheduledAt ?? null,

@@ -62,6 +62,14 @@ const VERDICT: Record<ReviewResult["verdict"], { label: string; cls: string }> =
   ng: { label: "公開不可", cls: "bg-red-500/15 text-red-300" },
 };
 
+/** datetime-local の値（ローカル時刻） */
+function toLocalInput(iso: string | null): string {
+  const d = iso ? new Date(iso) : new Date(Date.now() + 3600_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+const inAnHour = () => toLocalInput(null);
+
 interface PostRow {
   id: string;
   platform: string;
@@ -77,6 +85,7 @@ interface PostRow {
   lastError: string | null;
   createdAt: string;
   category: string;
+  noteMode: "publish" | "draft" | null;
   quote: { url: string | null; authorUsername: string | null; text: string } | null;
   metrics: { views: number | null; likes: number | null; replies: number | null; reposts: number | null; quotes: number | null; engagements: number | null; error: string | null } | null;
 }
@@ -219,6 +228,8 @@ function PostsInner() {
   const [media, setMedia] = useState<MediaRef[]>([]);
   const [options, setOptions] = useState<Record<string, Record<string, string>>>({});
   const [scheduledAt, setScheduledAt] = useState("");
+  /** 予約の日時を選んでいる投稿（下書きの承認・予約の変更） */
+  const [timing, setTiming] = useState<{ id: string; at: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
@@ -371,11 +382,12 @@ function PostsInner() {
     }
   }
 
-  async function approve(id: string, newText?: string) {
+  async function approve(id: string, newText?: string, at?: string) {
     try {
-      await api(`/api/posts/${id}/approve`, { method: "POST", json: { text: newText } });
+      await api(`/api/posts/${id}/approve`, { method: "POST", json: { text: newText, ...(at ? { scheduledAt: new Date(at).toISOString() } : {}) } });
       setEditing(null);
-      setNotice({ kind: "ok", msg: "承認して送信キューに追加しました" });
+      setTiming(null);
+      setNotice({ kind: "ok", msg: at ? `承認し、${new Date(at).toLocaleString("ja-JP")} に予約しました` : "承認して送信キューに追加しました" });
       loadPosts();
     } catch (e) {
       setNotice({ kind: "error", msg: (e as Error).message });
@@ -385,6 +397,28 @@ function PostsInner() {
     try {
       await api(`/api/posts/${id}`, { method: "PATCH", json: { text: newText } });
       setEditing(null);
+      loadPosts();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    }
+  }
+
+  /** 予約中の投稿: 日時の変更 / 下書きに戻す */
+  async function reschedule(id: string, at: string) {
+    try {
+      await api(`/api/posts/${id}`, { method: "PATCH", json: { scheduledAt: new Date(at).toISOString() } });
+      setTiming(null);
+      setNotice({ kind: "ok", msg: `予約を ${new Date(at).toLocaleString("ja-JP")} に変更しました` });
+      loadPosts();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    }
+  }
+  async function unschedule(id: string) {
+    if (!confirm("予約を取り消して下書きに戻しますか？（内容を直してから、承認・予約し直せます）")) return;
+    try {
+      await api(`/api/posts/${id}`, { method: "PATCH", json: { unschedule: true } });
+      setNotice({ kind: "ok", msg: "予約を取り消して下書きに戻しました" });
       loadPosts();
     } catch (e) {
       setNotice({ kind: "error", msg: (e as Error).message });
@@ -642,6 +676,9 @@ function PostsInner() {
                     <div key={p.id} className="rounded-xl border border-white/[0.06] bg-black/20 p-3">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <Badge className={STATUS[p.status]?.cls ?? "bg-white/10 text-white/50"}>{STATUS[p.status]?.label ?? p.status}</Badge>
+                        {p.noteMode && p.status !== "PUBLISHED" && (
+                          <Badge className={p.noteMode === "publish" ? "bg-amber-500/15 text-amber-300" : "bg-white/10 text-white/50"}>{p.noteMode === "publish" ? "公開まで" : "下書き保存まで"}</Badge>
+                        )}
                         <span className="font-medium">{p.platformName}</span>
                         <span className="text-white/40">{p.accountName}</span>
                         <span className="flex-1" />
@@ -709,6 +746,21 @@ function PostsInner() {
                               </button>
                             </>
                           ))}
+                        {p.status === "DRAFT" && editing?.id !== p.id && (
+                          <button onClick={() => setTiming({ id: p.id, at: inAnHour() })} className="text-emerald-300/80">
+                            日時を指定して承認
+                          </button>
+                        )}
+                        {p.status === "SCHEDULED" && (
+                          <>
+                            <button onClick={() => setTiming({ id: p.id, at: toLocalInput(p.scheduledAt) })} className="text-cyan-300">
+                              日時を変更
+                            </button>
+                            <button onClick={() => unschedule(p.id)} className="text-white/60">
+                              下書きに戻す
+                            </button>
+                          </>
+                        )}
                         {p.status === "FAILED" && (
                           <button onClick={() => retry(p.id)} className="text-cyan-300">
                             再送
@@ -720,6 +772,17 @@ function PostsInner() {
                           </button>
                         )}
                       </div>
+                      {timing?.id === p.id && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                          <input type="datetime-local" value={timing.at} onChange={(e) => setTiming({ id: p.id, at: e.target.value })} className={`${inputCls} !w-auto !py-1 text-xs`} />
+                          <button onClick={() => (p.status === "DRAFT" ? approve(p.id, undefined, timing.at) : reschedule(p.id, timing.at))} className="text-emerald-300">
+                            {p.status === "DRAFT" ? "この日時で承認" : "変更する"}
+                          </button>
+                          <button onClick={() => setTiming(null)} className="text-white/50">
+                            キャンセル
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
