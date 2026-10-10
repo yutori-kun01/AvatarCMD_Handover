@@ -3,6 +3,7 @@
 // ================================================
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
+import { sessionEpoch } from "@/lib/auth";
 
 const PROTECTED_PAGES = ["/dashboard", "/avatars", "/revenue", "/automation", "/settings", "/posts", "/knowledge", "/video"];
 
@@ -20,7 +21,7 @@ export async function middleware(req: NextRequest) {
 
   let ok = false;
   try {
-    ok = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
+    ok = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value, await sessionEpoch());
   } catch {
     ok = false;
   }
@@ -34,5 +35,7 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
+  // セッションの世代（パスワード変更で上がる）を DB から読むため Node.js ランタイムで動かす
+  runtime: "nodejs",
   matcher: ["/((?!_next/|media/|favicon|.*\\.(?:png|jpg|svg|ico|webp)$).*)"],
 };

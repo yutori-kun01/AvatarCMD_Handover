@@ -346,7 +346,18 @@ export function SecuritySection({ encryptionReady, onChanged }: { encryptionRead
           >
             ログアウト
           </Button>
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              if (!confirm("この端末を含む、すべての端末からログアウトします。よろしいですか？")) return;
+              await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ all: true }) });
+              window.location.href = "/login";
+            }}
+          >
+            すべての端末からログアウト
+          </Button>
         </div>
+        <p className="text-[11px] text-white/40">パスワードを変更すると、この端末以外のログインは自動で無効になります。ログインに 15 分間で 5 回失敗した接続元は、15 分間ログインできなくなります。</p>
       </Card>
     </div>
   );

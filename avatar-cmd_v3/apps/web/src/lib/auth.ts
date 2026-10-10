@@ -41,4 +41,27 @@ export async function checkPassword(pw: string): Promise<boolean> {
 export async function setPassword(pw: string): Promise<void> {
   if (pw.length < 10) throw new Error("パスワードは10文字以上にしてください");
   await setSetting(SETTING_KEYS.adminPasswordHash, hashPassword(pw));
+  // パスワードを変えたら、それまでのセッション（他の端末・漏れた Cookie）を無効にする
+  await bumpSessionEpoch();
+}
+
+// --- セッションの世代 ----------------------------------------------------------------
+// middleware は毎リクエスト確認するので、DB の値を短時間キャッシュする（このプロセスで変えた値はすぐ反映）
+const EPOCH_KEY = "session_epoch";
+const EPOCH_TTL_MS = 10_000;
+let epochCache: { value: number; at: number } | null = null;
+
+export async function sessionEpoch(): Promise<number> {
+  if (epochCache && Date.now() - epochCache.at < EPOCH_TTL_MS) return epochCache.value;
+  const value = Number(await getSetting(EPOCH_KEY)) || 0;
+  epochCache = { value, at: Date.now() };
+  return value;
+}
+
+/** 世代を上げる（それまでのセッションをすべて無効にする）。新しい世代を返す */
+export async function bumpSessionEpoch(): Promise<number> {
+  const next = (Number(await getSetting(EPOCH_KEY)) || 0) + 1;
+  await setSetting(EPOCH_KEY, String(next));
+  epochCache = { value: next, at: Date.now() };
+  return next;
 }
