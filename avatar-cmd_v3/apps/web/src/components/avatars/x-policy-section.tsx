@@ -35,6 +35,7 @@ interface AutoPost {
   topics: string[];
   quotes: boolean;
   topicStrategy: "rotate" | "learn";
+  tuneTimes: boolean;
 }
 const AUTO_APPROVAL: Record<AutoApproval, string> = {
   all: "すべて自動承認（チェック結果は記録のみ）",
@@ -76,7 +77,7 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
   const [pricing, setPricing] = useState<Record<keyof Pricing, string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [times, setTimes] = useState<{ post: string[]; scan: string[] }>({ post: [], scan: [] });
-  const [auto, setAuto] = useState<{ approval: AutoApproval; topics: string; quotes: boolean; topicStrategy: "rotate" | "learn" } | null>(null);
+  const [auto, setAuto] = useState<{ approval: AutoApproval; topics: string; quotes: boolean; topicStrategy: "rotate" | "learn"; tuneTimes: boolean } | null>(null);
 
   const apply = (d: View) => {
     setV(d);
@@ -84,7 +85,7 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
     // 画面の時刻は「いま使っている値」（モードの回数に合わせた時刻）から始める
     setTimes({ post: d.setting.mode === "custom" ? d.setting.custom.postTimes : d.base.postTimes, scan: d.setting.mode === "custom" ? d.setting.custom.scanTimes : d.base.scanTimes });
     setBudget({ degradeAtYen: String(d.setting.degradeAtYen), capYen: String(d.setting.capYen) });
-    setAuto({ approval: d.setting.autoPost.approval, topics: d.setting.autoPost.topics.join("\n"), quotes: d.setting.autoPost.quotes, topicStrategy: d.setting.autoPost.topicStrategy });
+    setAuto({ approval: d.setting.autoPost.approval, topics: d.setting.autoPost.topics.join("\n"), quotes: d.setting.autoPost.quotes, topicStrategy: d.setting.autoPost.topicStrategy, tuneTimes: d.setting.autoPost.tuneTimes });
     setPricing({ postRead: String(d.pricing.postRead), userRead: String(d.pricing.userRead), postCreate: String(d.pricing.postCreate), usdJpy: String(d.pricing.usdJpy) });
   };
   const load = useCallback(() => api<View>(`/api/avatars/${avatarId}/x-policy`).then(apply), [avatarId]);
@@ -258,6 +259,10 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
           <label className="flex items-center gap-2 pt-5">
             <input type="checkbox" checked={auto.quotes} onChange={(e) => setAuto({ ...auto, quotes: e.target.checked })} />
             引用探索の時刻に作った引用案も承認なしで投稿する（月の上限はモードの値）
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={auto.tuneTimes} onChange={(e) => setAuto({ ...auto, tuneTimes: e.target.checked })} />
+            投稿時刻を反応の良い時間帯へ自動で寄せる（週 1 回・30 分ずつ。回数はモードのまま）
           </label>
           <label>
             トピックの選び方

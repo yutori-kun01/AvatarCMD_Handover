@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers";
 import { candidateScore } from "../src/service/quotes";
-import { defaultTimes, dueAutoPostSlot, normalizeAutoPost, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
+import { defaultTimes, dueAutoPostSlot, tunePostTimes, normalizeAutoPost, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
 
 test("モード: 既定は BALANCED。カスタマイズは範囲内に丸め、無い項目は BALANCED の値", () => {
   const d = normalizeSetting(null);
@@ -201,9 +201,9 @@ test("予算: 今月の X 費用で縮小・停止し、停止中は引用探索
 });
 
 test("自動投稿: 既定はオフ・承認範囲は all。トピックは空行・重複を除く", () => {
-  assert.deepEqual(normalizeSetting(null).autoPost, { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate" });
+  assert.deepEqual(normalizeSetting(null).autoPost, { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate", tuneTimes: false });
   const a = normalizeAutoPost({ enabled: true, approval: "nope" as any, topics: [" AI ", "", "AI", "副業"], quotes: "yes" as any });
-  assert.deepEqual(a, { enabled: true, approval: "all", topics: ["AI", "副業"], quotes: false, topicStrategy: "rotate" });
+  assert.deepEqual(a, { enabled: true, approval: "all", topics: ["AI", "副業"], quotes: false, topicStrategy: "rotate", tuneTimes: false });
   assert.equal(normalizeAutoPost({ approval: "strict" }).approval, "strict");
 });
 
@@ -219,4 +219,12 @@ test("自動投稿の枠: 投稿時刻を過ぎて 30 分以内・未投稿の�
   // 19:05 JST → 前回 9:00 なので 19:00 の枠
   assert.equal(dueAutoPostSlot(times, at("2026-10-06T00:00:00Z"), at("2026-10-06T10:05:00Z"))!.toISOString(), "2026-10-06T10:00:00.000Z");
   assert.equal(dueAutoPostSlot([], null, at("2026-10-06T00:10:00Z")), null);
+});
+
+test("投稿時刻の調整: 隣の時間帯が 15% 以上良ければ 30 分寄せる。件数不足・近すぎる時刻・範囲外は動かさない", () => {
+  const h = (o: Record<number, [number, number]>) => new Map(Object.entries(o).map(([k, [n, mean]]) => [Number(k), { n, mean }]));
+  assert.deepEqual(tunePostTimes(["09:00", "19:00"], h({ 9: [5, 0.01], 10: [4, 0.02], 19: [5, 0.02], 18: [5, 0.021] })), { times: ["09:30", "19:00"], moved: [{ from: "09:00", to: "09:30" }] });
+  assert.deepEqual(tunePostTimes(["09:00"], h({ 9: [5, 0.01], 8: [2, 0.05] })).moved, []); // 件数不足
+  assert.deepEqual(tunePostTimes(["09:00", "08:15"], h({ 9: [5, 0.01], 8: [5, 0.05] })).moved, []); // 09:00 → 08:30 は 08:15 に近すぎる
+  assert.deepEqual(tunePostTimes(["06:00"], h({ 6: [5, 0.01], 5: [5, 0.05] })).moved, []); // 6 時より前には動かさない
 });

@@ -15,7 +15,7 @@ import { jevConfig, markApplied } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { createPosts, errorMessage } from "./publish";
 import { assertBudget, withUsageContext } from "./usage";
-import { dueAutoPostSlot, effectiveXPolicy, type XAutoPost } from "./x-policy";
+import { dueAutoPostSlot, effectiveXPolicy, getXPolicy, saveXPolicy, TIME_TUNE_RULES, tunePostTimes, type XAutoPost } from "./x-policy";
 import { loadTopicStats, pickTopic } from "./topic-bandit";
 
 const SLOT_WINDOW_MS = 30 * 60_000;
@@ -49,8 +49,13 @@ export async function autoPostTopics(accountId: string, avatarId: string, autoPo
 export async function processXModePosts(now = new Date()): Promise<number> {
   const accounts = await prisma.snsAccount.findMany({ where: { platform: "x", isActive: true, avatar: { status: "ACTIVE" } } });
   let n = 0;
+  const tuned = new Set<string>();
   for (const acc of accounts) {
     try {
+      if (!tuned.has(acc.avatarId)) {
+        tuned.add(acc.avatarId);
+        await tuneXPostTimes(acc.avatarId, now);
+      }
       const { setting, params } = await effectiveXPolicy(acc.avatarId, now);
       if (!setting.autoPost.enabled || params.postsPerDay <= 0) continue;
       const settings = (acc.settings ?? {}) as Record<string, unknown>;
@@ -145,4 +150,43 @@ async function runXModePost(acc: { id: string; avatarId: string; accountName: st
     });
     return 1;
   });
+}
+
+/**
+ * 投稿時刻の見直し（自動投稿の「時刻を調整」がオンのアバターで週 1 回）。
+ * このアバターの X の通常投稿（引用は除く）の 24h 時点の反応率を時間帯ごとに比べ、良い方へ 30 分寄せる。回数は変えない。
+ */
+export async function tuneXPostTimes(avatarId: string, now = new Date()): Promise<{ from: string; to: string }[]> {
+  const setting = await getXPolicy(avatarId);
+  const a = setting.autoPost;
+  if (!a.enabled || !a.tuneTimes) return [];
+  if (a.timesTunedAt && now.getTime() - Date.parse(a.timesTunedAt) < TIME_TUNE_RULES.everyDays * 86400_000) return [];
+  const { params } = await effectiveXPolicy(avatarId, now);
+  const rows = await prisma.content.findMany({
+    where: { avatarId, platform: "x", status: "PUBLISHED", category: { not: "quote" }, publishedAt: { gte: new Date(now.getTime() - 60 * 86400_000) } },
+    select: { publishedAt: true, engagement: true },
+  });
+  const acc = new Map<number, { n: number; sum: number }>();
+  for (const r of rows) {
+    const e = (r.engagement ?? {}) as Record<string, unknown>;
+    const views = typeof e.views === "number" ? e.views : 0;
+    const eng = typeof e.engagements === "number" ? e.engagements : null;
+    const fetchedAt = typeof e.fetchedAt === "string" ? Date.parse(e.fetchedAt) : NaN;
+    if (!r.publishedAt || eng === null || views < 30 || !Number.isFinite(fetchedAt) || fetchedAt - r.publishedAt.getTime() < 20 * 3600_000) continue;
+    const h = new Date(r.publishedAt.getTime() + 9 * 3600_000).getUTCHours();
+    const cur = acc.get(h) ?? { n: 0, sum: 0 };
+    acc.set(h, { n: cur.n + 1, sum: cur.sum + eng / views });
+  }
+  const byHour = new Map([...acc].map(([h, v]) => [h, { n: v.n, mean: v.sum / v.n }]));
+  const { times, moved } = tunePostTimes(params.postTimes, byHour);
+  const autoPost = { ...a, timesTunedAt: now.toISOString() };
+  if (!moved.length) {
+    await saveXPolicy(avatarId, { autoPost });
+    return [];
+  }
+  await saveXPolicy(avatarId, setting.mode === "custom" ? { autoPost, custom: { ...setting.custom, postTimes: times } } : { autoPost, times: { ...setting.times, post: times } });
+  await prisma.activityLog.create({
+    data: { avatarId, action: "x_post_times_tuned", category: "content", level: "info", description: `X の投稿時刻を反応の良い時間帯へ調整: ${moved.map((m) => `${m.from} → ${m.to}`).join("、")}` },
+  });
+  return moved;
 }

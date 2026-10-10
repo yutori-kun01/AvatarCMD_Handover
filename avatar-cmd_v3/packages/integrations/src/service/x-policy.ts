@@ -71,14 +71,26 @@ export interface XAutoPost {
   quotes: boolean;
   /** トピックの選び方（rotate = 順番・既定 / learn = 反応の良いトピックを優先） */
   topicStrategy: "rotate" | "learn";
+  /** 投稿時刻を、反応の良い時間帯へ週 1 回・30 分ずつ寄せる（回数はモードのまま） */
+  tuneTimes: boolean;
+  /** 最後に時刻を見直した日時 */
+  timesTunedAt?: string;
 }
-export const DEFAULT_X_AUTOPOST: XAutoPost = { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate" };
+export const DEFAULT_X_AUTOPOST: XAutoPost = { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate", tuneTimes: false };
 
 export function normalizeAutoPost(raw: Partial<XAutoPost> | null | undefined): XAutoPost {
   const r = raw ?? {};
   const approval: XAutoApproval = r.approval === "standard" || r.approval === "strict" ? r.approval : "all";
   const topics = Array.isArray(r.topics) ? [...new Set(r.topics.map((t) => String(t).trim()).filter(Boolean))].slice(0, 50) : [];
-  return { enabled: r.enabled === true, approval, topics, quotes: r.quotes === true, topicStrategy: r.topicStrategy === "learn" ? "learn" : "rotate" };
+  return {
+    enabled: r.enabled === true,
+    approval,
+    topics,
+    quotes: r.quotes === true,
+    topicStrategy: r.topicStrategy === "learn" ? "learn" : "rotate",
+    tuneTimes: r.tuneTimes === true,
+    ...(typeof r.timesTunedAt === "string" && !Number.isNaN(Date.parse(r.timesTunedAt)) ? { timesTunedAt: r.timesTunedAt } : {}),
+  };
 }
 
 export interface XPolicySetting {
@@ -367,4 +379,52 @@ export function dueAutoPostSlot(postTimes: string[], lastSlot: Date | null, now 
   if (!slot || now.getTime() - slot.getTime() > graceMinutes * 60_000) return null;
   if (lastSlot && lastSlot.getTime() >= slot.getTime()) return null;
   return slot;
+}
+
+// --- 投稿時刻の調整 ------------------------------------------------------------------------
+
+export const TIME_TUNE_RULES = {
+  everyDays: 7,
+  /** 1 回に動かす幅（分） */
+  stepMinutes: 30,
+  /** 時間帯ごとの最低件数 */
+  minPosts: 3,
+  /** 隣の時間帯がこの割合以上良ければ寄せる */
+  minLift: 0.15,
+  /** 動かせる範囲（日本時間） */
+  earliest: 6 * 60,
+  latest: 23 * 60,
+  /** 投稿時刻どうしの最小間隔（分） */
+  minGapMinutes: 60,
+};
+
+const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+const toHm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+/**
+ * 時間帯（日本時間の時）ごとの平均反応率から、各投稿時刻を前後どちらかの時間帯へ 30 分寄せた案を返す。
+ * 前後の時間帯の件数が足りない・差が小さい・他の時刻と近すぎる場合は動かさない。
+ */
+export function tunePostTimes(times: string[], byHour: Map<number, { n: number; mean: number }>, r = TIME_TUNE_RULES): { times: string[]; moved: { from: string; to: string }[] } {
+  const out = [...times];
+  const moved: { from: string; to: string }[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const m = toMin(out[i]);
+    const h = Math.floor(m / 60);
+    const own = byHour.get(h);
+    if (!own || own.n < r.minPosts) continue;
+    let best: { dir: number; mean: number } | null = null;
+    for (const dir of [-1, 1]) {
+      const nb = byHour.get(h + dir);
+      if (!nb || nb.n < r.minPosts || nb.mean < own.mean * (1 + r.minLift)) continue;
+      if (!best || nb.mean > best.mean) best = { dir, mean: nb.mean };
+    }
+    if (!best) continue;
+    const next = m + best.dir * r.stepMinutes;
+    if (next < r.earliest || next > r.latest) continue;
+    if (out.some((t, j) => j !== i && Math.abs(toMin(t) - next) < r.minGapMinutes)) continue;
+    moved.push({ from: out[i], to: toHm(next) });
+    out[i] = toHm(next);
+  }
+  return { times: [...out].sort(), moved };
 }
