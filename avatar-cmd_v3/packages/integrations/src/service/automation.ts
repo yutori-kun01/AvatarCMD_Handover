@@ -22,7 +22,7 @@ import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
 import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
-import { effectiveXPolicy, nextPostSlot } from "./x-policy";
+import { effectiveXPolicy, getXPolicy, nextPostSlot } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 
@@ -293,8 +293,12 @@ export async function runRule(ruleId: string): Promise<number> {
 
 async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRule.findUniqueOrThrow>>): Promise<number> {
   const action = validateAction(rule.actionConfig as unknown as ActionConfig);
-  const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
-  if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
+  const all = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
+  if (!all.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
+  // X API モードの自動投稿がオンの X アカウントは、モードの時刻にこのルールのトピックで投稿される（x-autopost.ts）ので、ここでは作らない
+  const xAuto = all.some((a) => a.platform === "x") && (await getXPolicy(rule.avatarId)).autoPost.enabled;
+  const accounts = xAuto ? all.filter((a) => a.platform !== "x") : all;
+  if (!accounts.length) return 0;
   const topic = action.topics[rule.executionCount % action.topics.length];
 
   // プラットフォームごとに文字数が違うので、プラットフォーム単位で生成する

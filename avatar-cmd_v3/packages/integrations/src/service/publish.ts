@@ -171,6 +171,13 @@ export async function prePublishCheck(contentId: string): Promise<string | null>
   if (!c.snsAccount.isActive) return "投稿先アカウントが停止中です";
   if (c.avatar.status !== "ACTIVE") return `アバターが稼働中ではありません（${c.avatar.status}）`;
   const meta = (c.metadata ?? {}) as Record<string, any>;
+  if (meta.xModeAuto && meta.autoApproved && !meta.humanApprovedAt) {
+    // X API モードの自動投稿: 送信前に自動投稿がオフにされていたら止める
+    const { getXPolicy } = await import("./x-policy");
+    const auto = (await getXPolicy(c.avatarId)).autoPost;
+    if (!auto.enabled || (c.category === "quote" && !auto.quotes)) return "X API 設定の自動投稿がオフに変更されています";
+    if (!meta.automationId) return null;
+  }
   if (!meta.automationId || !meta.autoApproved || meta.humanApprovedAt) return null;
   const rule = await prisma.automationRule.findUnique({ where: { id: String(meta.automationId) } });
   if (!rule) return "自動化ルールが削除されています";

@@ -28,8 +28,20 @@ interface Pricing {
   postCreate: number;
   usdJpy: number;
 }
+type AutoApproval = "all" | "standard" | "strict";
+interface AutoPost {
+  enabled: boolean;
+  approval: AutoApproval;
+  topics: string[];
+  quotes: boolean;
+}
+const AUTO_APPROVAL: Record<AutoApproval, string> = {
+  all: "すべて自動承認（チェック結果は記録のみ）",
+  standard: "NGのみ保留（NG は下書きへ）",
+  strict: "OKのみ投稿（OK 以外は下書きへ）",
+};
 interface View {
-  setting: { mode: Mode; custom: Params; degradeAtYen: number; capYen: number; times: { post: string[]; scan: string[] } };
+  setting: { mode: Mode; custom: Params; degradeAtYen: number; capYen: number; times: { post: string[]; scan: string[] }; autoPost: AutoPost };
   pricing: Pricing;
   usage: Estimate;
   level: "normal" | "reduced" | "stopped";
@@ -63,6 +75,7 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
   const [pricing, setPricing] = useState<Record<keyof Pricing, string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [times, setTimes] = useState<{ post: string[]; scan: string[] }>({ post: [], scan: [] });
+  const [auto, setAuto] = useState<{ approval: AutoApproval; topics: string; quotes: boolean } | null>(null);
 
   const apply = (d: View) => {
     setV(d);
@@ -70,6 +83,7 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
     // 画面の時刻は「いま使っている値」（モードの回数に合わせた時刻）から始める
     setTimes({ post: d.setting.mode === "custom" ? d.setting.custom.postTimes : d.base.postTimes, scan: d.setting.mode === "custom" ? d.setting.custom.scanTimes : d.base.scanTimes });
     setBudget({ degradeAtYen: String(d.setting.degradeAtYen), capYen: String(d.setting.capYen) });
+    setAuto({ approval: d.setting.autoPost.approval, topics: d.setting.autoPost.topics.join("\n"), quotes: d.setting.autoPost.quotes });
     setPricing({ postRead: String(d.pricing.postRead), userRead: String(d.pricing.userRead), postCreate: String(d.pricing.postCreate), usdJpy: String(d.pricing.usdJpy) });
   };
   const load = useCallback(() => api<View>(`/api/avatars/${avatarId}/x-policy`).then(apply), [avatarId]);
@@ -103,7 +117,7 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
     }
   }
 
-  if (!v || !custom || !pricing) return <p className="text-sm text-white/40">読み込み中…</p>;
+  if (!v || !custom || !pricing || !auto) return <p className="text-sm text-white/40">読み込み中…</p>;
   const cap = v.setting.capYen;
   const pct = cap ? Math.min(100, Math.round((v.usage.yen / cap) * 100)) : 0;
   const degradePct = cap ? Math.min(100, Math.round((v.setting.degradeAtYen / cap) * 100)) : 0;
@@ -168,7 +182,9 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
           <h3 className="text-sm font-semibold">時刻（日本時間）</h3>
           <p className="text-xs text-white/50">
             {v.setting.mode === "custom" ? "回数はカスタマイズで変えられます。" : "回数はモードで固定です。時刻だけ変えられます。"}
-            自動化ルールが X に作る通常投稿は、この時刻の空いている枠に予約されます（今日・明日の枠が埋まっていれば下書きにします）。
+            {v.setting.autoPost.enabled
+              ? "自動投稿がオンなので、この時刻ごとに承認なしで通常投稿します。"
+              : "自動化ルールが X に作る通常投稿は、この時刻の空いている枠に予約されます（今日・明日の枠が埋まっていれば下書きにします）。"}
           </p>
         </div>
         {(
@@ -212,6 +228,54 @@ export function XPolicySection({ avatarId, onNotice }: { avatarId: string; onNot
           {v.setting.mode !== "custom" && (
             <Button variant="ghost" disabled={busy} onClick={() => save({ times: { post: [], scan: [] } }, "モードの既定の時刻に戻しました")}>
               既定に戻す
+            </Button>
+          )}
+        </div>
+      </Card>
+
+      <Card className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-semibold">自動投稿（承認なし）</h3>
+          <Badge className={v.setting.autoPost.enabled ? "bg-emerald-500/15 text-emerald-300" : "bg-white/10 text-white/60"}>{v.setting.autoPost.enabled ? "オン" : "オフ"}</Badge>
+        </div>
+        <p className="text-xs text-white/50">
+          オンにすると、上の「通常投稿の時刻」ごとに AI が投稿文を作り、人の承認なしで X に投稿します（1 日の回数はモードのまま）。
+          トピックが空なら、この X アカウントを投稿先にした自動化ルールのトピックと追加の指示 → ペルソナのトピックの順に使います。
+          オンの間、自動化ルールはこの X アカウントに別の投稿を作りません（ルールの内容はここで使います）。
+        </p>
+        <div className="grid gap-3 text-xs text-white/60 md:grid-cols-2">
+          <label>
+            投稿前チェックの扱い
+            <select value={auto.approval} onChange={(e) => setAuto({ ...auto, approval: e.target.value as AutoApproval })} className={`${inputCls} mt-1`}>
+              {(Object.keys(AUTO_APPROVAL) as AutoApproval[]).map((k) => (
+                <option key={k} value={k}>
+                  {AUTO_APPROVAL[k]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 pt-5">
+            <input type="checkbox" checked={auto.quotes} onChange={(e) => setAuto({ ...auto, quotes: e.target.checked })} />
+            引用探索の時刻に作った引用案も承認なしで投稿する（月の上限はモードの値）
+          </label>
+          <label className="md:col-span-2">
+            トピック（1 行に 1 つ・順番に使う。空ならルール → ペルソナ）
+            <textarea value={auto.topics} onChange={(e) => setAuto({ ...auto, topics: e.target.value })} rows={3} className={`${inputCls} mt-1`} />
+          </label>
+        </div>
+        <div className="flex gap-2">
+          {v.setting.autoPost.enabled ? (
+            <>
+              <Button disabled={busy} onClick={() => save({ autoPost: { ...auto, enabled: true, topics: auto.topics.split("\n") } }, "自動投稿の設定を保存しました")}>
+                保存
+              </Button>
+              <Button variant="ghost" disabled={busy} onClick={() => save({ autoPost: { enabled: false } }, "自動投稿をオフにしました（予約済みの自動投稿も送信前に止まります）")}>
+                オフにする
+              </Button>
+            </>
+          ) : (
+            <Button disabled={busy || v.base.postsPerDay === 0} onClick={() => save({ autoPost: { ...auto, enabled: true, topics: auto.topics.split("\n") } }, "自動投稿をオンにしました")}>
+              オンにする
             </Button>
           )}
         </div>

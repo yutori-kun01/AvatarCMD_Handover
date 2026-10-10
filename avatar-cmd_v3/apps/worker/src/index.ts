@@ -7,7 +7,7 @@
 // note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processXModePosts, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -15,6 +15,10 @@ const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
 // 投稿の反応（指標）の取得は数分おきで十分（各投稿の取得間隔は metricsDue で管理）
 const METRICS_EVERY_MS = 10 * 60_000;
 let lastMetricsAt = 0;
+
+// X API モードの自動投稿（投稿時刻を過ぎて 30 分以内の枠を見るので 1 分おきで十分）
+const X_AUTOPOST_EVERY_MS = 60_000;
+let lastXAutoPostAt = 0;
 
 // note 記事の生成ジョブは画面で待っている人がいるので短い間隔で見る
 const ARTICLE_JOBS_EVERY_MS = Number(process.env.ARTICLE_JOBS_TICK_MS || 3_000);
@@ -45,6 +49,11 @@ async function tick() {
     await setSetting(SETTING_KEYS.workerHeartbeat, new Date().toISOString());
     const r = await processDueRules();
     if (r) console.log(`[worker] ${new Date().toISOString()} ran ${r} automation rule(s)`);
+    if (Date.now() - lastXAutoPostAt >= X_AUTOPOST_EVERY_MS) {
+      lastXAutoPostAt = Date.now();
+      const x = await processXModePosts().catch((e) => (console.error("[worker] x autopost failed:", e), 0));
+      if (x) console.log(`[worker] ${new Date().toISOString()} created ${x} X auto post(s)`);
+    }
     const n = await processDuePosts({ limit: 10, maxRetries: MAX_RETRIES });
     if (n) console.log(`[worker] ${new Date().toISOString()} processed ${n} post(s)`);
     if (Date.now() - lastMetricsAt >= METRICS_EVERY_MS) {

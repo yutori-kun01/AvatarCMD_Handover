@@ -27,7 +27,7 @@ import { canonicalStatusUrl, cleanPostText, INLINE_QUOTE_WEIGHT } from "../post-
 import { autoApprovalDecision } from "./automation";
 import { getSystemConfig } from "./store";
 import { assertBudget, recordUsage, withUsageContext } from "./usage";
-import { effectiveXPolicy, scanDue } from "./x-policy";
+import { effectiveXPolicy, getXPolicy, scanDue } from "./x-policy";
 
 const HOUR = 3600_000;
 
@@ -283,6 +283,8 @@ export interface ScanOptions {
   ruleId?: string;
   /** worker・自動化ルールからの実行。X API モードの探索時刻を過ぎていなければ読まずに終わる */
   scheduled?: boolean;
+  /** X API モードの自動投稿（引用案も承認なしで投稿）からの実行 */
+  xModeAuto?: boolean;
 }
 
 export async function scanQuoteCandidates(snsAccountId: string, opts: ScanOptions = {}): Promise<ScanResult> {
@@ -457,6 +459,7 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
             model,
             review,
             ...(opts.ruleId ? { automationId: opts.ruleId } : {}),
+            ...(opts.xModeAuto ? { xModeAuto: true } : {}),
             ...(auto?.publish ? { autoApproved: rules.approval ?? "all" } : {}),
             heldReason: opts.config?.mode === "auto" ? (auto?.publish ? undefined : `引用ルールの自動投稿で保留: ${auto?.reason ?? ""}`) : "引用案（承認すると元投稿の URL を本文に入れて投稿）",
             quote: { postId: f.post.id, url: canonicalStatusUrl(f.post.url, f.post.id) ?? f.post.url, method: "url_inline", authorUsername: f.post.authorUsername, text: f.post.text.slice(0, 500), candidateId: f.id },
@@ -549,11 +552,14 @@ export async function processQuoteScans(): Promise<number> {
   );
   for (const acc of accounts) {
     const s = (acc.settings ?? {}) as Record<string, unknown>;
+    // X API 設定の自動投稿で「引用案も投稿」なら、モードの時刻に探索して承認範囲に従って投稿する
+    const auto = (await getXPolicy(acc.avatarId)).autoPost;
+    const autoQuotes = auto.enabled && auto.quotes;
     // 「する」（旧設定の「12/24 時間ごと」も含む）なら、アバターの X API モードの時刻に探索する
-    const enabled = !!s.quoteScanHours && s.quoteScanHours !== "off";
+    const enabled = autoQuotes || (!!s.quoteScanHours && s.quoteScanHours !== "off");
     if (!enabled || ruled.has(acc.id)) continue;
     try {
-      const r = await scanQuoteCandidates(acc.id, { scheduled: true });
+      const r = await scanQuoteCandidates(acc.id, autoQuotes ? { scheduled: true, xModeAuto: true, config: { accountId: acc.id, mode: "auto", approval: auto.approval } } : { scheduled: true });
       if (!r.waiting) n++;
     } catch (e) {
       // 失敗しても次回まで待つ（課金が発生する処理を短い間隔で繰り返さない）

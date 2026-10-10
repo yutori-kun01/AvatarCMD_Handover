@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers";
 import { candidateScore } from "../src/service/quotes";
-import { defaultTimes, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
+import { defaultTimes, dueAutoPostSlot, normalizeAutoPost, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
 
 test("モード: 既定は BALANCED。カスタマイズは範囲内に丸め、無い項目は BALANCED の値", () => {
   const d = normalizeSetting(null);
@@ -198,4 +198,25 @@ test("予算: 今月の X 費用で縮小・停止し、停止中は引用探索
   } finally {
     m2.restore();
   }
+});
+
+test("自動投稿: 既定はオフ・承認範囲は all。トピックは空行・重複を除く", () => {
+  assert.deepEqual(normalizeSetting(null).autoPost, { enabled: false, approval: "all", topics: [], quotes: false });
+  const a = normalizeAutoPost({ enabled: true, approval: "nope" as any, topics: [" AI ", "", "AI", "副業"], quotes: "yes" as any });
+  assert.deepEqual(a, { enabled: true, approval: "all", topics: ["AI", "副業"], quotes: false });
+  assert.equal(normalizeAutoPost({ approval: "strict" }).approval, "strict");
+});
+
+test("自動投稿の枠: 投稿時刻を過ぎて 30 分以内・未投稿の枠だけ。止まっていた間の枠はさかのぼらない", () => {
+  const times = ["09:00", "19:00"];
+  const at = (iso: string) => new Date(iso);
+  // 9:10 JST → 9:00 の枠
+  assert.equal(dueAutoPostSlot(times, null, at("2026-10-06T00:10:00Z"))!.toISOString(), "2026-10-06T00:00:00.000Z");
+  // 同じ枠は 1 回だけ
+  assert.equal(dueAutoPostSlot(times, at("2026-10-06T00:00:00Z"), at("2026-10-06T00:20:00Z")), null);
+  // 9:45 JST は 30 分を過ぎているので投稿しない
+  assert.equal(dueAutoPostSlot(times, null, at("2026-10-06T00:45:00Z")), null);
+  // 19:05 JST → 前回 9:00 なので 19:00 の枠
+  assert.equal(dueAutoPostSlot(times, at("2026-10-06T00:00:00Z"), at("2026-10-06T10:05:00Z"))!.toISOString(), "2026-10-06T10:00:00.000Z");
+  assert.equal(dueAutoPostSlot([], null, at("2026-10-06T00:10:00Z")), null);
 });

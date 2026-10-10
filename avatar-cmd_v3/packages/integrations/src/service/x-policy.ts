@@ -54,6 +54,31 @@ export const X_MODES: Record<Exclude<XMode, "custom">, { label: string; help: st
 export const DEFAULT_X_MODE: XMode = "balanced";
 export const DEFAULT_X_BUDGET = { degradeAtYen: 800, capYen: 1000 };
 
+export type XAutoApproval = "all" | "standard" | "strict";
+
+/**
+ * X API モードの時刻・回数で、人の承認なしに通常投稿する設定（アバター単位・既定はオフ）。
+ * オンにすると、このアバターの X アカウントへの通常投稿はモードの時刻ごとに worker が生成して投稿する（x-autopost.ts）。
+ * 内容のトピック: topics → このアカウントを投稿先にした自動化ルール（投稿文の生成）のトピックと追加の指示 → ペルソナのトピック。
+ */
+export interface XAutoPost {
+  enabled: boolean;
+  /** 投稿前チェックの扱い（all = チェック結果に関わらず投稿・既定 / standard = NG だけ保留 / strict = OK だけ投稿） */
+  approval: XAutoApproval;
+  /** 自動投稿のトピック（空なら自動化ルール → ペルソナのトピック） */
+  topics: string[];
+  /** 引用探索の時刻に作った引用案も、承認なしで投稿する */
+  quotes: boolean;
+}
+export const DEFAULT_X_AUTOPOST: XAutoPost = { enabled: false, approval: "all", topics: [], quotes: false };
+
+export function normalizeAutoPost(raw: Partial<XAutoPost> | null | undefined): XAutoPost {
+  const r = raw ?? {};
+  const approval: XAutoApproval = r.approval === "standard" || r.approval === "strict" ? r.approval : "all";
+  const topics = Array.isArray(r.topics) ? [...new Set(r.topics.map((t) => String(t).trim()).filter(Boolean))].slice(0, 50) : [];
+  return { enabled: r.enabled === true, approval, topics, quotes: r.quotes === true };
+}
+
 export interface XPolicySetting {
   mode: XMode;
   /**
@@ -65,6 +90,8 @@ export interface XPolicySetting {
   custom: XPolicyParams;
   degradeAtYen: number;
   capYen: number;
+  /** 承認なしの自動投稿 */
+  autoPost: XAutoPost;
 }
 
 // --- 検証 ------------------------------------------------------------------------------
@@ -120,6 +147,7 @@ export function normalizeSetting(raw: Partial<XPolicySetting> | null | undefined
     custom: normalizeParams(r.custom),
     degradeAtYen: Math.min(capYen, int(r.degradeAtYen, 0, 1_000_000, DEFAULT_X_BUDGET.degradeAtYen)),
     capYen,
+    autoPost: normalizeAutoPost(r.autoPost),
   };
 }
 
@@ -251,6 +279,7 @@ export async function saveXPolicy(avatarId: string, input: Partial<XPolicySettin
     ...input,
     times: input.times ? { ...cur.times, ...input.times } : cur.times,
     custom: input.custom ? { ...cur.custom, ...input.custom } : cur.custom,
+    autoPost: input.autoPost ? { ...cur.autoPost, ...input.autoPost } : cur.autoPost,
   });
   // プリセットのモードで、回数と合わない時刻は保存しない（回数はモードで固定）
   if (next.mode !== "custom" && input.times) {
@@ -325,4 +354,15 @@ export function nextPostSlot(postTimes: string[], taken: Date[], now = new Date(
     }
   }
   return null;
+}
+
+/**
+ * 自動投稿する時刻の枠。直近に来た投稿時刻が grace 分以内で、まだ投稿していない（lastSlot より後）ならその時刻。
+ * worker が止まっていて時刻を大きく過ぎた枠は、さかのぼって投稿しない。
+ */
+export function dueAutoPostSlot(postTimes: string[], lastSlot: Date | null, now = new Date(), graceMinutes = 30): Date | null {
+  const slot = lastScanSlot(postTimes, now);
+  if (!slot || now.getTime() - slot.getTime() > graceMinutes * 60_000) return null;
+  if (lastSlot && lastSlot.getTime() >= slot.getTime()) return null;
+  return slot;
 }

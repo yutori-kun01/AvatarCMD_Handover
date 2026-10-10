@@ -30,6 +30,20 @@ const nextConfig = {
       { source: "/activity", destination: "/dashboard#activity", permanent: false },
     ];
   },
+  // 基本のセキュリティヘッダー（クリックジャッキング・MIME 推測・リファラ漏れの対策）
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },
   experimental: {
     serverActions: { bodySizeLimit: "10mb" },
   },
