@@ -1,7 +1,7 @@
 // トピックの学習（反応の良いトピックを優先）
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickTopic, topicStats } from "../src/service/topic-bandit";
+import { pickTopic, templateStats, topicStats } from "../src/service/topic-bandit";
 
 const st = (o: Record<string, [number, number]>) => new Map(Object.entries(o).map(([k, [n, mean]]) => [k, { n, mean }]));
 
@@ -26,4 +26,12 @@ test("成績: 公開 20 時間以上・表示 30 以上の指標だけを、ト�
   assert.deepEqual(m.get("a"), { n: 2, mean: 0.03 });
   assert.deepEqual(m.get("b"), { n: 1, mean: 0.01 });
   assert.equal(m.has("z"), false);
+});
+
+test("テンプレートの成績: note 記事の article.templateId ごと。テーマは metadata.topic を優先", () => {
+  const pub = new Date("2026-10-01T00:00:00Z");
+  const row = (meta: object, views: number, eng: number) => ({ publishedAt: pub, metadata: meta, engagement: { views, engagements: eng, fetchedAt: new Date(pub.getTime() + 48 * 3600_000).toISOString() } });
+  const rows = [row({ title: "記事タイトル", topic: "集中", article: { templateId: "T1" } }, 100, 5), row({ title: "別", topic: "睡眠", article: { templateId: "T2" } }, 100, 1)];
+  assert.deepEqual(templateStats(rows, ["T1", "T2"]).get("T1"), { n: 1, mean: 0.05 });
+  assert.deepEqual([...topicStats(rows, ["集中", "記事タイトル"]).keys()], ["集中"]);
 });

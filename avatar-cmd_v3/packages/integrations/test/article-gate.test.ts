@@ -196,3 +196,20 @@ test("note 記事ルールの見積もり: 執筆・チェック・画像の計�
   assert.ok(Math.abs(purposes.visual - e.runsPerMonth) < 0.01);
   if (purposes.image_generate !== undefined) assert.ok(Math.abs(purposes.image_generate - e.runsPerMonth * 4) < 0.01);
 });
+
+test("note 記事ルールの A/B: 試行の少ないテンプレートを先に使い、記事にテンプレートとテーマを記録する", opts, async () => {
+  await svc.setSetting(svc.SETTING_KEYS.workerHeartbeat, new Date().toISOString());
+  const alt = await svc.saveArticleTemplate({ name: "比較用", paid: false, visuals: false, eyecatch: false, publish: "draft" });
+  const rule = await svc.createRule({ avatarId, name: "AB", actionType: "note_article", trigger: { type: "interval", hours: 24 }, action: { accountId, templateId, abTemplateId: alt.id, topics: ["集中"] } as any });
+  // 元のテンプレートだけ 2 本の成果がある → 比較用（未試行）を使う
+  for (let i = 0; i < 2; i++) {
+    const pub = new Date(Date.now() - (i + 3) * 86400_000);
+    await prisma.content.create({
+      data: { avatarId, platform: "note", snsAccountId: accountId, content: "x", status: "PUBLISHED", category: "automation", publishedAt: pub, engagement: { views: 200, engagements: 10, fetchedAt: new Date(pub.getTime() + 48 * 3600_000).toISOString() }, metadata: { automationId: rule.id, topic: "集中", article: { templateId } } },
+    });
+  }
+  await svc.runRule(rule.id);
+  const job = await prisma.articleJob.findFirstOrThrow({ where: { avatarId }, orderBy: { createdAt: "desc" } });
+  assert.equal((job.input as any).templateId, alt.id);
+  await prisma.articleJob.deleteMany({ where: { avatarId } });
+});

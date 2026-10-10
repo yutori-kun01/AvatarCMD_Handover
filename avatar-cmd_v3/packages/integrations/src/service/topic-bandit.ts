@@ -58,12 +58,21 @@ interface StatRow {
   metadata: unknown;
 }
 
-/** 投稿の指標からトピックごとの平均反応率を出す（トピック = metadata.title） */
+/** 投稿の指標からトピックごとの平均反応率を出す（トピック = metadata.topic。無ければ metadata.title。note 記事はタイトルとテーマが別） */
 export function topicStats(rows: StatRow[], topics: string[]): Map<string, TopicStat> {
-  const set = new Set(topics);
+  return statsBy(rows, topics, (meta) => (typeof meta.topic === "string" ? meta.topic : meta.title));
+}
+
+/** note 記事のテンプレートごとの成績（A/B 比較。キー = metadata.article.templateId） */
+export function templateStats(rows: StatRow[], templateIds: string[]): Map<string, TopicStat> {
+  return statsBy(rows, templateIds, (meta) => (meta.article as Record<string, unknown> | undefined)?.templateId);
+}
+
+function statsBy(rows: StatRow[], keys: string[], keyOf: (meta: Record<string, unknown>) => unknown): Map<string, TopicStat> {
+  const set = new Set(keys);
   const acc = new Map<string, { n: number; sum: number }>();
   for (const r of rows) {
-    const title = (r.metadata as Record<string, unknown> | null)?.title;
+    const title = keyOf((r.metadata ?? {}) as Record<string, unknown>);
     if (typeof title !== "string" || !set.has(title) || !r.publishedAt) continue;
     const e = (r.engagement ?? {}) as Record<string, unknown>;
     const views = typeof e.views === "number" ? e.views : 0;
@@ -79,16 +88,24 @@ export function topicStats(rows: StatRow[], topics: string[]): Map<string, Topic
 
 /** 自動化ルール、または X の自動投稿（アカウント）の投稿から、トピックごとの成績を読む */
 export async function loadTopicStats(where: { ruleId?: string; xAutoAccountId?: string }, topics: string[], now = new Date()): Promise<Map<string, TopicStat>> {
+  return topicStats(await loadStatRows(where, now), topics);
+}
+
+/** note 記事ルールのテンプレートごとの成績 */
+export async function loadTemplateStats(ruleId: string, templateIds: string[], now = new Date()): Promise<Map<string, TopicStat>> {
+  return templateStats(await loadStatRows({ ruleId }, now), templateIds);
+}
+
+async function loadStatRows(where: { ruleId?: string; xAutoAccountId?: string }, now: Date): Promise<StatRow[]> {
   const since = new Date(now.getTime() - TOPIC_RULES.windowDays * 86400_000);
   const or = [
     ...(where.ruleId ? [{ metadata: { path: ["automationId"], equals: where.ruleId } }, { metadata: { path: ["sourceRuleId"], equals: where.ruleId } }] : []),
     ...(where.xAutoAccountId ? [{ snsAccountId: where.xAutoAccountId, metadata: { path: ["xModeAuto"], equals: true } }] : []),
   ];
-  if (!or.length) return new Map();
-  const rows = await prisma.content.findMany({
+  if (!or.length) return [];
+  return prisma.content.findMany({
     where: { status: "PUBLISHED", publishedAt: { gte: since }, OR: or },
     select: { publishedAt: true, engagement: true, metadata: true },
     take: 1000,
   });
-  return topicStats(rows, topics);
 }

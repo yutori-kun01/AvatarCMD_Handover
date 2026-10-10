@@ -13,7 +13,7 @@
 //   - POST https://note.com/api/v1/text_notes/draft_save?id= 本文・タグ・有料ライン（separator）・価格を保存
 //   - PUT  https://note.com/api/v1/text_notes/{id}          公開（status: "published"。全項目を送る。差分更新はない）
 //   - GET  https://note.com/api/v3/notes/{key}              公開できたかの確認（status）
-//   - GET  https://note.com/api/v1/stats/pv                 記事ごとの累計 PV・スキ（閲覧数の推移に使う）
+//   - GET  https://note.com/api/v1/stats/pv                 記事ごとの累計 PV・スキ（閲覧数の推移・記事ごとの成果に使う。行の key が記事の key）
 // 既定は下書き保存まで（公開ボタンは本人が押す）。投稿のオプション mode: "publish" を指定したときだけ公開まで行う。
 // 予約公開は Avatar CMD の予約（scheduledAt）で、その時刻に mode: "publish" の投稿を実行する（note 側の予約機能は使わない）。
 // 公開に失敗した場合は下書きのまま残し（同じ記事を二重に作らないよう失敗扱いにはしない）、その旨を返す。
@@ -212,6 +212,23 @@ export const note: PlatformDefinition = {
       if (r.last_page || !rows.length) break;
     }
     return { totals: { views, engagements: likes } };
+  },
+  async fetchMetrics(ctx, posts) {
+    // 記事ごとの累計 PV・スキ・コメント。統計は全記事の一覧なので、ページをたどって key で突き合わせる（非公式 API）
+    const cookie = ctx.credentials.cookie as string;
+    if (!cookie) throw new ConfigError("note: アカウントを再接続してください");
+    const want = new Set(posts.map((p) => p.postId));
+    const found = new Map<string, { views: number; likes: number; replies: number }>();
+    for (let page = 1; page <= 20 && found.size < want.size; page++) {
+      const r = (await call(cookie, `/v1/stats/pv?filter=all&page=${page}`)).data ?? {};
+      const rows = (r.note_stats ?? []) as { key?: string; note_key?: string; read_count?: number; like_count?: number; comment_count?: number }[];
+      for (const a of rows) {
+        const key = a.key ?? a.note_key;
+        if (key && want.has(key)) found.set(key, { views: a.read_count ?? 0, likes: a.like_count ?? 0, replies: a.comment_count ?? 0 });
+      }
+      if (r.last_page || !rows.length) break;
+    }
+    return Object.fromEntries(posts.map((p) => [p.postId, found.get(p.postId) ?? { error: "note の統計に見つかりません（下書きのまま、または公開直後）" }]));
   },
   async publish(ctx, post) {
     const cookie = ctx.credentials.cookie as string;

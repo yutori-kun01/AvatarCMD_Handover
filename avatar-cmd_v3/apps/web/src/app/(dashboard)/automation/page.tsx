@@ -20,6 +20,7 @@ interface Rule {
     templateId?: string;
     publish?: "draft" | "publish";
     paywallFallback?: "free" | "hold" | "retry";
+    abTemplateId?: string;
     publishTiming?: { type: "now" } | { type: "delay"; hours: number } | { type: "weekly"; weekdays: number[]; time: string };
     accountIds: string[];
     topics: string[];
@@ -141,6 +142,7 @@ interface Draft {
   templateId: string;
   notePublish: "" | "draft" | "publish";
   noteApproval: Approval;
+  abTemplateId: string;
   paywallFallback: "free" | "hold" | "retry";
   timingType: "now" | "delay" | "weekly";
   timingHours: string;
@@ -184,6 +186,7 @@ function toDraft(r: Rule): Draft {
     notePublish: r.action.publish ?? "",
     noteApproval: r.actionType === "note_article" ? r.action.approval ?? "all" : "standard",
     paywallFallback: r.action.paywallFallback ?? "free",
+    abTemplateId: r.action.abTemplateId ?? "",
     timingType: r.action.publishTiming?.type ?? "now",
     timingHours: String(r.action.publishTiming?.type === "delay" ? r.action.publishTiming.hours : 12),
     timingWeekdays: r.action.publishTiming?.type === "weekly" ? r.action.publishTiming.weekdays : [2],
@@ -215,6 +218,7 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   notePublish: "",
   // 新しい note 記事ルールは、NG の記事だけ保留・有料ラインが入らなければ書き直す
   noteApproval: "standard",
+  abTemplateId: "",
   paywallFallback: "retry",
   timingType: "now",
   timingHours: "12",
@@ -311,6 +315,8 @@ export default function AutomationPage() {
               publish: draft.notePublish || undefined,
               approval: draft.noteApproval,
               paywallFallback: draft.paywallFallback,
+              topicStrategy: draft.topicStrategy,
+              abTemplateId: draft.abTemplateId || undefined,
               publishTiming:
                 draft.timingType === "delay"
                   ? { type: "delay", hours: Number(draft.timingHours) }
@@ -574,6 +580,24 @@ export default function AutomationPage() {
                   </p>
                 </div>
               )}
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field
+                  def={{ key: "ntstrat", label: "テーマの選び方", type: "select", options: [{ value: "rotate", label: "順番に使う" }, { value: "learn", label: "反応の良いテーマを優先（PV あたりのスキで学習）" }] }}
+                  value={draft.topicStrategy}
+                  onChange={(v) => setDraft({ ...draft, topicStrategy: v as Draft["topicStrategy"] })}
+                />
+                <Field
+                  def={{
+                    key: "nab",
+                    label: "A/B 比較するテンプレート（任意）",
+                    type: "select",
+                    options: [{ value: "", label: "比較しない" }, ...templates.filter((t) => t.id !== draft.templateId).map((t) => ({ value: t.id, label: t.name }))],
+                  }}
+                  value={draft.abTemplateId}
+                  onChange={(v) => setDraft({ ...draft, abTemplateId: v })}
+                />
+              </div>
+              {draft.abTemplateId && <p className="text-[11px] text-white/40">2 つのテンプレートを交互に試し、記事の成果（PV あたりのスキ）が良い方を多く使います（2 割は交互のまま試し続けます）。</p>}
               <Field
                 def={{ key: "ntopics", label: "テーマ（1行に1つ。実行ごとに順番に使います）", type: "textarea", placeholder: "ADHD でも続く朝の集中ルーティン\n先延ばしを減らす 3 つの仕組み" }}
                 value={draft.topics}
@@ -700,6 +724,8 @@ export default function AutomationPage() {
                     <>
                       <div className="mt-1 text-xs text-white/50">
                         note: {accountName(r.action.accountId ?? "")}・テンプレート「{templates.find((t) => t.id === r.action.templateId)?.name ?? "（削除済み）"}」
+                        {r.action.abTemplateId && <>・A/B「{templates.find((t) => t.id === r.action.abTemplateId)?.name ?? "（削除済み）"}」</>}
+                        {r.action.topicStrategy === "learn" && "・テーマを学習"}
                       </div>
                       <div className="mt-1 text-xs text-white/40">テーマ: {(r.action.topics ?? []).join(" / ")}</div>
                       {(r.action.publish ?? templates.find((t) => t.id === r.action.templateId)?.publish) === "publish" && (

@@ -251,7 +251,8 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
   const mediaAll = [...media, ...(eyecatch ? [eyecatch] : [])];
   const noteOptions = { title: draft.title, price: t.paid && paywall && t.price ? String(t.price) : "", eyecatch: eyecatch?.name ?? "", mode: publish };
   const category = input.ruleId ? "automation" : "manual";
-  const extraMetadata = { article: { templateId: input.templateId ?? null, model: draft.model, warnings }, ...(review ? { review } : {}), ...(input.ruleId ? { automationId: input.ruleId } : {}) };
+  // topic はトピックの学習（反応の良いテーマを優先）で使う
+  const extraMetadata = { article: { templateId: input.templateId ?? null, model: draft.model, warnings }, ...(input.topic ? { topic: input.topic } : {}), ...(review ? { review } : {}), ...(input.ruleId ? { automationId: input.ruleId } : {}) };
   const result = { title: draft.title, topic: draft.topic, markdown: md, publish, scheduledAt: input.scheduledAt?.toISOString() ?? null, images: media.length, eyecatch: !!eyecatch, warnings };
 
   if (holds.length) {

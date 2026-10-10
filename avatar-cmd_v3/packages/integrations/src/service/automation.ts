@@ -25,7 +25,7 @@ import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from
 import { effectiveXPolicy, getXPolicy, nextPostSlot } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
-import { loadTopicStats, pickTopic, type TopicStrategy } from "./topic-bandit";
+import { loadTemplateStats, loadTopicStats, pickTopic, type TopicStrategy } from "./topic-bandit";
 import { nextPublishAt, normalizePublishTiming, type PaywallFallback, type PublishTiming } from "./article-gate";
 
 export type TriggerConfig =
@@ -170,6 +170,10 @@ export interface NoteArticleActionConfig {
   paywallFallback?: PaywallFallback;
   /** 公開のタイミング（未指定は作成後すぐ） */
   publishTiming?: PublishTiming;
+  /** テーマの選び方（rotate = 順番・既定 / learn = PV あたりのスキが多いテーマを優先） */
+  topicStrategy?: TopicStrategy;
+  /** A/B 比較するテンプレート（任意）。交互に試し、成果（PV あたりのスキ）の良い方を多く使う */
+  abTemplateId?: string;
 }
 
 export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): NoteArticleActionConfig {
@@ -185,6 +189,8 @@ export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): 
     ...(AUTO_APPROVALS.includes(a.approval as AutoApproval) ? { approval: a.approval } : {}),
     ...(a.paywallFallback === "hold" || a.paywallFallback === "retry" || a.paywallFallback === "free" ? { paywallFallback: a.paywallFallback } : {}),
     ...(a.publishTiming && a.publishTiming.type !== "now" ? { publishTiming: normalizePublishTiming(a.publishTiming) } : {}),
+    ...(a.topicStrategy === "learn" ? { topicStrategy: "learn" as const } : {}),
+    ...(a.abTemplateId && a.abTemplateId !== a.templateId ? { abTemplateId: a.abTemplateId } : {}),
   };
 }
 
@@ -233,6 +239,7 @@ async function validateRuleAction(actionType: RuleActionType, avatarId: string, 
     const acc = await prisma.snsAccount.findUniqueOrThrow({ where: { id: n.accountId } });
     if (acc.platform !== "note") throw new ConfigError("note 記事ルールは note のアカウントだけに対応しています");
     await getArticleTemplate(n.templateId);
+    if (n.abTemplateId) await getArticleTemplate(n.abTemplateId);
     return n;
   }
   if (actionType === "quote_post") {
@@ -312,14 +319,18 @@ export async function runRule(ruleId: string): Promise<number> {
   if (rule.actionType === "note_article") {
     // 画像生成に数分かかるので、記事ジョブに依頼して戻る（結果は投稿一覧、失敗はルールのエラーに出る）
     const config = validateNoteArticleAction(rule.actionConfig as unknown as NoteArticleActionConfig);
-    const template = await getArticleTemplate(config.templateId);
-    const topic = config.topics[rule.executionCount % config.topics.length];
+    // A/B: 比較するテンプレートがあれば、試行の少ない方 → 成果の良い方（20% は交互）を選ぶ
+    const templateIds = config.abTemplateId ? [config.templateId, config.abTemplateId] : [config.templateId];
+    const templateId = templateIds.length > 1 ? pickTopic(templateIds, await loadTemplateStats(rule.id, templateIds), rule.executionCount, "learn") : config.templateId;
+    const template = await getArticleTemplate(templateId);
+    const stats = config.topicStrategy === "learn" ? await loadTopicStats({ ruleId: rule.id }, config.topics) : new Map();
+    const topic = pickTopic(config.topics, stats, rule.executionCount, config.topicStrategy);
     // 作成と公開を分ける: 公開まで行うときは、公開のタイミングの枠（このルールの予約と重ならない）に予約する
     const publish = config.publish ?? template.publish;
     const scheduledAt = publish === "publish" && config.publishTiming ? nextPublishAt(config.publishTiming, new Date(), await notePublishTaken(rule.id)) : undefined;
     await enqueueArticleJob("full", rule.avatarId, {
       accountId: config.accountId,
-      templateId: config.templateId,
+      templateId,
       topic,
       publish: config.publish,
       ruleId: rule.id,

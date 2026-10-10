@@ -4,6 +4,7 @@
 // ・X: 指定した投稿だけ（GET /2/tweets?ids=）。取得する時点はアバターの X API モード（例: 公開から 1h / 6h / 24h）で決め、
 //   時点ごとの値を post_metric_snapshots に残す（1 件 $0.005 なので、決まった時点だけ読む）
 // ・Threads: 投稿ごとのインサイト（フォロワー100人以上など Meta の条件あり。満たさない間は理由を記録してスキップ）
+// ・note: 記事ごとの累計 PV・スキ・コメント（非公式の統計 API。公開した記事だけ。PV を表示回数、スキ・コメントを反応として扱う）
 // 公開から 14 日間、若い投稿ほど頻繁に取得する（〜48時間: 6時間ごと / それ以降: 24時間ごと）。
 // 取得結果は Content.engagement（{ views, likes, ..., engagements, engagementRate, fetchedAt } または { error }）に保存。
 
@@ -52,7 +53,7 @@ export async function collectMetrics({ maxAccounts = 5 } = {}): Promise<number> 
       externalPostId: { not: null },
       snsAccountId: { not: null },
       publishedAt: { gte: new Date(now.getTime() - METRICS_WINDOW_DAYS * 24 * HOUR), lte: new Date(now.getTime() - HOUR) },
-      platform: { in: ["x", "threads"] },
+      platform: { in: ["x", "threads", "note"] },
     },
     select: { id: true, avatarId: true, platform: true, snsAccountId: true, externalPostId: true, publishedAt: true, metricsUpdatedAt: true, engagement: true, metricSnapshots: { select: { checkpoint: true } } },
     orderBy: { publishedAt: "desc" },

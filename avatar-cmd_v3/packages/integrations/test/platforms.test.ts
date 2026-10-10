@@ -632,3 +632,23 @@ test("Threads: アカウントの日別閲覧数（views の時系列）を日�
     m.restore();
   }
 });
+
+test("note: 記事ごとの PV・スキ・コメントを統計の一覧から key で突き合わせる", async () => {
+  const m = mockFetch([
+    ["GET", /stats\/pv\?filter=all&page=1/, { data: { note_stats: [{ key: "nA", read_count: 120, like_count: 6, comment_count: 1 }, { key: "nX", read_count: 1 }], last_page: false } }],
+    ["GET", /stats\/pv\?filter=all&page=2/, { data: { note_stats: [{ key: "nB", read_count: 40, like_count: 2 }], last_page: true } }],
+  ]);
+  try {
+    const r = await PLATFORMS.note.fetchMetrics!(ctx({ credentials: { cookie: "c" } }), [
+      { postId: "nA", publishedAt: new Date() },
+      { postId: "nB", publishedAt: new Date() },
+      { postId: "nZ", publishedAt: new Date() },
+    ]);
+    assert.deepEqual(r.nA, { views: 120, likes: 6, replies: 1 });
+    assert.deepEqual(r.nB, { views: 40, likes: 2, replies: 0 });
+    assert.match((r.nZ as { error: string }).error, /見つかりません/);
+    assert.equal(m.calls.length, 2);
+  } finally {
+    m.restore();
+  }
+});
