@@ -43,7 +43,7 @@ interface Cycle {
   triggerType: string;
   runStatus: string;
   status: string;
-  mode: "suggest" | "approve" | "auto";
+  mode: "suggest" | "approve" | "confident" | "auto";
   attempt: number;
   scheduledFor: string | null;
   completedAt: string | null;
@@ -51,10 +51,10 @@ interface Cycle {
   error: string | null;
   analysis: { note?: string | null; observations?: string[]; extraction?: { groups: { platform: string; format: string; posts: number; meanRate: number; above: unknown[] }[]; pending: { lowViews: number; tooYoung: number; noMetrics: number; smallGroups: unknown[] } } };
   suggestions: Change[];
-  applied: Record<string, unknown> | null;
+  applied: Record<string, { at: string; verification?: { result: "kept" | "rolled_back" | "inconclusive" | "changed_by_human"; note?: string } }> | null;
   createdAt: string;
 }
-interface Schedule { avatarId: string; enabled: boolean; mode: "suggest" | "approve" | "auto"; nextRunAt: string }
+interface Schedule { avatarId: string; enabled: boolean; mode: "suggest" | "approve" | "confident" | "auto"; nextRunAt: string }
 
 const KIND: Record<Item["kind"], { label: string; cls: string }> = {
   fact: { label: "出典付きの事実", cls: "bg-cyan-500/15 text-cyan-300" },
@@ -62,7 +62,13 @@ const KIND: Record<Item["kind"], { label: string; cls: string }> = {
   learning: { label: "成果からの学び", cls: "bg-emerald-500/15 text-emerald-300" },
 };
 const STATUS: Record<Item["status"], string> = { active: "有効", disabled: "無効", proposed: "提案（承認待ち）" };
-const MODE: Record<Schedule["mode"], string> = { suggest: "提案のみ", approve: "承認後に適用", auto: "自動適用" };
+const MODE: Record<Schedule["mode"], string> = { suggest: "提案のみ", approve: "承認後に適用", confident: "確信度が高いものだけ自動", auto: "自動適用" };
+const VERIFY: Record<"kept" | "rolled_back" | "inconclusive" | "changed_by_human", { label: string; cls: string }> = {
+  kept: { label: "効果あり・継続", cls: "bg-emerald-500/15 text-emerald-300" },
+  rolled_back: { label: "悪化のため元に戻した", cls: "bg-amber-500/15 text-amber-300" },
+  inconclusive: { label: "比較データ不足・継続", cls: "bg-white/10 text-white/60" },
+  changed_by_human: { label: "悪化（手動変更済みのため戻さず）", cls: "bg-red-500/15 text-red-300" },
+};
 
 const empty = { kind: "fact", title: "", summary: "", content: "", source: "", sourceUrl: "", tags: "", platforms: "", topics: "" };
 
@@ -310,7 +316,7 @@ function KnowledgeMain() {
               <select
                 value={schedule.mode}
                 onChange={(e) => run("mode", () => api("/api/improvement/schedule", { method: "PUT", json: { avatarId, mode: e.target.value } }), "適用モードを変更しました")}
-                className={`${inputCls} w-40`}
+                className={`${inputCls} w-52`}
               >
                 {Object.entries(MODE).map(([k, v]) => (
                   <option key={k} value={k} className="bg-[#111]">
@@ -328,7 +334,7 @@ function KnowledgeMain() {
           </Button>
         </div>
         <p className="text-[11px] text-white/40">
-          数値の抽出（同じ SNS・投稿形式で、公開7日以降の指標・表示回数50以上・5件以上のグループだけ比較）はプログラムで行い、AI / Jev には好成績の理由と改善案の分析だけを任せます。変えられるのは「学びの追加」と「ルールのトピック・追加の指示」だけで、アバターの役割・目的・口調ルール・想定読者は変えません。
+          数値の抽出（同じ SNS・投稿形式で、公開7日以降の指標〔X は 24h 時点〕・表示回数50以上・5件以上のグループだけ比較）はプログラムで行い、AI / Jev には好成績の理由と改善案の分析だけを任せます。変えられるのは「学びの追加」と「ルールのトピック・追加の指示」だけで、アバターの役割・目的・口調ルール・想定読者は変えません。適用した変更は 21 日後に適用前後の反応率を比べ、15% 以上悪化していたら自動で元に戻します。
         </p>
         {cycles.length === 0 ? (
           <EmptyState>まだ実行されていません</EmptyState>
@@ -383,7 +389,18 @@ function KnowledgeMain() {
                       {s.reason && <div className="text-white/35">{s.reason}</div>}
                     </div>
                     {done ? (
-                      <Badge className="bg-emerald-500/15 text-emerald-300">適用済み</Badge>
+                      (() => {
+                        const v = c.applied?.[s.id]?.verification;
+                        return v ? (
+                          <Badge className={VERIFY[v.result].cls} title={v.note}>
+                            {VERIFY[v.result].label}
+                          </Badge>
+                        ) : (
+                          <Badge className="bg-emerald-500/15 text-emerald-300" title="適用から 21 日後に、適用前後の反応率を比べて効果を検証します">
+                            適用済み・検証待ち
+                          </Badge>
+                        );
+                      })()
                     ) : c.mode === "suggest" ? (
                       <span className="text-white/30">提案のみ</span>
                     ) : (

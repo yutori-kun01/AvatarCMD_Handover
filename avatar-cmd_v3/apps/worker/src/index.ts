@@ -7,7 +7,7 @@
 // note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processXModePosts, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processImprovementVerifications, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processXModePosts, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -19,6 +19,10 @@ let lastMetricsAt = 0;
 // X API モードの自動投稿（投稿時刻を過ぎて 30 分以内の枠を見るので 1 分おきで十分）
 const X_AUTOPOST_EVERY_MS = 60_000;
 let lastXAutoPostAt = 0;
+
+// 改善の効果検証（適用から 21 日後に前後を比べる。6 時間おきで十分）
+const VERIFY_EVERY_MS = 6 * 3600_000;
+let lastVerifyAt = 0;
 
 // note 記事の生成ジョブは画面で待っている人がいるので短い間隔で見る
 const ARTICLE_JOBS_EVERY_MS = Number(process.env.ARTICLE_JOBS_TICK_MS || 3_000);
@@ -69,6 +73,11 @@ async function tick() {
       // 改善処理（アバターごとに 14〜27 日のランダム間隔。日程は DB に保存し、完了時にだけ次回を決める）
       const imp = await processImprovementSchedules().catch((e) => (console.error("[worker] improvement failed:", e), 0));
       if (imp) console.log(`[worker] ${new Date().toISOString()} ran improvement for ${imp} avatar(s)`);
+      if (Date.now() - lastVerifyAt >= VERIFY_EVERY_MS) {
+        lastVerifyAt = Date.now();
+        const v = await processImprovementVerifications().catch((e) => (console.error("[worker] improvement verification failed:", e), 0));
+        if (v) console.log(`[worker] ${new Date().toISOString()} verified ${v} improvement change(s)`);
+      }
       // YouTube チャンネルの新動画の取り込み（取得頻度はチャンネルごと）
       const yt = await processYoutubeChannels().catch((e) => (console.error("[worker] youtube failed:", e), 0));
       if (yt) console.log(`[worker] ${new Date().toISOString()} polled ${yt} YouTube channel(s)`);

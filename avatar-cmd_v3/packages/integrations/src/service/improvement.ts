@@ -8,7 +8,11 @@
 // ・数値の抽出・比較はプログラム（extractPerformance）で行い、Jev / AI には「好成績の理由」と「改善案」の分析だけを任せる。
 // ・比較条件を揃える: 同じ SNS・同じアバター・同じ投稿形式（分類）で、公開から 7 日以上たった時点の指標だけを使う。
 //   表示回数が少ない投稿・件数が少ないグループは「保留」にして比較に使わない。
-// ・適用モード: suggest（提案のみ・既定）/ approve（承認後に適用）/ auto（自動適用）。
+// ・X の指標は X API モードの時点（既定は最後が 24h）までしか取らないので、X だけは公開から 20 時間以上の値で比べる（同じ時点どうしの比較）。
+// ・適用モード: suggest（提案のみ・既定）/ approve（承認後に適用）/ confident（確信度が高いものだけ自動適用）/ auto（自動適用）。
+//   confident: 学びの追加は自動、ルールの変更は Jev の確信度が strong のときだけ自動（それ以外は承認待ち）。
+// ・効果の検証: 適用した変更は、適用前の反応率を記録しておき、適用から 21 日後に適用後の投稿と比べる。
+//   15% 以上悪化していたら元に戻す（ルールは変更前のトピック・指示に、学びは無効に）。人が後から変えたものは戻さない。
 //   変えられる範囲は「学びのナレッジの追加」と「自動化ルールのトピック・追加の指示」だけ。
 //   アバターの役割・目的・口調ルール・想定読者は変更しない（気づきとして表示するだけ）。
 
@@ -19,7 +23,7 @@ import { getPlatform } from "../platforms";
 import { readPersona } from "./ai";
 import { decideWithJev } from "./decision";
 import { completeJson } from "./llm";
-import { createKnowledge } from "./knowledge";
+import { createKnowledge, updateKnowledge } from "./knowledge";
 import { updateRule, type ActionConfig } from "./automation";
 import { errorMessage } from "./publish";
 import { assertBudget, withUsageContext } from "./usage";
@@ -33,6 +37,8 @@ export const IMPROVEMENT_RULES = {
   windowDays: 60,
   /** 指標を観測した時点の、公開からの最低経過日数（これ未満の値は比較しない） */
   minObservedDays: 7,
+  /** SNS ごとの最低経過時間（X は X API モードの最後の時点＝既定 24h までしか取らない） */
+  minObservedHoursByPlatform: { x: 20 } as Record<string, number>,
   /** 表示回数がこれ未満の投稿は保留 */
   minViews: 50,
   /** 1グループ（SNS×形式）の最低件数 */
@@ -43,9 +49,21 @@ export const IMPROVEMENT_RULES = {
   maxChanges: 6,
 };
 
-export const IMPROVEMENT_MODES = ["suggest", "approve", "auto"] as const;
+export const IMPROVEMENT_MODES = ["suggest", "approve", "confident", "auto"] as const;
 export type ImprovementMode = (typeof IMPROVEMENT_MODES)[number];
-export const IMPROVEMENT_MODE_LABEL: Record<ImprovementMode, string> = { suggest: "提案のみ", approve: "承認後に適用", auto: "自動適用" };
+export const IMPROVEMENT_MODE_LABEL: Record<ImprovementMode, string> = { suggest: "提案のみ", approve: "承認後に適用", confident: "確信度が高いものだけ自動適用", auto: "自動適用" };
+
+/** 効果の検証（適用した変更を、適用前後の反応率で比べる） */
+export const VERIFY_RULES = {
+  /** 適用から検証までの日数 */
+  afterDays: 21,
+  /** これを過ぎても投稿が足りなければ「判定できない」で終える */
+  maxWaitDays: 45,
+  /** 比較に必要な最低件数（前後それぞれ） */
+  minPosts: 5,
+  /** 適用前よりこの割合以上下がったら元に戻す */
+  maxDrop: 0.15,
+};
 
 /** 14〜27 日（両端を含む）。rng は 0 以上 1 未満 */
 export function randomIntervalDays(rng: () => number = Math.random): number {
@@ -63,6 +81,8 @@ export interface PerfRow {
   text: string;
   topic?: string;
   ruleId?: string;
+  /** 生成に使ったナレッジ */
+  knowledgeIds?: string[];
   publishedAt: Date;
   /** 指標を最後に取得した時刻 */
   observedAt: Date | null;
@@ -95,7 +115,7 @@ export function extractPerformance(rows: PerfRow[]): PerfExtraction {
       pending.noMetrics++;
       continue;
     }
-    if ((p.observedAt.getTime() - p.publishedAt.getTime()) / DAY < r.minObservedDays) {
+    if ((p.observedAt.getTime() - p.publishedAt.getTime()) / 3600_000 < (r.minObservedHoursByPlatform[p.platform] ?? r.minObservedDays * 24)) {
       pending.tooYoung++;
       continue;
     }
@@ -132,9 +152,9 @@ export function extractPerformance(rows: PerfRow[]): PerfExtraction {
   return { groups, pending };
 }
 
-async function loadRows(avatarId: string, now: Date): Promise<PerfRow[]> {
+async function loadRows(avatarId: string, now: Date, from = new Date(now.getTime() - IMPROVEMENT_RULES.windowDays * DAY)): Promise<PerfRow[]> {
   const rows = await prisma.content.findMany({
-    where: { avatarId, status: "PUBLISHED", publishedAt: { gte: new Date(now.getTime() - IMPROVEMENT_RULES.windowDays * DAY) } },
+    where: { avatarId, status: "PUBLISHED", publishedAt: { gte: from, lte: now } },
     select: { id: true, platform: true, category: true, content: true, publishedAt: true, engagement: true, metricsUpdatedAt: true, metadata: true },
   });
   return rows.map((c) => {
@@ -147,7 +167,9 @@ async function loadRows(avatarId: string, now: Date): Promise<PerfRow[]> {
       format: c.category,
       text: c.content,
       topic: typeof meta.title === "string" ? meta.title : undefined,
-      ruleId: typeof meta.automationId === "string" ? meta.automationId : undefined,
+      // X API モードの自動投稿はルールのトピックで作るので、そのルールの投稿として数える
+      ruleId: typeof meta.automationId === "string" ? meta.automationId : typeof meta.sourceRuleId === "string" ? meta.sourceRuleId : undefined,
+      knowledgeIds: Array.isArray(meta.knowledgeIds) ? meta.knowledgeIds.map(String) : [],
       publishedAt: c.publishedAt!,
       observedAt: fetchedAt,
       views: typeof e.views === "number" ? e.views : null,
@@ -271,7 +293,15 @@ async function analyze(avatarId: string, ex: PerfExtraction, cycleId: string) {
     if (JSON.stringify(topics) === JSON.stringify(before.topics) && extraPrompt === before.extraPrompt) continue;
     changes.push({ id: `c${++n}`, type: "rule_update", ruleId: rule.id, ruleName: rule.name, before, after: { topics, extraPrompt }, reason: s.reason?.slice(0, 300) ?? "" });
   }
-  return { changes, observations: (data.observations ?? []).slice(0, 10).map((o) => String(o).slice(0, 300)), model, jev: jev ? { eventId: jev.eventId, model: jev.model, factors: factorProbs } : null };
+  const confidence = jev ? ((jev.answers as any).confidence?.choice as string | undefined) ?? null : null;
+  return { changes, observations: (data.observations ?? []).slice(0, 10).map((o) => String(o).slice(0, 300)), model, jev: jev ? { eventId: jev.eventId, model: jev.model, factors: factorProbs, confidence } : null };
+}
+
+/** 自動で適用する改善案。auto = すべて / confident = 学びは常に、ルールの変更は Jev の確信度が strong のときだけ */
+export function autoApplicable(mode: ImprovementMode, changes: ImprovementChange[], confidence: string | null): ImprovementChange[] {
+  if (mode === "auto") return changes;
+  if (mode === "confident") return changes.filter((c) => c.type === "knowledge_add" || confidence === "strong");
+  return [];
 }
 
 // --- 実行・日程 -------------------------------------------------------------------
@@ -322,7 +352,9 @@ async function executeCycle(cycleId: string, opts: RunOptions = {}) {
       metadata: { cycleId: cycle.id },
     },
   });
-  if (cycle.mode === "auto") for (const c of suggestions) await applyImprovementChange(cycle.id, c.id, "improvement:auto").catch((e) => console.warn("[improvement] 自動適用に失敗:", errorMessage(e)));
+  for (const c of autoApplicable(cycle.mode as ImprovementMode, suggestions, result?.jev?.confidence ?? null)) {
+    await applyImprovementChange(cycle.id, c.id, `improvement:${cycle.mode}`).catch((e) => console.warn("[improvement] 自動適用に失敗:", errorMessage(e)));
+  }
   return prisma.improvementCycle.findUniqueOrThrow({ where: { id: cycle.id } });
 }
 
@@ -416,7 +448,7 @@ export async function runImprovementNow(avatarId: string, opts: RunOptions = {})
 }
 
 export async function saveImprovementSchedule(avatarId: string, b: { enabled?: boolean; mode?: string }, opts: RunOptions = {}) {
-  if (b.mode !== undefined && !IMPROVEMENT_MODES.includes(b.mode as ImprovementMode)) throw new ConfigError("適用モードが不正です（suggest / approve / auto）");
+  if (b.mode !== undefined && !IMPROVEMENT_MODES.includes(b.mode as ImprovementMode)) throw new ConfigError("適用モードが不正です（suggest / approve / confident / auto）");
   await ensureSchedules(opts);
   await prisma.improvementSchedule.upsert({
     where: { avatarId },
@@ -440,16 +472,22 @@ export async function applyImprovementChange(cycleId: string, changeId: string, 
   if (!change) throw new ConfigError("改善案が見つかりません");
   const applied = (cycle.applied ?? {}) as Record<string, unknown>;
   if (applied[changeId]) return { alreadyApplied: true };
-  // 先に「適用中」として記録（updatedAt で同時適用を防ぐ）
-  const mark = { ...applied, [changeId]: { at: new Date().toISOString(), by } };
+  // 先に「適用中」として記録（updatedAt で同時適用を防ぐ）。効果の検証用に、適用前の反応率も残す
+  const at = new Date();
+  const baseline = rateStat(filterForChange(await loadRows(cycle.avatarId, at), change));
+  const mark = { ...applied, [changeId]: { at: at.toISOString(), by, baseline } as AppliedEntry };
   const claimed = await prisma.improvementCycle.updateMany({ where: { id: cycleId, updatedAt: cycle.updatedAt }, data: { applied: mark as object } });
   if (!claimed.count) throw new ConfigError("同時に別の操作がありました。もう一度お試しください");
   try {
     if (change.type === "knowledge_add") {
-      await createKnowledge(
+      const item = await createKnowledge(
         { avatarId: cycle.avatarId, kind: "learning", title: change.title, summary: change.summary, source: "improvement", scope: change.platforms.length ? { platforms: change.platforms } : {}, evidence: { cycleId, postIds: change.evidencePostIds, reason: change.reason } },
         `improvement:${cycleId}`
       );
+      // 検証で「このナレッジを使った投稿」を探せるよう ID を残す
+      const cur = await prisma.improvementCycle.findUniqueOrThrow({ where: { id: cycleId } });
+      const ap = (cur.applied ?? {}) as unknown as Record<string, AppliedEntry>;
+      await prisma.improvementCycle.update({ where: { id: cycleId }, data: { applied: { ...ap, [changeId]: { ...ap[changeId], knowledgeId: item.id } } as object } });
     } else {
       const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: change.ruleId } });
       const a = rule.actionConfig as unknown as ActionConfig;
@@ -480,4 +518,118 @@ export async function dismissImprovementCycle(cycleId: string) {
 
 export async function listImprovementCycles(where: { avatarId?: string | { in: string[] } } = {}, take = 20) {
   return prisma.improvementCycle.findMany({ where, orderBy: { createdAt: "desc" }, take });
+}
+
+// --- 効果の検証と巻き戻し ----------------------------------------------------------
+
+export interface RateStat {
+  posts: number;
+  meanRate: number | null;
+}
+
+export interface AppliedEntry {
+  at: string;
+  by: string;
+  baseline?: RateStat;
+  knowledgeId?: string;
+  verification?: { at: string; result: "kept" | "rolled_back" | "inconclusive" | "changed_by_human"; after?: RateStat; note?: string };
+}
+
+/** 比較に使える投稿（表示回数・経過時間の条件を満たすもの）の平均反応率 */
+export function rateStat(rows: PerfRow[]): RateStat {
+  const r = IMPROVEMENT_RULES;
+  const ok = rows.filter(
+    (p) =>
+      p.views !== null &&
+      p.engagements !== null &&
+      p.observedAt &&
+      p.views >= r.minViews &&
+      (p.observedAt.getTime() - p.publishedAt.getTime()) / 3600_000 >= (r.minObservedHoursByPlatform[p.platform] ?? r.minObservedDays * 24)
+  );
+  if (!ok.length) return { posts: 0, meanRate: null };
+  return { posts: ok.length, meanRate: ok.reduce((s, p) => s + p.engagements! / p.views!, 0) / ok.length };
+}
+
+/** 変更の影響を受ける投稿。ルールの変更 = そのルールの投稿 / 学び = 適用範囲の SNS の投稿（適用後はその学びを使った投稿） */
+export function filterForChange(rows: PerfRow[], change: ImprovementChange, knowledgeId?: string): PerfRow[] {
+  if (change.type === "rule_update") return rows.filter((p) => p.ruleId === change.ruleId);
+  const inScope = rows.filter((p) => !change.platforms.length || change.platforms.includes(p.platform));
+  return knowledgeId ? inScope.filter((p) => p.knowledgeIds?.includes(knowledgeId)) : inScope;
+}
+
+/** 適用前後の比較。悪化（maxDrop 以上の低下）なら rolled_back、件数不足なら null（待つ） */
+export function verifyEffect(baseline: RateStat | undefined, after: RateStat, ageDays: number, v = VERIFY_RULES): "kept" | "rolled_back" | "inconclusive" | null {
+  const enough = (x?: RateStat) => !!x && x.posts >= v.minPosts && x.meanRate !== null;
+  if (!enough(after)) return ageDays >= v.maxWaitDays ? "inconclusive" : null;
+  // 適用前のデータが足りなければ比べられない（変更はそのまま）
+  if (!enough(baseline)) return "inconclusive";
+  return after.meanRate! < baseline!.meanRate! * (1 - v.maxDrop) ? "rolled_back" : "kept";
+}
+
+/** 適用から一定期間たった変更を検証し、悪化していたら元に戻す（worker から 1 日数回呼ぶ）。検証した件数を返す */
+export async function processImprovementVerifications(now = new Date()): Promise<number> {
+  const cycles = await prisma.improvementCycle.findMany({
+    where: { status: { in: ["applied", "partially_applied"] }, completedAt: { gte: new Date(now.getTime() - (VERIFY_RULES.maxWaitDays + 30) * DAY) } },
+    take: 50,
+  });
+  let n = 0;
+  for (const cycle of cycles) {
+    const changes = (cycle.suggestions ?? []) as unknown as ImprovementChange[];
+    for (const [changeId, entry] of Object.entries((cycle.applied ?? {}) as unknown as Record<string, AppliedEntry>)) {
+      if (entry.verification || !entry.at) continue;
+      const change = changes.find((c) => c.id === changeId);
+      if (!change) continue;
+      const at = new Date(entry.at);
+      const ageDays = (now.getTime() - at.getTime()) / DAY;
+      if (ageDays < VERIFY_RULES.afterDays) continue;
+      const after = rateStat(filterForChange(await loadRows(cycle.avatarId, now, at), change, entry.knowledgeId));
+      const result = verifyEffect(entry.baseline, after, ageDays);
+      if (!result) continue;
+      let final: NonNullable<AppliedEntry["verification"]>["result"] = result;
+      let note: string | undefined;
+      if (result === "rolled_back") {
+        try {
+          note = await rollbackChange(change, entry);
+        } catch (e) {
+          final = "changed_by_human";
+          note = errorMessage(e).slice(0, 200);
+        }
+      }
+      const cur = await prisma.improvementCycle.findUniqueOrThrow({ where: { id: cycle.id } });
+      const ap = (cur.applied ?? {}) as unknown as Record<string, AppliedEntry>;
+      await prisma.improvementCycle.update({ where: { id: cycle.id }, data: { applied: { ...ap, [changeId]: { ...ap[changeId], verification: { at: now.toISOString(), result: final, after, ...(note ? { note } : {}) } } } as object } });
+      const pct = (x?: RateStat) => (x?.meanRate != null ? `${(x.meanRate * 100).toFixed(2)}%（${x.posts}件）` : "データ不足");
+      const label = change.type === "knowledge_add" ? `学び「${change.title}」` : `ルール「${change.ruleName}」の変更`;
+      await prisma.activityLog.create({
+        data: {
+          avatarId: cycle.avatarId,
+          action: "improvement_verified",
+          category: "content",
+          level: final === "rolled_back" ? "warning" : "info",
+          description: `改善の効果検証: ${label} — 適用前 ${pct(entry.baseline)} → 適用後 ${pct(after)}。${{ kept: "効果を確認したので継続します", rolled_back: "悪化したため元に戻しました", inconclusive: "比較できる投稿が足りないため、そのまま継続します", changed_by_human: `悪化しましたが元に戻しませんでした（${note ?? ""}）` }[final]}`,
+          metadata: { cycleId: cycle.id, changeId },
+        },
+      });
+      n++;
+    }
+  }
+  return n;
+}
+
+/** 変更を元に戻す。人が後から変えていたら戻さない（例外で理由を返す） */
+async function rollbackChange(change: ImprovementChange, entry: AppliedEntry): Promise<string> {
+  if (change.type === "rule_update") {
+    const rule = await prisma.automationRule.findUnique({ where: { id: change.ruleId } });
+    if (!rule) throw new Error("ルールが削除されています");
+    const a = rule.actionConfig as unknown as ActionConfig;
+    if (JSON.stringify(a.topics ?? []) !== JSON.stringify(change.after.topics) || (a.extraPrompt ?? null) !== change.after.extraPrompt) throw new Error("適用後にルールが変更されています");
+    await updateRule(rule.id, { action: { ...a, topics: change.before.topics, extraPrompt: change.before.extraPrompt ?? undefined } });
+    return "ルールのトピック・指示を変更前に戻しました";
+  }
+  if (!entry.knowledgeId) throw new Error("学びの ID が記録されていません");
+  const k = await prisma.knowledgeItem.findUnique({ where: { id: entry.knowledgeId } });
+  if (!k) throw new Error("学びが削除されています");
+  if (k.status !== "active") throw new Error("学びはすでに有効ではありません");
+  await updateKnowledge(k.id, { status: "disabled", reason: "改善の効果検証で悪化したため無効化" }, "improvement:verify");
+  return "学びを無効にしました";
 }
