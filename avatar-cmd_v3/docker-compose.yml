@@ -67,7 +67,8 @@ services:
       GHOST_URL: ${GHOST_URL:-}
       GHOST_CONTENT_API_KEY: ${GHOST_CONTENT_API_KEY:-}
     ports:
-      - "${WEB_PORT:-3333}:3000"
+      # 同じサーバーの nginx 等から中継する場合は WEB_BIND=127.0.0.1 にして外部から直接 HTTP で触れないようにする
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-3333}:3000"
     volumes:
       - media:/app/data/media
     networks: [internal]

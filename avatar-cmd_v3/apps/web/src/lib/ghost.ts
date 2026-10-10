@@ -4,6 +4,33 @@
 // 公式: https://ghost.org/docs/content-api/
 // GHOST_URL / GHOST_CONTENT_API_KEY が未設定、または取得に失敗した場合は空で返す
 // （ブログが無くてもビルド・表示が壊れないようにするため）。
+// 本文 HTML はダッシュボードと同じドメインで表示するので、Ghost が乗っ取られても XSS にならないようサニタイズする
+// （script・イベント属性・javascript: URL を除去。埋め込みは YouTube / Vimeo / X などの https の iframe だけ許可）。
+
+import createDOMPurify from "dompurify";
+import { JSDOM } from "jsdom";
+
+const EMBED_HOSTS = /^(www\.)?(youtube\.com|youtube-nocookie\.com|player\.vimeo\.com|platform\.twitter\.com|open\.spotify\.com|codepen\.io)$/;
+let purifier: ReturnType<typeof createDOMPurify> | null = null;
+
+export function sanitizeHtml(html: string): string {
+  if (!purifier) {
+    purifier = createDOMPurify(new JSDOM("").window as unknown as Window & typeof globalThis);
+    purifier.addHook("uponSanitizeElement", (node, data) => {
+      if (data.tagName !== "iframe") return;
+      const src = (node as Element).getAttribute?.("src") ?? "";
+      let ok = false;
+      try {
+        const u = new URL(src);
+        ok = u.protocol === "https:" && EMBED_HOSTS.test(u.hostname);
+      } catch {
+        ok = false;
+      }
+      if (!ok) node.parentNode?.removeChild(node);
+    });
+  }
+  return purifier.sanitize(html ?? "", { ADD_TAGS: ["iframe"], ADD_ATTR: ["allow", "allowfullscreen", "frameborder", "loading"], FORBID_TAGS: ["style", "form", "input", "button"] });
+}
 
 export interface GhostTag {
   id: string;
@@ -44,7 +71,7 @@ async function ghost<T>(resource: string, params: Record<string, string>): Promi
 }
 
 function normalize(p: GhostPost): GhostPost {
-  return { ...p, tags: p.tags ?? [], reading_time: p.reading_time ?? 0, excerpt: p.excerpt ?? "" };
+  return { ...p, html: sanitizeHtml(p.html), tags: p.tags ?? [], reading_time: p.reading_time ?? 0, excerpt: p.excerpt ?? "" };
 }
 
 export async function getPosts(limit = 20): Promise<GhostPost[]> {
