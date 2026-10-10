@@ -69,14 +69,16 @@ export interface XAutoPost {
   topics: string[];
   /** 引用探索の時刻に作った引用案も、承認なしで投稿する */
   quotes: boolean;
+  /** トピックの選び方（rotate = 順番・既定 / learn = 反応の良いトピックを優先） */
+  topicStrategy: "rotate" | "learn";
 }
-export const DEFAULT_X_AUTOPOST: XAutoPost = { enabled: false, approval: "all", topics: [], quotes: false };
+export const DEFAULT_X_AUTOPOST: XAutoPost = { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate" };
 
 export function normalizeAutoPost(raw: Partial<XAutoPost> | null | undefined): XAutoPost {
   const r = raw ?? {};
   const approval: XAutoApproval = r.approval === "standard" || r.approval === "strict" ? r.approval : "all";
   const topics = Array.isArray(r.topics) ? [...new Set(r.topics.map((t) => String(t).trim()).filter(Boolean))].slice(0, 50) : [];
-  return { enabled: r.enabled === true, approval, topics, quotes: r.quotes === true };
+  return { enabled: r.enabled === true, approval, topics, quotes: r.quotes === true, topicStrategy: r.topicStrategy === "learn" ? "learn" : "rotate" };
 }
 
 export interface XPolicySetting {

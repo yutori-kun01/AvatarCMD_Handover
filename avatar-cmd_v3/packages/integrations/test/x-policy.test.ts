@@ -201,9 +201,9 @@ test("予算: 今月の X 費用で縮小・停止し、停止中は引用探索
 });
 
 test("自動投稿: 既定はオフ・承認範囲は all。トピックは空行・重複を除く", () => {
-  assert.deepEqual(normalizeSetting(null).autoPost, { enabled: false, approval: "all", topics: [], quotes: false });
+  assert.deepEqual(normalizeSetting(null).autoPost, { enabled: false, approval: "all", topics: [], quotes: false, topicStrategy: "rotate" });
   const a = normalizeAutoPost({ enabled: true, approval: "nope" as any, topics: [" AI ", "", "AI", "副業"], quotes: "yes" as any });
-  assert.deepEqual(a, { enabled: true, approval: "all", topics: ["AI", "副業"], quotes: false });
+  assert.deepEqual(a, { enabled: true, approval: "all", topics: ["AI", "副業"], quotes: false, topicStrategy: "rotate" });
   assert.equal(normalizeAutoPost({ approval: "strict" }).approval, "strict");
 });
 

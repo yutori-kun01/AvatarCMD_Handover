@@ -392,13 +392,13 @@ function KnowledgeMain() {
                       (() => {
                         const v = c.applied?.[s.id]?.verification;
                         return v ? (
-                          <Badge className={VERIFY[v.result].cls} title={v.note}>
-                            {VERIFY[v.result].label}
-                          </Badge>
+                          <span title={v.note}>
+                            <Badge className={VERIFY[v.result].cls}>{VERIFY[v.result].label}</Badge>
+                          </span>
                         ) : (
-                          <Badge className="bg-emerald-500/15 text-emerald-300" title="適用から 21 日後に、適用前後の反応率を比べて効果を検証します">
-                            適用済み・検証待ち
-                          </Badge>
+                          <span title="適用から 21 日後に、適用前後の反応率を比べて効果を検証します">
+                            <Badge className="bg-emerald-500/15 text-emerald-300">適用済み・検証待ち</Badge>
+                          </span>
                         );
                       })()
                     ) : c.mode === "suggest" ? (

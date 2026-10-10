@@ -16,6 +16,7 @@ import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { createPosts, errorMessage } from "./publish";
 import { assertBudget, withUsageContext } from "./usage";
 import { dueAutoPostSlot, effectiveXPolicy, type XAutoPost } from "./x-policy";
+import { loadTopicStats, pickTopic } from "./topic-bandit";
 
 const SLOT_WINDOW_MS = 30 * 60_000;
 
@@ -90,7 +91,11 @@ async function slotTaken(accountId: string, slot: Date): Promise<boolean> {
 async function runXModePost(acc: { id: string; avatarId: string; accountName: string }, autoPost: XAutoPost, slot: Date, count: number): Promise<number> {
   const topics = await autoPostTopics(acc.id, acc.avatarId, autoPost);
   if (!topics.length) throw new Error("トピックがありません（X API 設定の自動投稿のトピック・自動化ルール・ペルソナのトピックのどれかを設定してください）");
-  const t = topics[count % topics.length];
+  // 同じトピックが複数のルールにあれば最初のもの（追加の指示もそのルールのもの）を使う
+  const names = [...new Set(topics.map((x) => x.topic))];
+  const stats = autoPost.topicStrategy === "learn" ? await loadTopicStats({ xAutoAccountId: acc.id }, names) : new Map();
+  const name = pickTopic(names, stats, count, autoPost.topicStrategy);
+  const t = topics.find((x) => x.topic === name)!;
   await assertBudget(`X (${acc.accountName}) の自動投稿`);
   return withUsageContext({ avatarId: acc.avatarId, context: "automation", subjectId: t.ruleId ?? acc.id }, async () => {
     const { text, model, knowledgeIds } = await generatePostText({ avatarId: acc.avatarId, topic: t.topic, platform: "x", extraPrompt: t.extraPrompt, ruleId: t.ruleId });

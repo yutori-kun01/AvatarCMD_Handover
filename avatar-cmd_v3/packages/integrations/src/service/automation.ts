@@ -25,6 +25,7 @@ import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from
 import { effectiveXPolicy, getXPolicy, nextPostSlot } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
+import { loadTopicStats, pickTopic, type TopicStrategy } from "./topic-bandit";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -41,6 +42,8 @@ export interface ActionConfig {
   /** mode: "auto" のときの自動承認の範囲（未指定は all） */
   approval?: AutoApproval;
   extraPrompt?: string;
+  /** トピックの選び方（rotate = 順番・既定 / learn = 反応の良いトピックを優先） */
+  topicStrategy?: TopicStrategy;
 }
 
 /**
@@ -148,7 +151,7 @@ export function validateAction(a: ActionConfig, opts: { requireApproval?: boolea
   const valid = AUTO_APPROVALS.includes(a.approval as AutoApproval);
   if (mode === "auto" && !valid && opts.requireApproval) throw new ConfigError("自動投稿では「自動承認の範囲」を選択してください");
   const approval = mode === "auto" ? (valid ? a.approval : "all") : undefined;
-  return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
+  return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined, ...(a.topicStrategy === "learn" ? { topicStrategy: "learn" as const } : {}) };
 }
 
 export type RuleActionType = "generate_post" | "quote_post" | "note_article";
@@ -299,7 +302,8 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
   const xAuto = all.some((a) => a.platform === "x") && (await getXPolicy(rule.avatarId)).autoPost.enabled;
   const accounts = xAuto ? all.filter((a) => a.platform !== "x") : all;
   if (!accounts.length) return 0;
-  const topic = action.topics[rule.executionCount % action.topics.length];
+  const stats = action.topicStrategy === "learn" ? await loadTopicStats({ ruleId: rule.id }, action.topics) : new Map();
+  const topic = pickTopic(action.topics, stats, rule.executionCount, action.topicStrategy);
 
   // プラットフォームごとに文字数が違うので、プラットフォーム単位で生成する
   const byPlatform = new Map<string, typeof accounts>();
