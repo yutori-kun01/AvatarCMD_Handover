@@ -19,6 +19,8 @@ interface Rule {
     // note 記事ルール（note_article）は accountId・topics と templateId・publish
     templateId?: string;
     publish?: "draft" | "publish";
+    paywallFallback?: "free" | "hold" | "retry";
+    publishTiming?: { type: "now" } | { type: "delay"; hours: number } | { type: "weekly"; weekdays: number[]; time: string };
     accountIds: string[];
     topics: string[];
     mode: "draft" | "auto";
@@ -138,6 +140,20 @@ interface Draft {
   noteAccountId: string;
   templateId: string;
   notePublish: "" | "draft" | "publish";
+  noteApproval: Approval;
+  paywallFallback: "free" | "hold" | "retry";
+  timingType: "now" | "delay" | "weekly";
+  timingHours: string;
+  timingWeekdays: number[];
+  timingTime: string;
+}
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+const PAYWALL: Record<Draft["paywallFallback"], string> = { free: "無料記事として入稿", hold: "下書きで保留（承認待ち）", retry: "1 回書き直し、だめなら保留" };
+function timingLabel(t: Rule["action"]["publishTiming"]) {
+  if (!t || t.type === "now") return "作成後すぐ公開";
+  if (t.type === "delay") return `作成の ${t.hours} 時間後に公開`;
+  return `毎週 ${t.weekdays.map((d) => WEEKDAYS[d]).join("・")} ${t.time} に公開`;
 }
 
 function toDraft(r: Rule): Draft {
@@ -166,6 +182,12 @@ function toDraft(r: Rule): Draft {
     noteAccountId: r.actionType === "note_article" ? r.action.accountId ?? "" : "",
     templateId: r.action.templateId ?? "",
     notePublish: r.action.publish ?? "",
+    noteApproval: r.actionType === "note_article" ? r.action.approval ?? "all" : "standard",
+    paywallFallback: r.action.paywallFallback ?? "free",
+    timingType: r.action.publishTiming?.type ?? "now",
+    timingHours: String(r.action.publishTiming?.type === "delay" ? r.action.publishTiming.hours : 12),
+    timingWeekdays: r.action.publishTiming?.type === "weekly" ? r.action.publishTiming.weekdays : [2],
+    timingTime: r.action.publishTiming?.type === "weekly" ? r.action.publishTiming.time : "20:00",
   };
 }
 
@@ -191,6 +213,13 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   noteAccountId: "",
   templateId: "",
   notePublish: "",
+  // 新しい note 記事ルールは、NG の記事だけ保留・有料ラインが入らなければ書き直す
+  noteApproval: "standard",
+  paywallFallback: "retry",
+  timingType: "now",
+  timingHours: "12",
+  timingWeekdays: [2],
+  timingTime: "20:00",
 };
 
 function scheduleLabel(t: Rule["trigger"]) {
@@ -255,7 +284,20 @@ export default function AutomationPage() {
           : { type: "interval", hours: Number(draft.hours) },
       action:
         draft.actionType === "note_article"
-          ? { accountId: draft.noteAccountId, templateId: draft.templateId, topics: draft.topics.split("\n"), publish: draft.notePublish || undefined }
+          ? {
+              accountId: draft.noteAccountId,
+              templateId: draft.templateId,
+              topics: draft.topics.split("\n"),
+              publish: draft.notePublish || undefined,
+              approval: draft.noteApproval,
+              paywallFallback: draft.paywallFallback,
+              publishTiming:
+                draft.timingType === "delay"
+                  ? { type: "delay", hours: Number(draft.timingHours) }
+                  : draft.timingType === "weekly"
+                  ? { type: "weekly", weekdays: draft.timingWeekdays, time: draft.timingTime }
+                  : { type: "now" },
+            }
           : draft.actionType === "quote_post"
           ? {
               accountId: draft.quoteAccountId,
@@ -457,7 +499,60 @@ export default function AutomationPage() {
                 />
               </div>
               {(draft.notePublish === "publish" || (!draft.notePublish && templates.find((t) => t.id === draft.templateId)?.publish === "publish")) && (
-                <p className="text-[11px] text-amber-300">人の確認なしで note に公開されます。最初は「下書きに保存」で内容を確かめてから切り替えるのがおすすめです。</p>
+                <div className="space-y-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.04] p-3">
+                  <p className="text-[11px] text-amber-300">人の確認なしで note に公開されます。下の設定で、問題のある記事は公開せずに下書き（承認待ち）へ回せます。</p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field
+                      def={{ key: "nappr", label: "公開前チェック（AI）", type: "select", options: (Object.keys(APPROVAL) as Approval[]).map((k) => ({ value: k, label: APPROVAL[k].label })) }}
+                      value={draft.noteApproval}
+                      onChange={(v) => setDraft({ ...draft, noteApproval: v as Approval })}
+                    />
+                    <Field
+                      def={{ key: "npw", label: "有料ラインが入らなかったとき（有料テンプレート）", type: "select", options: (Object.keys(PAYWALL) as Draft["paywallFallback"][]).map((k) => ({ value: k, label: PAYWALL[k] })) }}
+                      value={draft.paywallFallback}
+                      onChange={(v) => setDraft({ ...draft, paywallFallback: v as Draft["paywallFallback"] })}
+                    />
+                    <Field
+                      def={{
+                        key: "ntime",
+                        label: "公開のタイミング",
+                        type: "select",
+                        options: [
+                          { value: "now", label: "作成後すぐ" },
+                          { value: "delay", label: "作成の N 時間後（その間に確認・修正できる）" },
+                          { value: "weekly", label: "決めた曜日・時刻" },
+                        ],
+                      }}
+                      value={draft.timingType}
+                      onChange={(v) => setDraft({ ...draft, timingType: v as Draft["timingType"] })}
+                    />
+                    {draft.timingType === "delay" && (
+                      <Field def={{ key: "nhours", label: "公開までの時間（1〜336）", placeholder: "12" }} value={draft.timingHours} onChange={(v) => setDraft({ ...draft, timingHours: v })} />
+                    )}
+                    {draft.timingType === "weekly" && (
+                      <div className="text-xs text-white/60">
+                        <div className="mb-1">公開する曜日・時刻（日本時間）</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {WEEKDAYS.map((w, i) => (
+                            <label key={w} className={`cursor-pointer rounded border px-2 py-1 ${draft.timingWeekdays.includes(i) ? "border-cyan-400/50 bg-cyan-500/10 text-cyan-200" : "border-white/10"}`}>
+                              <input
+                                type="checkbox"
+                                className="sr-only"
+                                checked={draft.timingWeekdays.includes(i)}
+                                onChange={(e) => setDraft({ ...draft, timingWeekdays: e.target.checked ? [...draft.timingWeekdays, i].sort() : draft.timingWeekdays.filter((d) => d !== i) })}
+                              />
+                              {w}
+                            </label>
+                          ))}
+                          <input type="time" value={draft.timingTime} onChange={(e) => setDraft({ ...draft, timingTime: e.target.value })} className="ml-2 rounded border border-white/10 bg-transparent px-2 py-1" aria-label="公開の時刻" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-white/40">
+                    保留した記事は note に送らず「投稿」の下書き（承認待ち）に入ります。承認すると予定の時刻（過ぎていれば今すぐ）に公開します。曜日指定では、このルールの予約と同じ枠には重ねず次の空いている枠に入れます。
+                  </p>
+                </div>
               )}
               <Field
                 def={{ key: "ntopics", label: "テーマ（1行に1つ。実行ごとに順番に使います）", type: "textarea", placeholder: "ADHD でも続く朝の集中ルーティン\n先延ばしを減らす 3 つの仕組み" }}
@@ -587,6 +682,11 @@ export default function AutomationPage() {
                         note: {accountName(r.action.accountId ?? "")}・テンプレート「{templates.find((t) => t.id === r.action.templateId)?.name ?? "（削除済み）"}」
                       </div>
                       <div className="mt-1 text-xs text-white/40">テーマ: {(r.action.topics ?? []).join(" / ")}</div>
+                      {(r.action.publish ?? templates.find((t) => t.id === r.action.templateId)?.publish) === "publish" && (
+                        <div className="mt-1 text-xs text-white/40">
+                          {timingLabel(r.action.publishTiming)}・公開前チェック {APPROVAL[r.action.approval ?? "all"].badge}・有料ラインが無いとき {PAYWALL[r.action.paywallFallback ?? "free"]}
+                        </div>
+                      )}
                     </>
                   ) : r.actionType === "quote_post" ? (
                     <div className="mt-1 text-xs text-white/50">

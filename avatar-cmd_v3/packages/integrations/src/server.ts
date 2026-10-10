@@ -35,6 +35,7 @@ export * from "./service/article-templates";
 export * from "./service/x-policy";
 export * from "./service/x-autopost";
 export * from "./service/topic-bandit";
+export * from "./service/article-gate";
 export * from "./service/rss-learning";
 export * from "./service/learning-summary";
 export { assertPublicUrl, extractArticle, fetchArticle, htmlToText } from "./service/web-extract";

@@ -26,6 +26,7 @@ import { effectiveXPolicy, getXPolicy, nextPostSlot } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 import { loadTopicStats, pickTopic, type TopicStrategy } from "./topic-bandit";
+import { nextPublishAt, normalizePublishTiming, type PaywallFallback, type PublishTiming } from "./article-gate";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -163,6 +164,12 @@ export interface NoteArticleActionConfig {
   topics: string[];
   /** 入稿のしかた（省略時はテンプレートの設定） */
   publish?: ArticlePublishMode;
+  /** 公開前チェックの承認範囲（公開まで行うとき。未指定は all = 従来どおり、結果は記録のみ） */
+  approval?: AutoApproval;
+  /** 有料ラインが入らなかったとき（未指定は free = 従来どおり無料で入稿） */
+  paywallFallback?: PaywallFallback;
+  /** 公開のタイミング（未指定は作成後すぐ） */
+  publishTiming?: PublishTiming;
 }
 
 export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): NoteArticleActionConfig {
@@ -170,7 +177,15 @@ export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): 
   if (!a.templateId) throw new ConfigError("記事テンプレートを選択してください");
   const topics = (a.topics ?? []).map((t) => String(t).trim()).filter(Boolean);
   if (!topics.length) throw new ConfigError("テーマを1つ以上入力してください");
-  return { accountId: a.accountId, templateId: a.templateId, topics, ...(a.publish === "publish" || a.publish === "draft" ? { publish: a.publish } : {}) };
+  return {
+    accountId: a.accountId,
+    templateId: a.templateId,
+    topics,
+    ...(a.publish === "publish" || a.publish === "draft" ? { publish: a.publish } : {}),
+    ...(AUTO_APPROVALS.includes(a.approval as AutoApproval) ? { approval: a.approval } : {}),
+    ...(a.paywallFallback === "hold" || a.paywallFallback === "retry" || a.paywallFallback === "free" ? { paywallFallback: a.paywallFallback } : {}),
+    ...(a.publishTiming && a.publishTiming.type !== "now" ? { publishTiming: normalizePublishTiming(a.publishTiming) } : {}),
+  };
 }
 
 export interface RuleInput {
@@ -264,6 +279,17 @@ export async function queuedPostsOfRule(ruleId: string) {
   });
 }
 
+/** note 記事ルールの、予約済み・保留中の公開予定時刻（同じ枠に重ねない） */
+async function notePublishTaken(ruleId: string): Promise<Date[]> {
+  const rows = await prisma.content.findMany({
+    where: { platform: "note", metadata: { path: ["automationId"], equals: ruleId }, status: { in: ["SCHEDULED", "DRAFT"] } },
+    select: { metadata: true, scheduledPost: { select: { scheduledAt: true } } },
+  });
+  return rows
+    .map((r) => r.scheduledPost?.scheduledAt ?? (typeof (r.metadata as Record<string, unknown>)?.plannedAt === "string" ? new Date(String((r.metadata as Record<string, unknown>).plannedAt)) : null))
+    .filter((d): d is Date => !!d && !Number.isNaN(d.getTime()));
+}
+
 /** ルールの予約を下書き（承認待ち）に戻す。戻した件数を返す */
 export async function holdQueuedPosts(ruleId: string, reason: string): Promise<number> {
   const rows = await queuedPostsOfRule(ruleId);
@@ -286,9 +312,20 @@ export async function runRule(ruleId: string): Promise<number> {
   if (rule.actionType === "note_article") {
     // 画像生成に数分かかるので、記事ジョブに依頼して戻る（結果は投稿一覧、失敗はルールのエラーに出る）
     const config = validateNoteArticleAction(rule.actionConfig as unknown as NoteArticleActionConfig);
-    await getArticleTemplate(config.templateId);
+    const template = await getArticleTemplate(config.templateId);
     const topic = config.topics[rule.executionCount % config.topics.length];
-    await enqueueArticleJob("full", rule.avatarId, { accountId: config.accountId, templateId: config.templateId, topic, publish: config.publish, ruleId: rule.id });
+    // 作成と公開を分ける: 公開まで行うときは、公開のタイミングの枠（このルールの予約と重ならない）に予約する
+    const publish = config.publish ?? template.publish;
+    const scheduledAt = publish === "publish" && config.publishTiming ? nextPublishAt(config.publishTiming, new Date(), await notePublishTaken(rule.id)) : undefined;
+    await enqueueArticleJob("full", rule.avatarId, {
+      accountId: config.accountId,
+      templateId: config.templateId,
+      topic,
+      publish: config.publish,
+      ruleId: rule.id,
+      ...(scheduledAt ? { scheduledAt: scheduledAt.toISOString() } : {}),
+      gate: { approval: config.approval ?? "all", paywallFallback: config.paywallFallback ?? "free" },
+    });
     return 1;
   }
   return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));
@@ -501,6 +538,9 @@ export async function approveDraft(contentId: string, text?: string, scheduledAt
   const c = await prisma.content.findUniqueOrThrow({ where: { id: contentId } });
   if (c.status !== "DRAFT") throw new ConfigError("下書き以外は承認できません");
   if (!c.snsAccountId) throw new ConfigError("投稿先アカウントがありません");
+  // 保留された note 記事などで公開の予定時刻があれば、指定が無い限りその時刻（過ぎていれば今すぐ）にする
+  const planned = typeof (c.metadata as Record<string, unknown> | null)?.plannedAt === "string" ? new Date(String((c.metadata as Record<string, unknown>).plannedAt)) : null;
+  if (!scheduledAt && planned && !Number.isNaN(planned.getTime()) && planned.getTime() > Date.now()) scheduledAt = planned;
   await prisma.content.update({
     where: { id: contentId },
     data: {

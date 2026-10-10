@@ -12,6 +12,7 @@ import { withUsageContext } from "./usage";
 import { generateEyecatch, generateNoteDraft, renderVisualMarkers, type NoteDraftInput } from "./article";
 import { getSetting, SETTING_KEYS } from "./store";
 import { runFullArticle, type ArticlePublishMode } from "./article-templates";
+import type { ArticleApproval, PaywallFallback } from "./article-gate";
 
 /** full = テーマから入稿まで全自動（article-templates.ts の runFullArticle） */
 export type ArticleJobKind = "write" | "render" | "eyecatch" | "full";
@@ -21,7 +22,7 @@ export interface ArticleJobInputs {
   write: Omit<NoteDraftInput, "avatarId">;
   render: { markdown: string; only?: number[] };
   eyecatch: { title: string; summary?: string };
-  full: { accountId?: string; templateId?: string; title?: string; topic?: string; publish?: ArticlePublishMode; scheduledAt?: string; ruleId?: string };
+  full: { accountId?: string; templateId?: string; title?: string; topic?: string; publish?: ArticlePublishMode; scheduledAt?: string; ruleId?: string; gate?: { approval: ArticleApproval; paywallFallback: PaywallFallback } };
 }
 
 export interface ArticleJobView {
@@ -107,6 +108,7 @@ export async function runArticleJob(id: string): Promise<boolean> {
           publish: input.publish === "publish" ? "publish" : input.publish === "draft" ? "draft" : undefined,
           scheduledAt: at && at.getTime() > Date.now() ? at : undefined,
           ruleId,
+          gate: input.gate && typeof input.gate === "object" ? { approval: ["standard", "strict"].includes(input.gate.approval) ? input.gate.approval : "all", paywallFallback: ["hold", "retry"].includes(input.gate.paywallFallback) ? input.gate.paywallFallback : "free" } : undefined,
           onProgress: progress,
         });
       } else throw new Error(`不明なジョブ: ${job.kind}`);

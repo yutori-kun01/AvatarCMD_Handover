@@ -14,7 +14,9 @@ import { MARKER_RE } from "../markdown";
 import { NOTE_PRICE_MAX, NOTE_PRICE_MIN } from "../platforms/note";
 import { generateEyecatch, generateNoteDraft, insertVisualMarkers, planVisuals, renderVisualMarkers } from "./article";
 import type { MediaRef } from "./media";
-import { createPosts } from "./publish";
+import { createPosts, errorMessage } from "./publish";
+import { reviewPost } from "./ai";
+import { hasPaywall, PAYWALL_RETRY_PROMPT, type ArticleApproval, type PaywallFallback } from "./article-gate";
 import { getSetting, setSetting } from "./store";
 
 const KEY = "article_templates";
@@ -144,6 +146,11 @@ export interface FullArticleInput {
   scheduledAt?: Date;
   /** 自動化ルールから実行したとき */
   ruleId?: string;
+  /**
+   * 公開前チェックと有料ラインの扱い（公開まで行うときだけ使う）。
+   * 保留した記事は note に送らず下書き（承認待ち）にし、承認されたら scheduledAt（過ぎていれば今すぐ）に入稿する
+   */
+  gate?: { approval: ArticleApproval; paywallFallback: PaywallFallback };
   onProgress?: (text: string) => unknown;
 }
 
@@ -157,6 +164,8 @@ export interface FullArticleResult {
   images: number;
   eyecatch: boolean;
   warnings: string[];
+  /** 保留して下書き（承認待ち）にした理由。入稿したときは無い */
+  heldReason?: string;
 }
 
 /** テーマ → 執筆 → 画像・図解 → 見出し画像 → note へ入稿 を 1 回で行う */
@@ -174,8 +183,21 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
   if (!input.title?.trim() && !input.topic?.trim()) throw new ConfigError("テーマかタイトルを入力してください");
   const warnings: string[] = [];
 
+  const publish = input.publish ?? t.publish;
+  // 公開前チェック・有料ラインの扱いは「公開まで行う」ときだけ（note の下書き保存なら人が note で確認する）
+  const gate = publish === "publish" ? input.gate : undefined;
+  const holds: string[] = [];
+
   await progress("執筆中");
-  const draft = await generateNoteDraft({ avatarId: input.avatarId, title: input.title, topic: input.topic, paid: t.paid, extraPrompt: templatePrompt(t) || undefined });
+  let draft = await generateNoteDraft({ avatarId: input.avatarId, title: input.title, topic: input.topic, paid: t.paid, extraPrompt: templatePrompt(t) || undefined });
+  // 有料ラインが入らなかったとき（画像を作る前に確かめて、無駄な画像生成をしない）
+  if (t.paid && gate && !hasPaywall(draft.markdown)) {
+    if (gate.paywallFallback === "retry") {
+      await progress("有料ラインを入れて書き直し中");
+      draft = await generateNoteDraft({ avatarId: input.avatarId, title: input.title, topic: input.topic, paid: true, extraPrompt: [templatePrompt(t), PAYWALL_RETRY_PROMPT].filter(Boolean).join("\n\n") });
+      if (!hasPaywall(draft.markdown)) holds.push("書き直しても有料ラインが入りませんでした");
+    } else if (gate.paywallFallback === "hold") holds.push("有料ラインが入りませんでした");
+  }
   let md = draft.markdown;
   const media: MediaRef[] = [];
 
@@ -207,9 +229,50 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
     }
   }
 
-  const hasPaywall = /^\s*<!--\s*paywall\s*-->\s*$/m.test(md);
-  if (t.paid && !hasPaywall) warnings.push("本文に有料ラインが入らなかったため、無料記事として入稿します");
-  const publish = input.publish ?? t.publish;
+  const paywall = hasPaywall(md);
+  if (t.paid && !paywall && !holds.length) warnings.push("本文に有料ラインが入らなかったため、無料記事として入稿します");
+
+  // 公開前チェック（承認範囲は自動化ルールの設定。all は結果を記録するだけ）
+  let review: { verdict: string; summary: string; model?: string; error?: string } | undefined;
+  if (gate) {
+    await progress("公開前チェック");
+    try {
+      const r = await reviewPost({ text: md.slice(0, 30_000), avatarId: input.avatarId, platform: "note" });
+      review = { verdict: r.verdict, summary: r.summary, model: r.model };
+    } catch (e) {
+      review = { verdict: "error", summary: "", error: errorMessage(e) };
+    }
+    const { autoApprovalDecision } = await import("./automation");
+    const d = autoApprovalDecision(gate.approval, review);
+    if (!d.publish) holds.push(`公開前チェックで保留: ${d.reason ?? ""}`);
+    else if (review.verdict !== "ok") warnings.push(`公開前チェックの指摘（自動承認の設定により公開）: ${review.error ? "チェック失敗" : `${review.verdict} ${review.summary}`}`);
+  }
+
+  const mediaAll = [...media, ...(eyecatch ? [eyecatch] : [])];
+  const noteOptions = { title: draft.title, price: t.paid && paywall && t.price ? String(t.price) : "", eyecatch: eyecatch?.name ?? "", mode: publish };
+  const category = input.ruleId ? "automation" : "manual";
+  const extraMetadata = { article: { templateId: input.templateId ?? null, model: draft.model, warnings }, ...(review ? { review } : {}), ...(input.ruleId ? { automationId: input.ruleId } : {}) };
+  const result = { title: draft.title, topic: draft.topic, markdown: md, publish, scheduledAt: input.scheduledAt?.toISOString() ?? null, images: media.length, eyecatch: !!eyecatch, warnings };
+
+  if (holds.length) {
+    // note には送らず、Avatar CMD の下書き（承認待ち）にする。承認すると予定時刻（過ぎていれば今すぐ）に入稿する
+    const heldReason = `note 記事の自動化で保留: ${holds.join(" / ")}`;
+    const content = await prisma.content.create({
+      data: {
+        avatarId: input.avatarId,
+        platform: "note",
+        snsAccountId: account.id,
+        content: md,
+        status: "DRAFT",
+        category,
+        metadata: { ...extraMetadata, title: draft.title, tags: t.tags, media: mediaAll, options: noteOptions, heldReason, ...(input.scheduledAt ? { plannedAt: input.scheduledAt.toISOString() } : {}) } as object,
+      },
+    });
+    await prisma.activityLog.create({
+      data: { avatarId: input.avatarId, action: "automation_review_held", category: "content", level: "warning", description: `note 記事「${draft.title}」を保留して下書きにしました — ${holds.join(" / ")}`, metadata: { contentId: content.id, ruleId: input.ruleId ?? null } },
+    });
+    return { contentId: content.id, ...result, heldReason };
+  }
 
   await progress("note へ入稿");
   const [content] = await createPosts({
@@ -217,21 +280,14 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
     text: md,
     title: draft.title,
     tags: t.tags,
-    media: [...media, ...(eyecatch ? [eyecatch] : [])],
-    options: { note: { title: draft.title, price: t.paid && hasPaywall && t.price ? String(t.price) : "", eyecatch: eyecatch?.name ?? "", mode: publish } },
+    media: mediaAll,
+    options: { note: noteOptions },
     scheduledAt: input.scheduledAt,
-    category: input.ruleId ? "automation" : "manual",
-    extraMetadata: { article: { templateId: input.templateId ?? null, model: draft.model, warnings }, ...(input.ruleId ? { automationId: input.ruleId } : {}) },
+    category,
+    extraMetadata,
   });
   return {
     contentId: content.id,
-    title: draft.title,
-    topic: draft.topic,
-    markdown: md,
-    publish,
-    scheduledAt: input.scheduledAt?.toISOString() ?? null,
-    images: media.length,
-    eyecatch: !!eyecatch,
-    warnings,
+    ...result,
   };
 }
