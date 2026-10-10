@@ -15,6 +15,9 @@ import { taskForPlatform } from "./ai";
 import { validateAction, validateTrigger, type ActionConfig, type TriggerConfig } from "./automation";
 import { costOfRow, loadPrices, summarizeUsage, usageMonthRange, type Price, type PriceUnit } from "./usage";
 import { QUOTE_RULES, type QuoteActionConfig } from "./quotes";
+import { getArticleTemplate } from "./article-templates";
+import { getImageSettings } from "./image-gen";
+import type { NoteArticleActionConfig } from "./automation";
 
 const DAY = 86400_000;
 const HOURS_PER_MONTH = 730;
@@ -30,6 +33,10 @@ export const DEFAULT_TOKENS: Record<string, { input: number; output: number }> =
   jev: { input: 800, output: 60 },
   youtube_summary: { input: 8000, output: 800 },
   improvement: { input: 3000, output: 800 },
+  article_review: { input: 6000, output: 300 },
+  visual: { input: 2500, output: 800 },
+  // 画像は 1 枚ごとの単価（料金表の request 単価）で数える
+  image: { input: 0, output: 0 },
 };
 
 export interface EstimateCall {
@@ -234,6 +241,36 @@ export async function estimateMonthly(now = new Date()) {
 export async function estimateRuleConfig(rule: { name?: string; avatarId?: string; trigger: TriggerConfig; action: ActionConfig }, now = new Date()) {
   const ctx = await context(now);
   return price(await ruleItem({ name: rule.name || "新しいルール", avatarId: rule.avatarId, trigger: rule.trigger, action: rule.action }, ctx), await loadPrices(), now);
+}
+
+/**
+ * 3c. 保存前の note 記事ルールの月額の増分。1 本あたり: 執筆（有料で書き直しありなら 1.2 回）・公開前チェック・画像の計画・
+ * 画像（テンプレートの最大枚数＝上限で見積もり）・見出し画像。画像の単価は料金表（画像のプロバイダ・モデル）による
+ */
+export async function estimateNoteRuleConfig(rule: { name?: string; avatarId?: string; trigger: TriggerConfig; action: NoteArticleActionConfig }, now = new Date()) {
+  const { avg } = await context(now);
+  const runs = runsPerMonth(validateTrigger(rule.trigger));
+  const t = await getArticleTemplate(rule.action.templateId);
+  const publish = (rule.action.publish ?? t.publish) === "publish";
+  const calls: EstimateCall[] = [];
+  const notes: string[] = [];
+  const ai = async (task: AiTask, purpose: string, requests: number, defaultKey = purpose) => {
+    const r = await resolveAi(task);
+    if (!r.provider) notes.push(`${AI_TASKS[task].label} の AI が未設定`);
+    calls.push(llmCall(avg, r.provider, r.model, purpose, requests, defaultKey));
+  };
+  const retry = t.paid && publish && rule.action.paywallFallback === "retry" ? 1.2 : 1;
+  await ai("article", "article", runs * retry);
+  if (publish) await ai("review", "review", runs, "article_review");
+  const images = (t.visuals ? t.maxVisuals : 0) + (t.eyecatch ? 1 : 0);
+  if (t.visuals) await ai("visual", "visual", runs);
+  if (images) {
+    const s = await getImageSettings();
+    if (!s.provider) notes.push("画像生成のプロバイダが未設定");
+    else calls.push(llmCall(avg, s.provider, s.models[s.provider], "image_generate", runs * images, "image"));
+    if (t.visuals) notes.push(`画像は 1 本あたり最大 ${images} 枚で見積もり（図解は画像の費用なし）`);
+  }
+  return price({ kind: "rule", label: rule.name || "新しいルール", avatarId: rule.avatarId, runsPerMonth: runs, calls, notes }, await loadPrices(), now);
 }
 
 /** 3a. 月末予測: 今月の実績 ÷ 経過日数 × 月の日数（直線予測） */

@@ -2,7 +2,8 @@
 // note 記事テンプレートの管理: 構成・タイトルの付け方・有料/価格・有料ラインの位置・タグ・画像の入れ方・入稿のしかた
 // 記事エディタの「テンプレートを適用」、全自動の記事作成、自動化ルール（note 記事）で使う
 import { useState } from "react";
-import { Pencil, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { Pencil, Trash2, Zap } from "lucide-react";
 import { api, Badge, Button, Card, inputCls } from "@/components/settings/ui";
 
 export interface ArticleTemplate {
@@ -192,6 +193,10 @@ export function ArticleTemplates({ templates, onChanged, onError }: { templates:
                 </div>
                 <div className="truncate text-[11px] text-white/40">{templateSummary(t)}</div>
               </div>
+              <Link href={`/automation?new=note_article&templateId=${encodeURIComponent(t.id)}`} title="このテンプレートで自動化（ルールを作る）" className="flex items-center gap-1 text-[11px] text-cyan-300/80 hover:text-cyan-200">
+                <Zap className="h-3.5 w-3.5" />
+                自動化
+              </Link>
               <button title="編集" onClick={() => setForm(toForm(t))} className="text-white/40 hover:text-white">
                 <Pencil className="h-3.5 w-3.5" />
               </button>

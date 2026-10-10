@@ -159,3 +159,40 @@ test("note 記事ルール: 曜日・時刻の公開タイミングで予約し�
   assert.equal(new Date(at.getTime() + 9 * 3600_000).getUTCHours(), 20);
   await prisma.articleJob.deleteMany({ where: { avatarId } });
 });
+
+test("記事カレンダー: 作成予定（テーマ順）・保留中・公開予定を時刻順に並べる", opts, async () => {
+  const m = mocks();
+  try {
+    await svc.setSetting(svc.SETTING_KEYS.workerHeartbeat, new Date().toISOString());
+    const rule = await svc.createRule({ avatarId, name: "毎日記事", actionType: "note_article", trigger: { type: "interval", hours: 24 }, action: { accountId, templateId, topics: ["A", "B"] } as any });
+    const at = new Date(Date.now() + 3 * 86400_000);
+    drafts = [WITH_PAYWALL];
+    reviewVerdict = "ng";
+    await svc.runFullArticle({ avatarId, templateId, topic: "集中", ruleId: rule.id, scheduledAt: at, gate: { approval: "strict", paywallFallback: "free" } });
+    drafts = [WITH_PAYWALL];
+    reviewVerdict = "ok";
+    await svc.runFullArticle({ avatarId, templateId, topic: "集中", ruleId: rule.id, scheduledAt: new Date(at.getTime() + 86400_000), gate: { approval: "strict", paywallFallback: "free" } });
+    const items = (await svc.articleCalendar({ avatarIds: [avatarId], days: 7 })).filter((i) => i.ruleId === rule.id);
+    const creations = items.filter((i) => i.kind === "creation");
+    assert.deepEqual(creations.slice(0, 3).map((i) => i.title), ["A", "B", "A"]);
+    const held = items.find((i) => i.kind === "held")!;
+    assert.equal(held.at, at.toISOString());
+    assert.match(held.heldReason ?? "", /公開前チェック/);
+    const scheduled = items.find((i) => i.kind === "scheduled")!;
+    assert.equal(scheduled.price, "500");
+    assert.ok(items.every((x, i) => i === 0 || items[i - 1].at <= x.at));
+  } finally {
+    m.restore();
+  }
+});
+
+test("note 記事ルールの見積もり: 執筆・チェック・画像の計画・画像（上限）を回数に掛ける", opts, async () => {
+  const tpl = await svc.saveArticleTemplate({ name: "画像あり", paid: false, visuals: true, maxVisuals: 3, eyecatch: true, publish: "publish" });
+  const e = await svc.estimateNoteRuleConfig({ trigger: { type: "daily", times: ["09:00"] }, action: { accountId, templateId: tpl.id, topics: ["A"] } });
+  assert.ok(Math.abs(e.runsPerMonth - 365 / 12) < 0.01);
+  const purposes = Object.fromEntries(e.calls.map((c) => [c.purpose, c.requests]));
+  assert.ok(Math.abs(purposes.article - e.runsPerMonth) < 0.01);
+  assert.ok(Math.abs(purposes.review - e.runsPerMonth) < 0.01);
+  assert.ok(Math.abs(purposes.visual - e.runsPerMonth) < 0.01);
+  if (purposes.image_generate !== undefined) assert.ok(Math.abs(purposes.image_generate - e.runsPerMonth * 4) < 0.01);
+});

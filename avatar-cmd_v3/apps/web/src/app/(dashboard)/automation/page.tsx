@@ -255,6 +255,23 @@ export default function AutomationPage() {
     load().catch((e) => setNotice({ kind: "error", msg: e.message }));
   }, [load]);
 
+  // note 記事テンプレートの「自動化」から来たときは、そのテンプレートで新しいルールを開く（?new=note_article&templateId=…）
+  const [prefilled, setPrefilled] = useState(false);
+  useEffect(() => {
+    if (prefilled || !templates.length || !accounts.length) return;
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("new") !== "note_article") return;
+    setPrefilled(true);
+    const t = templates.find((x) => x.id === q.get("templateId"));
+    const acc = accounts.find((a) => a.platform === "note");
+    if (!t || !acc) {
+      setNotice({ kind: "error", msg: !t ? "テンプレートが見つかりません" : "note のアカウントがありません（設定 > アカウント で接続してください）" });
+      return;
+    }
+    setDraft({ ...NEW_DRAFT, avatarId: acc.avatarId, actionType: "note_article", name: `note 記事（${t.name}）`, noteAccountId: acc.id, templateId: t.id });
+    window.history.replaceState(null, "", "/automation");
+  }, [templates, accounts, prefilled]);
+
   const byId = useMemo(() => Object.fromEntries(platforms.map((p) => [p.id, p])), [platforms]);
   const accountName = (id: string) => {
     const a = accounts.find((x) => x.id === id);
@@ -263,7 +280,10 @@ export default function AutomationPage() {
 
   // 編集中の設定で、このルールの月額の増分（概算）を見積もる
   useEffect(() => {
-    if (!draft || draft.actionType !== "generate_post" || !draft.accountIds.length || !draft.topics.trim()) return setEstimate(null);
+    const ready =
+      draft &&
+      ((draft.actionType === "generate_post" && draft.accountIds.length && draft.topics.trim()) || (draft.actionType === "note_article" && draft.noteAccountId && draft.templateId && draft.topics.trim()));
+    if (!draft || !ready) return setEstimate(null);
     const t = setTimeout(() => {
       api<{ item: NonNullable<typeof estimate> }>("/api/costs/estimate", { method: "POST", json: ruleBody(draft) })
         .then((d) => setEstimate(d.item))
