@@ -86,13 +86,20 @@ export async function articleCalendar(opts: { avatarIds?: string[]; days?: numbe
     }
     const a = r.actionConfig as unknown as NoteArticleActionConfig;
     const topics = a.topics ?? [];
+    // テーマ候補のキューがあれば先に使う（suggest は採用済みだけ、auto は提案も）
+    const mode = a.autoTopics ?? "off";
+    const queue =
+      mode === "off"
+        ? []
+        : (await prisma.articleTopicSuggestion.findMany({ where: { ruleId: r.id, status: { in: mode === "auto" ? ["accepted", "proposed"] : ["accepted"] } }, orderBy: [{ position: "asc" }, { createdAt: "asc" }], take: 60, select: { topic: true } })).map((q) => q.topic);
     let at = r.nextRunAt;
-    for (let i = 0; i < 60 && at.getTime() <= until.getTime(); i++) {
-      if (topics.length)
+    for (let i = 0, rot = 0; i < 60 && at.getTime() <= until.getTime(); i++) {
+      const title = i < queue.length ? queue[i] : topics.length ? topics[(r.executionCount + rot++) % topics.length] : null;
+      if (title)
         items.push({
           kind: "creation",
           at: at.toISOString(),
-          title: topics[(r.executionCount + i) % topics.length],
+          title,
           ruleId: r.id,
           ruleName: r.name,
           timing: describeTiming(a.publishTiming ?? { type: "now" }),

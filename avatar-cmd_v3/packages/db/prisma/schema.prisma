@@ -139,6 +139,7 @@ model Avatar {
   styleReferences StyleReference[]
   videoEpisodes   VideoEpisode[]
   improvementCycles ImprovementCycle[]
+  articleTopicSuggestions ArticleTopicSuggestion[]
   improvementSchedule ImprovementSchedule?
   collabs           Collaboration[] @relation("CollabInitiator")
   collabPartners    Collaboration[] @relation("CollabPartner")
@@ -565,12 +566,36 @@ model AutomationRule {
   lastError      String?  @map("last_error")
 
   avatar       Avatar   @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  topicSuggestions ArticleTopicSuggestion[]
 
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([isActive, nextRunAt])
   @@map("automation_rules")
+}
+
+/// note 記事のテーマ候補（AI がナレッジ・反応の良い SNS 投稿・ペルソナから提案）。note 記事ルールのテーマのキュー
+model ArticleTopicSuggestion {
+  id        String   @id @default(uuid())
+  avatarId  String   @map("avatar_id")
+  ruleId    String   @map("rule_id")
+  topic     String
+  reason    String?
+  /// knowledge（ナレッジ）/ sns（反応の良い投稿）/ persona（ペルソナのトピック）
+  source    String   @default("persona")
+  /// proposed（提案）/ accepted（採用・未使用）/ used（記事に使用済み）/ rejected（却下・重複）
+  status    String   @default("proposed")
+  /// 並び順（小さいほど先に使う）
+  position  Int      @default(0)
+  usedAt    DateTime? @map("used_at")
+  avatar    Avatar          @relation(fields: [avatarId], references: [id], onDelete: Cascade)
+  rule      AutomationRule  @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([ruleId, status, position])
+  @@map("article_topic_suggestions")
 }
 
 // ==============================================

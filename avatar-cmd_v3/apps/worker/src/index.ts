@@ -7,7 +7,7 @@
 // note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processImprovementVerifications, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processXModePosts, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processImprovementVerifications, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processXModePosts, processTopicSuggestions, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -87,6 +87,9 @@ async function tick() {
       // 引用候補の自動探索（X アカウントの設定で有効にしたものだけ）
       const q = await processQuoteScans().catch((e) => (console.error("[worker] quote scan failed:", e), 0));
       if (q) console.log(`[worker] ${new Date().toISOString()} scanned quote candidates for ${q} account(s)`);
+      // note 記事のテーマ候補の補充（キューの残りが少ないルールに 1 日 1 回まで）
+      const ts = await processTopicSuggestions().catch((e) => (console.error("[worker] topic suggestions failed:", e), 0));
+      if (ts) console.log(`[worker] ${new Date().toISOString()} suggested article topics for ${ts} rule(s)`);
       await pruneArticleJobs().catch((e) => console.error("[worker] prune article jobs failed:", e));
     }
   } catch (e) {

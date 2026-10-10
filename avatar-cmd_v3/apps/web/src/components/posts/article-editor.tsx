@@ -12,6 +12,7 @@ import { BarChart3, ImageIcon, ImagePlus, Loader2, Lock, Rocket, RotateCcw, Spar
 import { api, Badge, Button, Card, inputCls, Notice, type AccountInfo } from "@/components/settings/ui";
 import { ArticleTemplates, templateSummary, type ArticleTemplate } from "./article-templates";
 import { ArticleCalendar } from "./article-calendar";
+import { TopicQueue } from "./topic-queue";
 
 interface MediaRef {
   name: string;
@@ -770,6 +771,7 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
           </Button>
         </Card>
         <ArticleCalendar onNotice={(kind, msg) => setNotice({ kind, msg })} />
+        <TopicQueue onNotice={(kind, msg) => setNotice({ kind, msg })} />
         <ArticleTemplates
           templates={templates}
           onChanged={(msg) => {

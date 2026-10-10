@@ -27,6 +27,7 @@ import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 import { loadTemplateStats, loadTopicStats, pickTopic, type TopicStrategy } from "./topic-bandit";
 import { nextPublishAt, normalizePublishTiming, type PaywallFallback, type PublishTiming } from "./article-gate";
+import { markTopicUsed, nextQueuedTopic, type AutoTopics } from "./article-topics";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -174,13 +175,17 @@ export interface NoteArticleActionConfig {
   topicStrategy?: TopicStrategy;
   /** A/B 比較するテンプレート（任意）。交互に試し、成果（PV あたりのスキ）の良い方を多く使う */
   abTemplateId?: string;
+  /** テーマ候補（AI の提案）のキュー: off（既定）/ suggest（採用したものを使う）/ auto（提案をそのまま使う） */
+  autoTopics?: AutoTopics;
 }
 
 export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): NoteArticleActionConfig {
   if (!a.accountId) throw new ConfigError("note アカウントを選択してください");
   if (!a.templateId) throw new ConfigError("記事テンプレートを選択してください");
   const topics = (a.topics ?? []).map((t) => String(t).trim()).filter(Boolean);
-  if (!topics.length) throw new ConfigError("テーマを1つ以上入力してください");
+  const autoTopics: AutoTopics = a.autoTopics === "suggest" || a.autoTopics === "auto" ? a.autoTopics : "off";
+  // テーマ候補のキューを使うなら、テーマは空でもよい（候補が無いときの予備）
+  if (!topics.length && autoTopics === "off") throw new ConfigError("テーマを1つ以上入力してください（または「テーマ候補」を使う設定にしてください）");
   return {
     accountId: a.accountId,
     templateId: a.templateId,
@@ -191,6 +196,7 @@ export function validateNoteArticleAction(a: Partial<NoteArticleActionConfig>): 
     ...(a.publishTiming && a.publishTiming.type !== "now" ? { publishTiming: normalizePublishTiming(a.publishTiming) } : {}),
     ...(a.topicStrategy === "learn" ? { topicStrategy: "learn" as const } : {}),
     ...(a.abTemplateId && a.abTemplateId !== a.templateId ? { abTemplateId: a.abTemplateId } : {}),
+    ...(autoTopics !== "off" ? { autoTopics } : {}),
   };
 }
 
@@ -323,8 +329,11 @@ export async function runRule(ruleId: string): Promise<number> {
     const templateIds = config.abTemplateId ? [config.templateId, config.abTemplateId] : [config.templateId];
     const templateId = templateIds.length > 1 ? pickTopic(templateIds, await loadTemplateStats(rule.id, templateIds), rule.executionCount, "learn") : config.templateId;
     const template = await getArticleTemplate(templateId);
-    const stats = config.topicStrategy === "learn" ? await loadTopicStats({ ruleId: rule.id }, config.topics) : new Map();
-    const topic = pickTopic(config.topics, stats, rule.executionCount, config.topicStrategy);
+    // テーマ候補のキューの先頭 → 無ければルールのテーマ（順番 / 学習）
+    const queued = await nextQueuedTopic(rule.id, rule.avatarId, config.autoTopics ?? "off");
+    if (!queued && !config.topics.length) throw new ConfigError("使えるテーマ候補がありません（提案を採用するか、ルールにテーマを入力してください）");
+    const stats = !queued && config.topicStrategy === "learn" ? await loadTopicStats({ ruleId: rule.id }, config.topics) : new Map();
+    const topic = queued?.topic ?? pickTopic(config.topics, stats, rule.executionCount, config.topicStrategy);
     // 作成と公開を分ける: 公開まで行うときは、公開のタイミングの枠（このルールの予約と重ならない）に予約する
     const publish = config.publish ?? template.publish;
     const scheduledAt = publish === "publish" && config.publishTiming ? nextPublishAt(config.publishTiming, new Date(), await notePublishTaken(rule.id)) : undefined;
@@ -337,6 +346,7 @@ export async function runRule(ruleId: string): Promise<number> {
       ...(scheduledAt ? { scheduledAt: scheduledAt.toISOString() } : {}),
       gate: { approval: config.approval ?? "all", paywallFallback: config.paywallFallback ?? "free" },
     });
+    if (queued) await markTopicUsed(queued.id);
     return 1;
   }
   return withUsageContext({ avatarId: rule.avatarId, context: "automation", subjectId: rule.id }, () => runRuleInner(rule));

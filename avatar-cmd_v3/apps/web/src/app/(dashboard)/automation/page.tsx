@@ -21,6 +21,7 @@ interface Rule {
     publish?: "draft" | "publish";
     paywallFallback?: "free" | "hold" | "retry";
     abTemplateId?: string;
+    autoTopics?: "off" | "suggest" | "auto";
     publishTiming?: { type: "now" } | { type: "delay"; hours: number } | { type: "weekly"; weekdays: number[]; time: string };
     accountIds: string[];
     topics: string[];
@@ -143,6 +144,7 @@ interface Draft {
   notePublish: "" | "draft" | "publish";
   noteApproval: Approval;
   abTemplateId: string;
+  autoTopics: "off" | "suggest" | "auto";
   paywallFallback: "free" | "hold" | "retry";
   timingType: "now" | "delay" | "weekly";
   timingHours: string;
@@ -187,6 +189,7 @@ function toDraft(r: Rule): Draft {
     noteApproval: r.actionType === "note_article" ? r.action.approval ?? "all" : "standard",
     paywallFallback: r.action.paywallFallback ?? "free",
     abTemplateId: r.action.abTemplateId ?? "",
+    autoTopics: r.action.autoTopics ?? "off",
     timingType: r.action.publishTiming?.type ?? "now",
     timingHours: String(r.action.publishTiming?.type === "delay" ? r.action.publishTiming.hours : 12),
     timingWeekdays: r.action.publishTiming?.type === "weekly" ? r.action.publishTiming.weekdays : [2],
@@ -219,6 +222,7 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   // 新しい note 記事ルールは、NG の記事だけ保留・有料ラインが入らなければ書き直す
   noteApproval: "standard",
   abTemplateId: "",
+  autoTopics: "off",
   paywallFallback: "retry",
   timingType: "now",
   timingHours: "12",
@@ -286,7 +290,7 @@ export default function AutomationPage() {
   useEffect(() => {
     const ready =
       draft &&
-      ((draft.actionType === "generate_post" && draft.accountIds.length && draft.topics.trim()) || (draft.actionType === "note_article" && draft.noteAccountId && draft.templateId && draft.topics.trim()));
+      ((draft.actionType === "generate_post" && draft.accountIds.length && draft.topics.trim()) || (draft.actionType === "note_article" && draft.noteAccountId && draft.templateId && (draft.topics.trim() || draft.autoTopics !== "off")));
     if (!draft || !ready) return setEstimate(null);
     const t = setTimeout(() => {
       api<{ item: NonNullable<typeof estimate> }>("/api/costs/estimate", { method: "POST", json: ruleBody(draft) })
@@ -317,6 +321,7 @@ export default function AutomationPage() {
               paywallFallback: draft.paywallFallback,
               topicStrategy: draft.topicStrategy,
               abTemplateId: draft.abTemplateId || undefined,
+              autoTopics: draft.autoTopics,
               publishTiming:
                 draft.timingType === "delay"
                   ? { type: "delay", hours: Number(draft.timingHours) }
@@ -597,6 +602,21 @@ export default function AutomationPage() {
                   onChange={(v) => setDraft({ ...draft, abTemplateId: v })}
                 />
               </div>
+              <Field
+                def={{
+                  key: "nauto",
+                  label: "テーマ候補（AI がナレッジ・反応の良い投稿から提案）",
+                  type: "select",
+                  options: [
+                    { value: "off", label: "使わない（下のテーマだけ）" },
+                    { value: "suggest", label: "提案を採用したものを先に使う" },
+                    { value: "auto", label: "提案をそのまま使う（全自動）" },
+                  ],
+                }}
+                value={draft.autoTopics}
+                onChange={(v) => setDraft({ ...draft, autoTopics: v as Draft["autoTopics"] })}
+              />
+              {draft.autoTopics !== "off" && <p className="text-[11px] text-white/40">候補は「投稿・記事 → note 記事」のテーマ候補で確認・採用できます。候補が無いときは下のテーマを使います（空でもよい）。</p>}
               {draft.abTemplateId && <p className="text-[11px] text-white/40">2 つのテンプレートを交互に試し、記事の成果（PV あたりのスキ）が良い方を多く使います（2 割は交互のまま試し続けます）。</p>}
               <Field
                 def={{ key: "ntopics", label: "テーマ（1行に1つ。実行ごとに順番に使います）", type: "textarea", placeholder: "ADHD でも続く朝の集中ルーティン\n先延ばしを減らす 3 つの仕組み" }}
@@ -678,7 +698,7 @@ export default function AutomationPage() {
             </p>
           )}
           <div className="flex gap-2">
-            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.actionType !== "note_article" && draft.mode === "auto" && !draft.approval) || (draft.actionType === "quote_post" && !draft.quoteAccountId) || (draft.actionType === "note_article" && (!draft.noteAccountId || !draft.templateId || !draft.topics.trim()))}>
+            <Button onClick={save} disabled={busy === "save" || !draft.name.trim() || (draft.actionType !== "note_article" && draft.mode === "auto" && !draft.approval) || (draft.actionType === "quote_post" && !draft.quoteAccountId) || (draft.actionType === "note_article" && (!draft.noteAccountId || !draft.templateId || (!draft.topics.trim() && draft.autoTopics === "off")))}>
               {busy === "save" ? "保存中…" : "保存"}
             </Button>
             <Button variant="ghost" onClick={() => setDraft(null)}>
