@@ -24,6 +24,7 @@ interface Rule {
     mode: "draft" | "auto";
     approval?: Approval;
     extraPrompt?: string;
+    topicStrategy?: "rotate" | "growth";
     // 引用投稿ルール（quote_post）
     accountId?: string;
     scanPosts?: number;
@@ -150,6 +151,7 @@ interface Draft {
   /** 新規作成時は未選択（""）。自動投稿では選択必須 */
   approval: Approval | "";
   extraPrompt: string;
+  topicStrategy: "rotate" | "growth";
   // 引用投稿ルール
   quoteAccountId: string;
   scanPosts: string;
@@ -179,6 +181,7 @@ function toDraft(r: Rule): Draft {
     // 下書きモードから自動投稿に切り替えるときは、承認範囲を改めて選んでもらう
     approval: r.action.mode === "auto" ? r.action.approval ?? "all" : "",
     extraPrompt: r.action.extraPrompt ?? "",
+    topicStrategy: r.action.topicStrategy ?? "rotate",
     quoteAccountId: r.action.accountId ?? "",
     scanPosts: String(r.action.scanPosts ?? 30),
     maxDrafts: String(r.action.maxDrafts ?? 3),
@@ -203,6 +206,7 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   mode: "draft",
   approval: "",
   extraPrompt: "",
+  topicStrategy: "rotate",
   quoteAccountId: "",
   scanPosts: "30",
   maxDrafts: "3",
@@ -331,7 +335,7 @@ export default function AutomationPage() {
               excludeAuthors: draft.excludeAuthors.split(/[,、\s]+/).filter(Boolean),
               allowReuseAcrossAvatars: draft.allowReuse,
             }
-          : { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval, extraPrompt: draft.extraPrompt },
+          : { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval, extraPrompt: draft.extraPrompt, topicStrategy: draft.topicStrategy },
       xPolicy: xPolicyChanges(),
     };
   }
@@ -584,6 +588,24 @@ export default function AutomationPage() {
             value={draft.topics}
             onChange={(v) => setDraft({ ...draft, topics: v })}
           />
+          <Field
+            def={{
+              key: "tstrat",
+              label: "トピックの選び方",
+              type: "select",
+              options: [
+                { value: "rotate", label: "順番に使う" },
+                { value: "growth", label: "成長アルゴリズム（成績の良いトピックを多めに、段階に応じて新しいトピックも試す）" },
+              ],
+            }}
+            value={draft.topicStrategy}
+            onChange={(v) => setDraft({ ...draft, topicStrategy: v as Draft["topicStrategy"] })}
+          />
+          {draft.topicStrategy === "growth" && (
+            <p className="-mt-2 text-[11px] text-white/40">
+              投稿先アカウントの成長フェーズ（アバター → 成長）のトピックの成績と探索の割合で選びます。まだ評価が無いうちは順番に使います。
+            </p>
+          )}
           <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
           </>
           )}
@@ -696,7 +718,9 @@ export default function AutomationPage() {
                   ) : (
                     <>
                       <div className="mt-1 text-xs text-white/50">投稿先: {r.action.accountIds.map(accountName).join("、")}</div>
-                      <div className="mt-1 text-xs text-white/40">トピック: {r.action.topics.join(" / ")}</div>
+                      <div className="mt-1 text-xs text-white/40">
+                        トピック{r.action.topicStrategy === "growth" ? "（成長アルゴリズムで選ぶ）" : ""}: {r.action.topics.join(" / ")}
+                      </div>
                     </>
                   )}
                   <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-white/35">

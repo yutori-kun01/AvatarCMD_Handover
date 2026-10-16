@@ -4,7 +4,8 @@
 // AutomationRule の JSON 形式:
 //   triggerConfig: { type: "daily", times: ["09:00","19:00"], timezone: "Asia/Tokyo" }
 //                | { type: "interval", hours: 6 }
-//   actionConfig:  { accountIds: string[], topics: string[], mode: "draft" | "auto", approval?: AutoApproval, extraPrompt?: string }
+//   actionConfig:  { accountIds: string[], topics: string[], mode: "draft" | "auto", approval?: AutoApproval, extraPrompt?: string, topicStrategy?: "rotate" | "growth" }
+//     topicStrategy: rotate（既定）… トピックを順番に使う / growth … 成長アルゴリズムの成績と探索の割合で選ぶ（growth.ts）
 //     approval（mode: "auto" のときの自動承認の範囲）:
 //       all      … 投稿前チェック・Jev の結果に関わらず自動承認して投稿（結果は記録のみ）
 //       standard … NG（公開すべきでない）・Jev の hold だけ下書きに回し、それ以外は投稿
@@ -25,6 +26,7 @@ import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from
 import { effectiveXPolicy, getXPolicy, nextPostSlot, nextQuoteSlot, normalizeParams, paramsOf, saveXPolicy, type XPolicyParams } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
+import { chooseTopic, growthOf, mergeArms } from "./growth";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -41,6 +43,8 @@ export interface ActionConfig {
   /** mode: "auto" のときの自動承認の範囲（未指定は all） */
   approval?: AutoApproval;
   extraPrompt?: string;
+  /** rotate（既定）= 順番に使う / growth = 成長アルゴリズムで選ぶ */
+  topicStrategy?: "rotate" | "growth";
 }
 
 /**
@@ -148,7 +152,7 @@ export function validateAction(a: ActionConfig, opts: { requireApproval?: boolea
   const valid = AUTO_APPROVALS.includes(a.approval as AutoApproval);
   if (mode === "auto" && !valid && opts.requireApproval) throw new ConfigError("自動投稿では「自動承認の範囲」を選択してください");
   const approval = mode === "auto" ? (valid ? a.approval : "all") : undefined;
-  return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined };
+  return { accountIds, topics, mode, ...(approval ? { approval } : {}), extraPrompt: a.extraPrompt?.trim() || undefined, ...(a.topicStrategy === "growth" ? { topicStrategy: "growth" as const } : {}) };
 }
 
 export type RuleActionType = "generate_post" | "quote_post" | "note_article";
@@ -399,7 +403,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
   const action = validateAction(rule.actionConfig as unknown as ActionConfig);
   const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
   if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
-  const topic = action.topics[rule.executionCount % action.topics.length];
+  const { topic, topicPick } = await pickTopic(action, accounts.map((a) => a.id), rule.executionCount);
 
   // プラットフォームごとに文字数が違うので、プラットフォーム単位で生成する
   const byPlatform = new Map<string, typeof accounts>();
@@ -431,7 +435,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
       const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined, jevFailed);
       if (jev && d.gateApplied) await markApplied(jev.eventId);
       if (d.publish) {
-        const extraMetadata = { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}) };
+        const extraMetadata = { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) };
         // X は、アバターの X API モードの回数・時刻の枠に予約する（1 日の回数はモードで固定、時刻は利用者が設定）
         const groups: { ids: string[]; scheduledAt?: Date }[] = [];
         const slotHeld: { acc: (typeof accs)[number]; reason: string }[] = [];
@@ -483,7 +487,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
           content: text,
           status: "DRAFT",
           category: "automation",
-          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}) } as object,
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) } as object,
         },
       });
       if (jev && i === 0) await linkDecision(jev.eventId, c.id);
@@ -529,6 +533,20 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
     },
   });
   return created;
+}
+
+/**
+ * 今回のトピック。rotate は順番、growth は投稿先アカウントの成長アルゴリズムの成績（合算）と探索の割合（平均）で選ぶ。
+ * 評価がまだ無いアカウントだけなら順番に使う
+ */
+export async function pickTopic(action: ActionConfig, accountIds: string[], executionCount: number, rng: () => number = Math.random) {
+  const rotate = { topic: action.topics[executionCount % action.topics.length], topicPick: undefined as undefined | { strategy: "growth"; explored: boolean; exploration: number } };
+  if (action.topicStrategy !== "growth" || action.topics.length <= 1) return rotate;
+  const states = (await Promise.all(accountIds.map((id) => growthOf(id)))).filter((g): g is NonNullable<typeof g> => !!g);
+  if (!states.length) return rotate;
+  const exploration = states.reduce((s, g) => s + g.phase.params.exploration, 0) / states.length;
+  const c = chooseTopic(action.topics, mergeArms(states.map((g) => g.arms)), exploration, rng, executionCount);
+  return { topic: c.topic, topicPick: { strategy: "growth" as const, explored: c.explored, exploration: Number(exploration.toFixed(3)) } };
 }
 
 /**
