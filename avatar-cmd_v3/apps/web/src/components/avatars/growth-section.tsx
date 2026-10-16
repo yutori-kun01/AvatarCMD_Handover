@@ -6,15 +6,33 @@ import { PlatformIcon } from "@/components/platform-icon";
 
 type Metric = "views" | "followers" | "engagementRate" | "followRate" | "spreadRate";
 type Stage = "seed" | "sprout" | "growth" | "established" | "scale";
+type Trend = "up" | "flat" | "down" | "hold" | "new";
+type Assessment = "real_growth" | "real_decline" | "noise" | "anomaly";
+type Pace = "faster" | "keep" | "slower" | "hold";
+const ASSESSMENT: Record<Assessment, string> = { real_growth: "本物の伸び", real_decline: "本物の下降", noise: "通常のぶれ", anomaly: "一時的な外れ値" };
+const PACE: Record<Pace, string> = { faster: "間隔を速める", keep: "間隔を維持", slower: "間隔を遅らせる", hold: "様子見" };
 interface Phase {
   metrics: { posts: number; medianViews: number | null; followers: number | null; engagementRate: number | null; followRate: number | null; spreadRate: number | null };
   bands: Partial<Record<Metric, number>>;
   labels: Partial<Record<Metric, string>>;
   level: number;
   stage: Stage;
-  trend: "up" | "flat" | "down" | "new";
+  trend: Trend;
   delta: number | null;
   tolerance: number;
+  clock: {
+    requiredPosts: number;
+    collected: number;
+    postsPerDay: number;
+    etaDays: number | null;
+    earliestAt: string | null;
+    latestAt: string | null;
+    lowConfidence: boolean;
+    observingChange: boolean;
+  };
+  sigma: number;
+  paceFactor: number;
+  review: { assessment: Assessment; pace: Pace; mode: "shadow" | "gate"; at: string; applied: boolean; reason: string } | null;
   params: {
     intervalDays: [number, number];
     minViews: number;
@@ -35,7 +53,7 @@ interface Account {
   phase: Phase | null;
   tuning: { baselineViews: number | null; baselineRate: number | null; baselineSpread: number | null; margin: number; settleDays: number | null; temperature: number; stagnation: number; evaluations: number } | null;
   arms: { topic: string; winRate: number; tries: number }[];
-  history: { at: string; level: number; stage: Stage; trend: Phase["trend"]; exploration: number; temperature: number; changes: string[] }[];
+  history: { at: string; level: number; stage: Stage; trend: Trend; exploration: number; temperature: number; changes: string[] }[];
   profile: { settleDays: number };
 }
 interface View {
@@ -50,8 +68,50 @@ const TREND = {
   up: { label: "伸びている", cls: "bg-emerald-500/15 text-emerald-300" },
   flat: { label: "停滞", cls: "bg-amber-500/15 text-amber-300" },
   down: { label: "下降", cls: "bg-red-500/15 text-red-300" },
+  hold: { label: "様子見", cls: "bg-violet-500/15 text-violet-300" },
   new: { label: "初回の評価", cls: "bg-white/10 text-white/60" },
 };
+const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "—");
+
+/** 次に比べるまで（証拠の時計） */
+function ClockBlock({ p, platformName }: { p: Phase; platformName: string }) {
+  const c = p.clock;
+  const ratio = c.requiredPosts ? Math.min(1, c.collected / c.requiredPosts) : 0;
+  return (
+    <div className="space-y-2 rounded-lg border border-white/[0.06] p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="font-semibold text-white/80">次の比較（証拠がたまったら比べる）</h4>
+        {c.observingChange && <Badge className="bg-amber-500/15 text-amber-300">変更後の観測中</Badge>}
+      </div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-white/60">出そろった新しい投稿</span>
+        <span className="tabular-nums text-white/85">
+          {c.collected} / {c.requiredPosts} 件
+        </span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]" role="meter" aria-valuenow={Math.round(ratio * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="次の比較までにたまった件数">
+        <div className="h-full rounded-full bg-cyan-400" style={{ width: `${Math.round(ratio * 100)}%` }} />
+      </div>
+      <p className="text-white/50">
+        {c.collected >= c.requiredPosts
+          ? `件数はそろっています。${day(c.earliestAt)} 以降の評価で比べます。`
+          : c.etaDays !== null
+            ? `あと ${c.requiredPosts - c.collected} 件（1 日 ${c.postsPerDay} 件のペースで約 ${Math.ceil(c.etaDays)} 日）。`
+            : "直近 28 日に投稿がありません。"}
+        件数がそろわなくても {day(c.latestAt)} には比べます（その場合は確度が低い比較として、停滞に数えません）。
+      </p>
+      <p className="text-[11px] text-white/35">
+        必要件数 = (1.64 × ばらつき {p.sigma} ÷ 見逃したくない変化幅 15%)² × 間隔の倍率 {p.paceFactor}。投稿が多いほど早く、少ないほど長く待って比べます。{platformName} は投稿から指標が出そろうまで {p.params.minObservedDays} 日待ちます。
+      </p>
+      {p.review && (
+        <p className="text-white/55">
+          <span className="text-white/35">Jev（{day(p.review.at)}・{p.review.mode === "gate" ? "反映" : "記録のみ"}）:</span> {ASSESSMENT[p.review.assessment]}・{PACE[p.review.pace]}
+          {p.review.reason && <span className="text-white/40">（{p.review.reason}）</span>}
+        </p>
+      )}
+    </div>
+  );
+}
 const pct = (r: number | null | undefined, d = 1) => (r === null || r === undefined ? "—" : `${Number((r * 100).toFixed(d))}%`);
 const num = (n: number | null | undefined) => (n === null || n === undefined ? "—" : Math.round(n).toLocaleString("ja-JP"));
 const metricValue = (m: Metric, p: Phase) =>
@@ -115,6 +175,7 @@ function AccountCard({ a, view, busy, onEvaluate }: { a: Account; view: View; bu
             ))}
           </div>
           <p className="text-[11px] text-white/35">直近 28 日・指標のある投稿 {p.metrics.posts} 件から。表示回数は投稿あたりの中央値。帯は境界を 8% 以上越えたときだけ移ります（境界付近で行ったり来たりしないため）。</p>
+          {p.clock && <ClockBlock p={p} platformName={a.platformName} />}
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1 text-xs">
@@ -136,7 +197,8 @@ function AccountCard({ a, view, busy, onEvaluate }: { a: Account; view: View; bu
               <Row k="「ふつう」の反応率 / 拡散率" v={`${pct(t.baselineRate)} / ${pct(t.baselineSpread, 2)}`} />
               <Row k="良い投稿の基準（ふつうとの差）" v={t.margin >= 0 ? `+${t.margin.toFixed(2)}` : t.margin.toFixed(2)} />
               <Row k="探索の温度（停滞で上がり、伸びで下がる）" v={`${t.temperature.toFixed(2)}（停滞 ${t.stagnation} 回）`} />
-              <Row k="前回からの伸び" v={p.delta === null ? "—" : `${p.delta >= 0 ? "+" : ""}${p.delta.toFixed(3)}（±${p.tolerance} 以内は停滞）`} />
+              <Row k="前回の比較での伸び" v={p.delta === null ? "—" : `${p.delta >= 0 ? "+" : ""}${p.delta.toFixed(3)}（±${p.tolerance} 以内は停滞）`} />
+              <Row k="投稿スコアのばらつき（実測）" v={p.sigma?.toFixed(2) ?? "—"} />
               <Row k="評価の回数" v={`${t.evaluations} 回`} />
             </div>
           </div>
@@ -223,6 +285,10 @@ export function GrowthSection({ avatarId, onNotice }: { avatarId: string; onNoti
           表示回数・フォロワー・反応率・フォロー率・拡散率を帯（フェーズ）に分けて、アカウントごとの段階を判定します。段階に合わせて改善処理の間隔・比較の条件・新しいトピックを試す割合を自動で決め、評価のたびに伸びを見て調整します（伸びていれば成績の良いやり方を多めに、停滞・下降なら新しいやり方を多めに）。
         </p>
         <p>判定は絶対値ではなく、このアカウントの「ふつう」との比較で行います。媒体ごとに指標の重みと、指標が出そろうまでの日数（実測で学習）が違います。</p>
+        <p>
+          評価は毎日行いますが、伸びを比べるのは「判断に足る件数の投稿が出そろったとき」だけです（投稿が多いアカウントほど早く回ります）。比べるときは Jev（設定があれば）が本物の変化か一時的な外れ値かを判定します。Jev
+          のモードが「記録のみ（shadow）」なら記録だけ、「反映（gate）」なら決まった範囲で反映します（様子見は連続 1 回まで、比べる間隔は 0.5〜2 倍）。トピックの変更などを適用した後は、変更後の投稿だけがそろうまで比べません。
+        </p>
       </Card>
       {v.accounts.length === 0 ? (
         <p className="text-sm text-white/40">アカウントがありません。</p>

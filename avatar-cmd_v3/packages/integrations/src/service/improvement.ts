@@ -25,7 +25,7 @@ import { createKnowledge } from "./knowledge";
 import { updateRule, type ActionConfig } from "./automation";
 import { errorMessage } from "./publish";
 import { assertBudget, withUsageContext } from "./usage";
-import { growthParamsForAvatar, GROWTH_STAGE_LABEL, type LoopParams } from "./growth";
+import { growthParamsForAvatar, GROWTH_STAGE_LABEL, markGrowthChange, type LoopParams } from "./growth";
 
 const DAY = 86400_000;
 
@@ -478,6 +478,9 @@ export async function applyImprovementChange(cycleId: string, changeId: string, 
         { avatarId: cycle.avatarId, kind: "learning", title: change.title, summary: change.summary, source: "improvement", scope: change.platforms.length ? { platforms: change.platforms } : {}, evidence: { cycleId, postIds: change.evidencePostIds, reason: change.reason } },
         `improvement:${cycleId}`
       );
+      // 学びは生成に使われるので、対象の媒体のアカウントで「変更後の観測」を始める
+      const accs = await prisma.snsAccount.findMany({ where: { avatarId: cycle.avatarId, ...(change.platforms.length ? { platform: { in: change.platforms } } : {}) }, select: { id: true } });
+      await markGrowthChange(accs.map((a) => a.id));
     } else {
       const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: change.ruleId } });
       const a = rule.actionConfig as unknown as ActionConfig;

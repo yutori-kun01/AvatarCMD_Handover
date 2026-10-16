@@ -26,7 +26,7 @@ import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from
 import { effectiveXPolicy, getXPolicy, nextPostSlot, nextQuoteSlot, normalizeParams, paramsOf, saveXPolicy, type XPolicyParams } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
-import { chooseTopic, growthOf, mergeArms } from "./growth";
+import { chooseTopic, growthOf, markGrowthChange, mergeArms } from "./growth";
 
 export type TriggerConfig =
   | { type: "daily"; times: string[]; timezone?: string }
@@ -357,6 +357,14 @@ export async function updateRule(id: string, b: RuleInput): Promise<{ rule: Awai
   if (b.isActive || b.clearError) data.lastError = null;
   const saved = await prisma.automationRule.update({ where: { id }, data: data as object });
   const held = b.isActive === false && b.holdQueued ? await holdQueuedPosts(id, `自動化「${saved.name}」の停止に合わせて予約を止めました`) : 0;
+  // 投稿の中身を変える変更（トピック・追加の指示・トピックの選び方）は、成長アルゴリズムに「変更後の観測」を始めさせる
+  if (data.actionConfig && rule.actionType === "generate_post") {
+    const pick = (c: unknown) => {
+      const a = (c ?? {}) as ActionConfig;
+      return JSON.stringify([a.topics ?? [], a.extraPrompt ?? null, a.topicStrategy ?? "rotate"]);
+    };
+    if (pick(data.actionConfig) !== pick(rule.actionConfig)) await markGrowthChange(ruleAccountIds(rule.actionType, data.actionConfig));
+  }
   return { rule: saved, held, xPolicyUpdated: await saveRuleXPolicy(rule.avatarId, xPolicy, saved.name), warnings: await ruleConflictWarnings(id) };
 }
 

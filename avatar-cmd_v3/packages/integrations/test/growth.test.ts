@@ -12,11 +12,15 @@ import {
   INITIAL_TUNING,
   levelOf,
   loopParams,
+  requiredPosts,
+  reviewPolicy,
+  batchTolerance,
   mergeArms,
   sampleBeta,
   stageOf,
   type GrowthInput,
   type GrowthPost,
+  type GrowthReview,
 } from "../src/service/growth";
 import { extractPerformance, growthIntervalDays, type PerfRow } from "../src/service/improvement";
 
@@ -103,63 +107,185 @@ function input(now: Date, opts: { views: number; posts?: number; rate?: number; 
   return { platform: "x", followers: opts.followers ?? 300, followersAtStart: opts.startFollowers ?? 250, periodViews: null, posts };
 }
 
-test("自動調整: 伸びれば探索を減らし、停滞が続けば・下がれば探索を増やす。基準値は自分の「ふつう」に追従", () => {
-  const now = new Date("2026-10-01T00:00:00Z");
-  let s = evaluateGrowth(input(now, { views: 200 }), { tuning: INITIAL_TUNING, arms: {} }, now);
-  assert.equal(s.phase.trend, "new");
-  assert.equal(s.tuning.baselineViews, 200);
-  assert.equal(s.phase.labels.views, "100〜500");
-  assert.equal(s.phase.labels.followers, "100〜500");
-  assert.equal(s.phase.labels.engagementRate, "3%〜5%");
-  assert.equal(s.phase.metrics.followRate, 50 / 2000); // 増えた 50 人 / 表示 2,000 回
-  const t0 = s.tuning.temperature;
+/** 投稿ごとに決まる標準正規乱数（実際の投稿のばらつき σ ≒ 0.45 を再現する） */
+function gauss(idx: number) {
+  const frac = (x: number) => x - Math.floor(x);
+  const u1 = Math.max(1e-9, frac(Math.sin(idx * 12.9898) * 43758.5453));
+  const u2 = frac(Math.sin(idx * 78.233) * 12345.6789);
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
 
-  // 表示回数が 2 倍 → 伸び。探索の温度が下がる
-  // 7 日たつまでは伸びを判定しない（毎日の評価どうしは期間がほぼ重なるため）
-  const early = evaluateGrowth(input(new Date(now.getTime() + DAY), { views: 400, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, new Date(now.getTime() + DAY));
-  assert.equal(early.phase.trend, "new");
-  assert.equal(early.tuning.temperature, t0);
-  assert.equal(early.tuning.ref!.at, s.tuning.ref!.at);
-  const d1 = new Date(now.getTime() + 7 * DAY);
-  s = evaluateGrowth(input(d1, { views: 400, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, d1);
-  assert.equal(s.phase.trend, "up");
-  assert.ok(s.tuning.temperature < t0);
-  assert.ok(s.tuning.baselineViews! > 200 && s.tuning.baselineViews! < 400); // 指数移動平均
-  const tUp = s.tuning.temperature;
+/** ppd 件/日のペースで、28 日分さかのぼって投稿を作る。views(at) で公開時刻ごとの表示回数を決める */
+function series(now: Date, ppd: number, views: (at: number) => number, opts: { followers?: number; topics?: string[] } = {}): GrowthInput {
+  const posts: GrowthPost[] = [];
+  const step = DAY / ppd;
+  // 時刻の格子は now に依存させない（評価のたびに同じ投稿が同じ時刻にある）
+  const last = Math.floor(now.getTime() / step) * step;
+  for (let at = last, k = 0; at > now.getTime() - 28 * DAY; at -= step, k++) {
+    const idx = Math.round(at / step);
+    const v = Math.max(1, Math.round(views(at) * 2 ** (0.45 * gauss(idx))));
+    posts.push({ id: `s${idx}`, publishedAt: new Date(at), observedAt: now, views: v, engagements: Math.round(v * 0.03), spreads: Math.round(v * 0.004), topic: opts.topics?.[idx % opts.topics.length] });
+  }
+  return { platform: "x", followers: opts.followers ?? 300, followersAtStart: 290, periodViews: null, posts };
+}
 
-  // 同じ値が続く → 停滞。2 回目から温度が上がる
-  const d2 = new Date(d1.getTime() + 7 * DAY);
-  s = evaluateGrowth(input(d2, { views: 400, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, d2);
-  assert.equal(s.phase.trend, "flat");
-  assert.equal(s.tuning.temperature, tUp);
-  // 間の評価は直近の判定を引き継ぎ、温度は変えない
-  const mid = evaluateGrowth(input(new Date(d2.getTime() + 3 * DAY), { views: 400, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, new Date(d2.getTime() + 3 * DAY));
-  assert.equal(mid.phase.trend, "flat");
-  assert.equal(mid.tuning.temperature, s.tuning.temperature);
-  assert.equal(mid.tuning.stagnation, s.tuning.stagnation);
-  const d3 = new Date(d2.getTime() + 7 * DAY);
-  s = evaluateGrowth(input(d3, { views: 400, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, d3);
-  assert.equal(s.tuning.stagnation, 2);
-  assert.ok(s.tuning.temperature > tUp);
-  assert.ok(s.changes.some((c) => c.includes("探索の割合") && c.includes("停滞")));
+/** T0 から 1 日ごとに評価して、最初に比べた日（T0 からの日数）と結果を返す */
+function firstComparison(ppd: number, views: (at: number) => number, startTuning = INITIAL_TUNING, maxDays = 40) {
+  const T0 = new Date("2026-09-01T00:00:00Z").getTime();
+  let st = { tuning: startTuning, arms: {} as Record<string, { a: number; b: number }> };
+  for (let d = 0; d <= maxDays; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, ppd, views), st, now);
+    if (r.compared) return { day: d, r };
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  return null;
+}
 
-  // 大きく下がる → 下降。温度がさらに上がる（上限 2）
-  const d4 = new Date(d3.getTime() + 7 * DAY);
-  const before = s.tuning.temperature;
-  s = evaluateGrowth(input(d4, { views: 60, followers: 400 }), { tuning: s.tuning, arms: s.arms, prevBands: s.phase.bands }, d4);
-  assert.equal(s.phase.trend, "down");
-  assert.ok(s.tuning.temperature > before && s.tuning.temperature <= 2);
-  assert.ok(s.changes.some((c) => c.includes("表示回数の帯が 100〜500 → 0〜100 に下がりました")));
+test("証拠の時計: 必要件数はばらつきと変化幅から。投稿が多いほど早く、少ないほど長く待って比べる", () => {
+  // n = (1.64 × σ / δ)²。δ = 15%
+  assert.equal(requiredPosts({ sigma: null, paceFactor: 1 }), 14); // σ の初期値 0.45
+  assert.equal(requiredPosts({ sigma: 0.9, paceFactor: 1 }), 54); // ばらつきが 2 倍なら 4 倍
+  assert.equal(requiredPosts({ sigma: 0.45, paceFactor: 0.5 }), 7);
+  assert.equal(requiredPosts({ sigma: 0.05, paceFactor: 1 }), 5); // 下限
+  assert.equal(requiredPosts({ sigma: 5, paceFactor: 1 }), 60); // 上限
+
+  const flat = () => 300;
+  const high = firstComparison(10, flat)!; // 1 日 10 件
+  const daily = firstComparison(1, flat)!; // 1 日 1 件
+  const twice = firstComparison(2 / 7, flat)!; // 週 2 件
+  const weekly = firstComparison(1 / 7, flat)!; // 週 1 件
+  // 多いほど早い。1 日 10 件は下限（出そろう 2 日 + 1 日）で比べる
+  assert.equal(high.day, 3);
+  assert.ok(high.day < daily.day && daily.day < twice.day && twice.day <= weekly.day, `${high.day} < ${daily.day} < ${twice.day} <= ${weekly.day}`);
+  for (const x of [high, daily, twice]) {
+    assert.equal(x.r.comparison!.lowConfidence, false);
+    assert.ok(x.r.comparison!.current.posts >= x.r.comparison!.requiredPosts);
+  }
+  // 週 1 件では必要件数がたまらないので、上限の 28 日で「確度が低い」比較になる
+  assert.equal(weekly.day, 28);
+  assert.equal(weekly.r.comparison!.lowConfidence, true);
+  // 件数不足のまま比べた停滞は、停滞に数えない（温度も上げない）
+  if (weekly.r.phase.trend === "flat") assert.equal(weekly.r.tuning.stagnation, 0);
+  // 間隔の目安も投稿ペースで変わる（改善処理の間隔にも使う）
+  assert.ok(high.r.phase.params.intervalDays[0] < twice.r.phase.params.intervalDays[0]);
+  assert.ok(daily.r.phase.clock.postsPerDay > 0.9 && daily.r.phase.clock.postsPerDay < 1.1);
 });
 
-test("ノイズの幅: 投稿が少ないほど広く、小さな変化は停滞とみなす", () => {
-  const now = new Date("2026-10-01T00:00:00Z");
-  const a = evaluateGrowth(input(now, { views: 100, posts: 2 }), { tuning: INITIAL_TUNING, arms: {} }, now);
-  const b = evaluateGrowth(input(now, { views: 100, posts: 30 }), { tuning: INITIAL_TUNING, arms: {} }, now);
-  assert.ok(a.phase.tolerance > b.phase.tolerance);
-  const d1 = new Date(now.getTime() + 7 * DAY);
-  const c = evaluateGrowth(input(d1, { views: 115, posts: 2 }), { tuning: a.tuning, arms: a.arms }, d1);
-  assert.equal(c.phase.trend, "flat"); // 2 件で +15% は誤差の範囲
+test("自動調整: 伸びれば探索を減らし、停滞が続けば・下がれば探索を増やす。基準値は自分の「ふつう」に追従", () => {
+  const T0 = new Date("2026-09-01T00:00:00Z").getTime();
+  // 1 日 5 件。T0+5 日以降の投稿は表示回数 2 倍、T0+20 日以降は元に戻る（下降）
+  const views = (at: number) => (at >= T0 + 5 * DAY && at < T0 + 20 * DAY ? 600 : 300);
+  let st = { tuning: INITIAL_TUNING, arms: {} as Record<string, { a: number; b: number }> };
+  const trends: string[] = [];
+  const temps: number[] = [];
+  for (let d = 0; d <= 40; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, 5, views), st, now);
+    if (d === 0) assert.equal(r.phase.trend, "new");
+    if (r.compared) {
+      trends.push(r.phase.trend);
+      temps.push(r.tuning.temperature);
+    }
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  assert.ok(trends.includes("up"), trends.join(","));
+  assert.ok(trends.includes("down"), trends.join(","));
+  const up = trends.indexOf("up");
+  assert.ok(temps[up] < (up > 0 ? temps[up - 1] : 1), "伸びたら温度が下がる");
+  const down = trends.indexOf("down", up + 1);
+  // 下がったら、1 に戻す分を差し引いても温度が上がる
+  assert.ok(down > up && temps[down] > 1 + (temps[down - 1] - 1) * 0.85, "下がったら温度が上がる");
+  assert.ok(st.tuning.sigma !== null && st.tuning.sigma > 0); // ばらつきを学習
+});
+
+test("温度: 停滞が続くと上がるが、上限に張り付かず落ち着く", () => {
+  const T0 = new Date("2026-09-01T00:00:00Z").getTime();
+  let st = { tuning: INITIAL_TUNING, arms: {} as Record<string, { a: number; b: number }> };
+  const temps: number[] = [];
+  // 1 日 10 件で 90 日間ずっと同じ水準
+  for (let d = 0; d <= 90; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, 10, () => 300), st, now);
+    if (r.compared) temps.push(r.tuning.temperature);
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  assert.ok(temps.length >= 20);
+  assert.ok(Math.max(...temps) > 1.2, temps.join(","));
+  assert.ok(Math.max(...temps.slice(-10)) < 2, temps.join(","));
+  assert.ok(loopParams("x", 2, st.tuning).exploration <= 0.6);
+});
+
+test("Jev のポリシー: shadow は反映しない。gate は外れ値・逆向き・様子見を連続 1 回まで保留し、変化なし・間隔の速さを反映", () => {
+  const g = (assessment: GrowthReview["assessment"], pace: GrowthReview["pace"] = "keep"): GrowthReview => ({ assessment, pace, mode: "gate" });
+  assert.deepEqual(reviewPolicy("up", null, 0), { trend: "up", paceMul: 1, applied: false, reason: "" });
+  assert.equal(reviewPolicy("up", { ...g("anomaly"), mode: "shadow" }, 0).trend, "up");
+  assert.equal(reviewPolicy("up", g("anomaly"), 0).trend, "hold");
+  assert.equal(reviewPolicy("up", g("anomaly"), 1).trend, "up"); // 様子見は連続 1 回まで
+  assert.equal(reviewPolicy("up", g("real_decline"), 0).trend, "hold"); // 数値と逆向き
+  assert.equal(reviewPolicy("down", g("real_decline"), 0).trend, "down");
+  assert.equal(reviewPolicy("flat", g("real_growth", "hold"), 0).trend, "hold");
+  assert.equal(reviewPolicy("up", g("noise"), 0).trend, "flat");
+  assert.equal(reviewPolicy("up", g("real_growth", "faster"), 0).paceMul, 0.75);
+  assert.equal(reviewPolicy("flat", g("noise", "slower"), 0).paceMul, 1.4);
+});
+
+test("Jev（gate）の様子見: 基準点を動かさず、次のまとまりも足して比べ直す。速める判定で必要件数が減る", () => {
+  const T0 = new Date("2026-09-01T00:00:00Z").getTime();
+  const views = () => 300;
+  let st = { tuning: INITIAL_TUNING, arms: {} as Record<string, { a: number; b: number }> };
+  let held: ReturnType<typeof evaluateGrowth> | null = null;
+  for (let d = 0; d <= 10 && !held; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, 10, views), st, now, { assessment: "anomaly", pace: "keep", mode: "gate" });
+    if (r.compared) held = r;
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  assert.ok(held);
+  assert.equal(held!.phase.trend, "hold");
+  assert.equal(held!.tuning.ref!.holds, 1);
+  assert.equal(held!.tuning.review!.applied, true);
+  assert.ok(held!.changes.some((c) => c.includes("比較を見送り")));
+  // 次の評価: もう一度外れ値と言われても、2 回目は比べる。速める判定で必要件数が減る
+  const now = new Date(T0 + 4 * DAY);
+  const r2 = evaluateGrowth(series(now, 10, views), st, now, { assessment: "anomaly", pace: "faster", mode: "gate" });
+  assert.equal(r2.compared, true);
+  assert.notEqual(r2.phase.trend, "hold");
+  assert.equal(r2.tuning.ref!.holds, 0);
+  const r3 = evaluateGrowth(series(now, 10, views), { tuning: { ...st.tuning, ref: { ...st.tuning.ref!, holds: 0 } }, arms: st.arms }, now, { assessment: "noise", pace: "faster", mode: "gate" });
+  assert.equal(r3.phase.trend, "flat");
+  assert.equal(r3.tuning.paceFactor, 0.75);
+  assert.ok(requiredPosts({ sigma: 0.45, paceFactor: r3.tuning.paceFactor }) < requiredPosts({ sigma: 0.45, paceFactor: 1 }));
+});
+
+test("変更の適用後: 変更後の投稿が必要件数たまるまで比べない（変更前の投稿と混ぜない）", () => {
+  const T0 = new Date("2026-09-01T00:00:00Z").getTime();
+  const views = () => 300;
+  let st = { tuning: INITIAL_TUNING, arms: {} as Record<string, { a: number; b: number }> };
+  for (let d = 0; d <= 2; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, 2, views), st, now);
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  // T0+2 日にトピックを変更
+  st = { ...st, tuning: { ...st.tuning, changeAt: new Date(T0 + 2 * DAY).toISOString() } };
+  let first: { day: number; r: ReturnType<typeof evaluateGrowth> } | null = null;
+  for (let d = 3; d <= 30 && !first; d++) {
+    const now = new Date(T0 + d * DAY);
+    const r = evaluateGrowth(series(now, 2, views), st, now);
+    if (d === 3) assert.equal(r.phase.clock.observingChange, true);
+    if (r.compared) first = { day: d, r };
+    st = { tuning: r.tuning, arms: r.arms };
+  }
+  // 変更から「出そろう 2 日 + 1 日」以上、かつ変更後の投稿が必要件数たまってから
+  assert.ok(first && first.day >= 2 + 3, `${first?.day}`);
+  assert.ok(first!.r.comparison!.afterChange);
+  assert.ok(first!.r.comparison!.current.posts >= first!.r.comparison!.requiredPosts);
+});
+
+test("ノイズの幅: まとまりの件数が多いほど狭い", () => {
+  assert.ok(batchTolerance(0.45, 5, 5) > batchTolerance(0.45, 30, 30));
+  assert.equal(batchTolerance(0.01, 100, 100), 0.05); // 下限
 });
 
 test("トピックの成績: 出そろった投稿だけを 1 回ずつ数え、評価のたびに少しずつ忘れる。margin は上位 4 割に追従", () => {
@@ -234,7 +360,7 @@ let prisma: typeof import("@avatar-cmd/db").prisma;
 let userId = "";
 let avatarId = "";
 let accountId = "";
-const TOUCHED = ["anthropic_api_key"];
+const TOUCHED = ["anthropic_api_key", "jev_api_key", "jev_mode"];
 let saved: { key: string; value: string; secret: boolean }[] = [];
 
 before(async () => {
@@ -242,6 +368,8 @@ before(async () => {
   svc = await import("../src/server");
   prisma = (await import("@avatar-cmd/db")).prisma;
   saved = await prisma.appSetting.findMany({ where: { key: { in: TOUCHED } }, select: { key: true, value: true, secret: true } });
+  await prisma.appSetting.deleteMany({ where: { key: { in: TOUCHED } } });
+  delete process.env.TYPESAFE_API_KEY;
   const tag = Date.now().toString(36);
   userId = (await prisma.user.create({ data: { email: `growth-${tag}@example.com` } })).id;
   avatarId = (await prisma.avatar.create({ data: { userId, name: `成長-${tag}` } })).id;
@@ -328,4 +456,81 @@ test("DB: 評価して保存し、初期のアカウントでは改善案を自�
   assert.ok(hits > 35, `当たり ${hits}/60`);
   // rotate（既定）は順番
   assert.equal((await svc.pickTopic({ ...action, topicStrategy: undefined }, [accountId], 3)).topic, "はずれ");
+});
+
+test("DB: 比べるときだけ Jev が判定する。gate の外れ値は様子見、shadow は記録だけ。ルールのトピック変更で変更後の観測を始める", opts, async () => {
+  const now = new Date();
+  const acc = await svc.saveConnectedAccount(avatarId, "x", { accountId: `gx${Date.now()}`, accountName: "@gx", credentials: { accessToken: "AT", expiresAt: new Date(Date.now() + 86400_000).toISOString() } });
+  // 1 日 2 件・40 日分
+  for (let i = 0; i < 80; i++) {
+    const at = new Date(now.getTime() - i * DAY / 2);
+    const v = Math.round(300 * 2 ** (0.4 * gauss(i)));
+    await prisma.content.create({
+      data: { avatarId, platform: "x", snsAccountId: acc.id, content: `x${i}`, status: "PUBLISHED", category: "automation", publishedAt: at, metadata: { title: i % 2 ? "A" : "B" }, engagement: { views: v, engagements: Math.round(v * 0.03), reposts: 1, fetchedAt: now.toISOString() } },
+    });
+  }
+  let jevCalls = 0;
+  let assessment = "anomaly";
+  const m = mockFetch([
+    [
+      "POST",
+      /api\.typesafe\.ai\/v1\/systemone/,
+      () => {
+        jevCalls++;
+        return {
+          json: {
+            model: "jev-test",
+            answers: {
+              assessment: { type: "choice", choice: assessment, confidence: 0.8, probabilities: { [assessment]: 0.8 } },
+              pace: { type: "choice", choice: "keep", confidence: 0.7, probabilities: { keep: 0.7 } },
+            },
+            usage: { input_tokens: 10, output_tokens: 2 },
+          },
+        };
+      },
+    ],
+  ]);
+  try {
+    await svc.setSetting("jev_api_key", "jk-test");
+    await svc.setSetting("jev_mode", "gate");
+    // 初回（基準点を作るだけ）→ Jev は呼ばない
+    await svc.evaluateAccountGrowth(acc.id, new Date(now.getTime() - 12 * DAY));
+    assert.equal(jevCalls, 0);
+    // 必要件数が出そろった後 → 比べる → Jev（gate）の外れ値で様子見
+    const r = await svc.evaluateAccountGrowth(acc.id, now);
+    assert.equal(r.compared, true);
+    assert.equal(jevCalls, 1);
+    assert.equal(r.phase.trend, "hold");
+    const ev = await prisma.decisionEvent.findFirstOrThrow({ where: { decisionType: "growth", subjectId: acc.id }, orderBy: { createdAt: "desc" } });
+    assert.equal(ev.selectedAction, "anomaly/keep");
+    assert.equal(ev.applied, true);
+    // 毎日の評価でも、比べないときは Jev を呼ばない
+    const g = await svc.growthOf(acc.id);
+    assert.equal(g!.tuning.ref!.holds, 1);
+
+    // shadow: 判定は記録するが反映しない
+    await svc.setSetting("jev_mode", "shadow");
+    const r2 = await svc.evaluateAccountGrowth(acc.id, new Date(now.getTime() + 60_000));
+    assert.equal(r2.compared, true);
+    assert.equal(jevCalls, 2);
+    assert.notEqual(r2.phase.trend, "hold");
+    assert.equal(r2.tuning.review!.mode, "shadow");
+    assert.equal(r2.tuning.review!.applied, false);
+    const r3 = await svc.evaluateAccountGrowth(acc.id, new Date(now.getTime() + 120_000));
+    assert.equal(r3.compared, false);
+    assert.equal(jevCalls, 2);
+  } finally {
+    m.restore();
+  }
+
+  // ルールのトピックを変える → 変更後の観測
+  const rule = await svc.createRule({ avatarId, name: "成長観測", isActive: false, trigger: { type: "interval", hours: 24 }, action: { accountIds: [acc.id], topics: ["A", "B"], mode: "draft" } });
+  await svc.updateRule(rule.id, { name: "名前だけ" });
+  assert.equal((await svc.growthOf(acc.id))!.tuning.changeAt, null);
+  await svc.updateRule(rule.id, { action: { accountIds: [acc.id], topics: ["A", "C"], mode: "draft" } });
+  const changed = (await svc.growthOf(acc.id))!.tuning.changeAt;
+  assert.ok(changed && Date.now() - new Date(changed).getTime() < 60_000);
+  const after = await svc.evaluateAccountGrowth(acc.id, new Date(Date.now() + 60_000));
+  assert.equal(after.phase.clock.observingChange, true);
+  assert.equal(after.compared, false);
 });
