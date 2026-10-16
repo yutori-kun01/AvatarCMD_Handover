@@ -11,6 +11,8 @@
 // ・適用モード: suggest（提案のみ・既定）/ approve（承認後に適用）/ auto（自動適用）。
 //   変えられる範囲は「学びのナレッジの追加」と「自動化ルールのトピック・追加の指示」だけ。
 //   アバターの役割・目的・口調ルール・想定読者は変更しない（気づきとして表示するだけ）。
+// ・成長アルゴリズム（growth.ts）でアカウントを評価済みなら、比較の条件（最低表示回数・経過日数・件数）と次回までの間隔は
+//   媒体ごとの成長フェーズに合わせる（初期ほど短い間隔・小さい母数で回す）。初期のアカウントでは自動適用せず承認待ちにする。
 
 import { choice, noul } from "@typesafe-ai/sdk";
 import { prisma } from "@avatar-cmd/db";
@@ -23,6 +25,7 @@ import { createKnowledge } from "./knowledge";
 import { updateRule, type ActionConfig } from "./automation";
 import { errorMessage } from "./publish";
 import { assertBudget, withUsageContext } from "./usage";
+import { growthParamsForAvatar, GROWTH_STAGE_LABEL, markGrowthChange, type LoopParams } from "./growth";
 
 const DAY = 86400_000;
 
@@ -46,6 +49,17 @@ export const IMPROVEMENT_RULES = {
 export const IMPROVEMENT_MODES = ["suggest", "approve", "auto"] as const;
 export type ImprovementMode = (typeof IMPROVEMENT_MODES)[number];
 export const IMPROVEMENT_MODE_LABEL: Record<ImprovementMode, string> = { suggest: "提案のみ", approve: "承認後に適用", auto: "自動適用" };
+
+/**
+ * 次回までの日数。成長アルゴリズムの評価があれば、いちばん初期の媒体の間隔（短い方）に合わせる。無ければ 14〜27 日
+ */
+export function growthIntervalDays(growth: Record<string, { intervalDays: [number, number] }>, rng: () => number = Math.random): number {
+  const ranges = Object.values(growth).map((g) => g.intervalDays);
+  if (!ranges.length) return randomIntervalDays(rng);
+  const lo = Math.min(...ranges.map((r) => r[0]));
+  const hi = Math.max(lo, Math.min(...ranges.map((r) => r[1])));
+  return lo + Math.min(hi - lo, Math.floor(rng() * (hi - lo + 1)));
+}
 
 /** 14〜27 日（両端を含む）。rng は 0 以上 1 未満 */
 export function randomIntervalDays(rng: () => number = Math.random): number {
@@ -86,8 +100,14 @@ export interface PerfExtraction {
   pending: { lowViews: number; tooYoung: number; noMetrics: number; smallGroups: { platform: string; format: string; posts: number }[] };
 }
 
-export function extractPerformance(rows: PerfRow[]): PerfExtraction {
-  const r = IMPROVEMENT_RULES;
+/** 媒体ごとの比較の条件（成長アルゴリズムの設定。無い媒体は IMPROVEMENT_RULES） */
+export type PerfThresholds = Record<string, Pick<LoopParams, "minViews" | "minObservedDays" | "minGroupPosts">>;
+
+export function extractPerformance(rows: PerfRow[], thresholds: PerfThresholds = {}): PerfExtraction {
+  const rulesOf = (platform: string) => {
+    const t = thresholds[platform];
+    return t ? { minViews: t.minViews, minObservedDays: t.minObservedDays, minGroupPosts: t.minGroupPosts } : IMPROVEMENT_RULES;
+  };
   const pending: PerfExtraction["pending"] = { lowViews: 0, tooYoung: 0, noMetrics: 0, smallGroups: [] };
   const byGroup = new Map<string, (PerfRow & { rate: number })[]>();
   for (const p of rows) {
@@ -95,6 +115,7 @@ export function extractPerformance(rows: PerfRow[]): PerfExtraction {
       pending.noMetrics++;
       continue;
     }
+    const r = rulesOf(p.platform);
     if ((p.observedAt.getTime() - p.publishedAt.getTime()) / DAY < r.minObservedDays) {
       pending.tooYoung++;
       continue;
@@ -109,7 +130,7 @@ export function extractPerformance(rows: PerfRow[]): PerfExtraction {
   const groups: PerfGroup[] = [];
   for (const [key, xs] of byGroup) {
     const [platform, format] = key.split("|");
-    if (xs.length < r.minGroupPosts) {
+    if (xs.length < rulesOf(platform).minGroupPosts) {
       pending.smallGroups.push({ platform, format, posts: xs.length });
       continue;
     }
@@ -285,7 +306,8 @@ export interface RunOptions {
 async function executeCycle(cycleId: string, opts: RunOptions = {}) {
   const now = opts.now ?? new Date();
   const cycle = await prisma.improvementCycle.findUniqueOrThrow({ where: { id: cycleId } });
-  const ex = extractPerformance(await loadRows(cycle.avatarId, now));
+  const growth = await growthParamsForAvatar(cycle.avatarId);
+  const ex = extractPerformance(await loadRows(cycle.avatarId, now), growth);
   let result: Awaited<ReturnType<typeof analyze>> | null = null;
   if (ex.groups.length) {
     await assertBudget("改善処理");
@@ -293,6 +315,7 @@ async function executeCycle(cycleId: string, opts: RunOptions = {}) {
   }
   const analysis = {
     rules: IMPROVEMENT_RULES,
+    growth,
     extraction: ex,
     observations: result?.observations ?? [],
     model: result?.model ?? null,
@@ -300,7 +323,10 @@ async function executeCycle(cycleId: string, opts: RunOptions = {}) {
     note: ex.groups.length ? null : "比較できる投稿が足りないため、今回は分析を保留しました（表示回数・件数・経過日数の条件を満たす投稿が必要です）",
   };
   const suggestions = result?.changes ?? [];
-  const days = randomIntervalDays(opts.rng);
+  const days = growthIntervalDays(growth, opts.rng);
+  // 初期のアカウントがある間は、改善案を自動適用せず承認待ちにする（母数が小さく、ぶれに振り回されないように）
+  const early = Object.entries(growth).filter(([, g]) => !g.allowAutoApply);
+  const autoApply = cycle.mode === "auto" && !early.length;
   await prisma.$transaction(async (tx) => {
     const done = await tx.improvementCycle.updateMany({
       where: { id: cycle.id, runStatus: "running" },
@@ -318,11 +344,13 @@ async function executeCycle(cycleId: string, opts: RunOptions = {}) {
       action: "improvement_completed",
       category: "content",
       level: "info",
-      description: `改善処理: ${suggestions.length ? `${suggestions.length}件の改善案を作成（${IMPROVEMENT_MODE_LABEL[cycle.mode as ImprovementMode] ?? cycle.mode}）` : analysis.note ?? "改善案はありません"}${cycle.scheduledFor ? `。次回は ${days} 日後` : ""}`,
+      description: `改善処理: ${suggestions.length ? `${suggestions.length}件の改善案を作成（${IMPROVEMENT_MODE_LABEL[cycle.mode as ImprovementMode] ?? cycle.mode}）` : analysis.note ?? "改善案はありません"}${cycle.scheduledFor ? `。次回は ${days} 日後` : ""}${
+        cycle.mode === "auto" && !autoApply && suggestions.length ? `。成長フェーズが初期のため自動適用せず承認待ちにしました（${early.map(([p, g]) => `${getPlatform(p)?.name ?? p}: ${GROWTH_STAGE_LABEL[g.stage]}`).join("、")}）` : ""
+      }`,
       metadata: { cycleId: cycle.id },
     },
   });
-  if (cycle.mode === "auto") for (const c of suggestions) await applyImprovementChange(cycle.id, c.id, "improvement:auto").catch((e) => console.warn("[improvement] 自動適用に失敗:", errorMessage(e)));
+  if (autoApply) for (const c of suggestions) await applyImprovementChange(cycle.id, c.id, "improvement:auto").catch((e) => console.warn("[improvement] 自動適用に失敗:", errorMessage(e)));
   return prisma.improvementCycle.findUniqueOrThrow({ where: { id: cycle.id } });
 }
 
@@ -450,6 +478,9 @@ export async function applyImprovementChange(cycleId: string, changeId: string, 
         { avatarId: cycle.avatarId, kind: "learning", title: change.title, summary: change.summary, source: "improvement", scope: change.platforms.length ? { platforms: change.platforms } : {}, evidence: { cycleId, postIds: change.evidencePostIds, reason: change.reason } },
         `improvement:${cycleId}`
       );
+      // 学びは生成に使われるので、対象の媒体のアカウントで「変更後の観測」を始める
+      const accs = await prisma.snsAccount.findMany({ where: { avatarId: cycle.avatarId, ...(change.platforms.length ? { platform: { in: change.platforms } } : {}) }, select: { id: true } });
+      await markGrowthChange(accs.map((a) => a.id));
     } else {
       const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: change.ruleId } });
       const a = rule.actionConfig as unknown as ActionConfig;

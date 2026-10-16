@@ -18,8 +18,8 @@ export const GET = route(async (_req: Request, { params }: { params: Promise<{ i
 // 編集・停止/再開。停止時に holdQueued: true なら既存の予約も下書きに戻す
 export const PATCH = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const { held } = await updateRule(id, (await req.json()) as RuleInput);
-  return NextResponse.json({ ok: true, held });
+  const { held, warnings, xPolicyUpdated } = await updateRule(id, (await req.json()) as RuleInput);
+  return NextResponse.json({ ok: true, held, warnings, xPolicyUpdated });
 });
 
 export const DELETE = route(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {

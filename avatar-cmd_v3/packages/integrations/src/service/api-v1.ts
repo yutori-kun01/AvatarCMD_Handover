@@ -338,8 +338,10 @@ const ROUTES: RouteDef[] = [
     handler: async (c) => {
       requireAvatar(c.p, c.body?.avatarId);
       c.avatarId = c.body.avatarId;
-      const r = await createRule(c.body as RuleInput);
-      return { status: 201, body: { rule: ruleView(r) } };
+      // アバターの X API の方針（費用）は管理画面だけで変える
+      const { xPolicy: _x, ...input } = (c.body ?? {}) as RuleInput;
+      const r = await createRule(input);
+      return { status: 201, body: { rule: ruleView(r), warnings: r.warnings } };
     },
   },
   {
@@ -348,9 +350,9 @@ const ROUTES: RouteDef[] = [
     scope: "rules:write",
     handler: async (c) => {
       await ownedRule(c, c.params[0]);
-      const { avatarId: _ignored, ...input } = (c.body ?? {}) as RuleInput;
-      const { rule, held } = await updateRule(c.params[0], input);
-      return { body: { rule: ruleView(rule), heldQueuedPosts: held } };
+      const { avatarId: _ignored, xPolicy: _x, ...input } = (c.body ?? {}) as RuleInput;
+      const { rule, held, warnings } = await updateRule(c.params[0], input);
+      return { body: { rule: ruleView(rule), heldQueuedPosts: held, warnings } };
     },
   },
   // --- 下書き ---

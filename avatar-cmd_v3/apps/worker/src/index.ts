@@ -7,7 +7,7 @@
 // note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, processGrowth, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -54,6 +54,9 @@ async function tick() {
       // フォロワー数（各アカウント1日1回。アカウント分析の推移グラフ用）
       const f = await collectFollowers().catch((e) => (console.error("[worker] followers failed:", e), 0));
       if (f) console.log(`[worker] ${new Date().toISOString()} updated followers of ${f} account(s)`);
+      // 成長アルゴリズム（各アカウント1日1回）: 成長フェーズの判定と、判定値・探索の度合いの自動調整
+      const g = await processGrowth().catch((e) => (console.error("[worker] growth failed:", e), 0));
+      if (g) console.log(`[worker] ${new Date().toISOString()} evaluated growth of ${g} account(s)`);
       // 改善か継続かの判定（各ルール1日1回）
       const p = await processPerformanceReviews().catch((e) => (console.error("[worker] performance review failed:", e), 0));
       if (p) console.log(`[worker] ${new Date().toISOString()} reviewed performance of ${p} rule(s)`);

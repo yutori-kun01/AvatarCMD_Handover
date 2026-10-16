@@ -239,6 +239,7 @@ model SnsAccount {
   revenues      Revenue[]
   revenueItems  RevenueItem[]
   snapshots     AccountSnapshot[]
+  growthState   GrowthState?
 
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
@@ -370,6 +371,28 @@ model ScheduledPost {
 
   @@index([status, scheduledAt])
   @@map("scheduled_posts")
+}
+
+// v3.8 — 成長アルゴリズム: アカウントの成長フェーズ（表示回数・フォロワー・反応率・フォロー率・拡散率の帯）と、
+// 評価のたびに自動で調整する判定値・探索の度合い・トピックごとの成績（1アカウント1行）
+model GrowthState {
+  snsAccountId String     @id @map("sns_account_id")
+  /// 最新の評価: 各指標の値・帯・到達レベル・ループの設定値
+  phase        Json       @default("{}")
+  /// 学習した値: 基準の表示回数・反応率・拡散率、良い投稿の基準（margin）、指標が出そろう日数、探索の温度 など
+  tuning       Json       @default("{}")
+  /// トピックごとの成績（ベータ分布の a / b。評価のたびに少しずつ忘れる）
+  arms         Json       @default("{}")
+  /// 評価の履歴（新しい順に最大 60 件）
+  history      Json       @default("[]")
+  evaluatedAt  DateTime?  @map("evaluated_at")
+
+  snsAccount   SnsAccount @relation(fields: [snsAccountId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@map("growth_states")
 }
 
 // v3.5 — アカウントのフォロワー数の日次記録（推移グラフ用。1アカウント1日1行）

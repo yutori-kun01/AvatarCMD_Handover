@@ -33,6 +33,7 @@ export * from "./service/article";
 export * from "./service/article-jobs";
 export * from "./service/article-templates";
 export * from "./service/x-policy";
+export * from "./service/growth";
 export * from "./service/rss-learning";
 export * from "./service/learning-summary";
 export { assertPublicUrl, extractArticle, fetchArticle, htmlToText } from "./service/web-extract";

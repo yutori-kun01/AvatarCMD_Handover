@@ -9,10 +9,12 @@ import { MetricChart } from "@/components/analytics/metric-chart";
 import { AvatarIcon } from "@/components/avatar-icon";
 import { StyleSection } from "@/components/avatars/style-section";
 import { XPolicySection } from "@/components/avatars/x-policy-section";
+import { GrowthSection } from "@/components/avatars/growth-section";
 import { ActivitySection } from "@/components/sections/activity-section";
 
 const TABS = [
   { key: "analytics", label: "分析" },
+  { key: "growth", label: "成長" },
   { key: "profile", label: "プロフィール" },
   { key: "style", label: "画像スタイル" },
   { key: "x", label: "X API" },
@@ -410,6 +412,8 @@ function AvatarsInner() {
               )}
 
               {tab === "style" && <StyleSection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
+
+              {tab === "growth" && <GrowthSection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
 
               {tab === "x" && <XPolicySection key={selected.id} avatarId={selected.id} onNotice={(kind, msg) => setNotice({ kind, msg })} />}
 

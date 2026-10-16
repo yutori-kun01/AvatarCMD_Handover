@@ -24,6 +24,7 @@ interface Rule {
     mode: "draft" | "auto";
     approval?: Approval;
     extraPrompt?: string;
+    topicStrategy?: "rotate" | "growth";
     // 引用投稿ルール（quote_post）
     accountId?: string;
     scanPosts?: number;
@@ -38,7 +39,33 @@ interface Rule {
   nextRunAt: string | null;
   lastError: string | null;
   performance: Performance | null;
+  /** 同じアカウントに投稿する他の有効なルールとの重なり */
+  warnings?: string[];
 }
+
+/** アバターの X API（自動化ルールの画面で見る・変える分） */
+interface XParams {
+  postsPerDay: number;
+  postTimes: string[];
+  scanTimes: string[];
+  scanPosts: number;
+  shortlist: number;
+  quotesPerMonth: number;
+}
+interface XPolicyView {
+  setting: { mode: "eco" | "balanced" | "aggressive" | "custom" };
+  base: XParams;
+  modes: Record<string, { label: string }>;
+}
+interface XEdit {
+  postTimes: string;
+  scanTimes: string;
+  scanPosts: string;
+  shortlist: string;
+  quotesPerMonth: string;
+}
+const splitTimes = (s: string) => s.split(/[,、\s]+/).map((x) => x.trim()).filter(Boolean);
+const toXEdit = (p: XParams): XEdit => ({ postTimes: p.postTimes.join(", "), scanTimes: p.scanTimes.join(", "), scanPosts: String(p.scanPosts), shortlist: String(p.shortlist), quotesPerMonth: String(p.quotesPerMonth) });
 
 type Approval = "all" | "standard" | "strict";
 const APPROVAL: Record<Approval, { label: string; badge: string }> = {
@@ -124,6 +151,7 @@ interface Draft {
   /** 新規作成時は未選択（""）。自動投稿では選択必須 */
   approval: Approval | "";
   extraPrompt: string;
+  topicStrategy: "rotate" | "growth";
   // 引用投稿ルール
   quoteAccountId: string;
   scanPosts: string;
@@ -153,6 +181,7 @@ function toDraft(r: Rule): Draft {
     // 下書きモードから自動投稿に切り替えるときは、承認範囲を改めて選んでもらう
     approval: r.action.mode === "auto" ? r.action.approval ?? "all" : "",
     extraPrompt: r.action.extraPrompt ?? "",
+    topicStrategy: r.action.topicStrategy ?? "rotate",
     quoteAccountId: r.action.accountId ?? "",
     scanPosts: String(r.action.scanPosts ?? 30),
     maxDrafts: String(r.action.maxDrafts ?? 3),
@@ -177,6 +206,7 @@ const NEW_DRAFT: Omit<Draft, "avatarId"> = {
   mode: "draft",
   approval: "",
   extraPrompt: "",
+  topicStrategy: "rotate",
   quoteAccountId: "",
   scanPosts: "30",
   maxDrafts: "3",
@@ -204,6 +234,8 @@ export default function AutomationPage() {
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [templates, setTemplates] = useState<{ id: string; name: string; publish: "draft" | "publish" }[]>([]);
   const [estimate, setEstimate] = useState<{ amounts: Record<string, number>; unpriced: string[]; runsPerMonth: number; notes: string[] } | null>(null);
+  const [xPolicy, setXPolicy] = useState<XPolicyView | null>(null);
+  const [xEdit, setXEdit] = useState<XEdit | null>(null);
 
   const load = useCallback(async () => {
     const [r, t, i] = await Promise.all([
@@ -227,6 +259,45 @@ export default function AutomationPage() {
     const a = accounts.find((x) => x.id === id);
     return a ? `${byId[a.platform]?.name ?? ""} ${a.accountName}` : "(削除済み)";
   };
+
+  // X に投稿・X で引用するルールでは、アバターの X API の値を読み込んで編集できるようにする
+  const usesX = !!draft && (draft.actionType === "quote_post" || (draft.actionType === "generate_post" && draft.accountIds.some((id) => accounts.find((a) => a.id === id)?.platform === "x")));
+  const draftAvatarId = draft?.avatarId;
+  const draftKey = draft ? `${draft.id ?? "new"}:${draftAvatarId}` : "";
+  useEffect(() => {
+    if (!usesX || !draftAvatarId) {
+      setXPolicy(null);
+      setXEdit(null);
+      return;
+    }
+    let live = true;
+    api<XPolicyView>(`/api/avatars/${draftAvatarId}/x-policy`)
+      .then((v) => {
+        if (!live) return;
+        setXPolicy(v);
+        setXEdit(toXEdit(v.base));
+      })
+      .catch(() => live && (setXPolicy(null), setXEdit(null)));
+    return () => {
+      live = false;
+    };
+  }, [usesX, draftAvatarId, draftKey]);
+
+  /** 今の X API の値から変えた項目だけ（変えていなければ undefined） */
+  function xPolicyChanges(): Partial<XParams> | undefined {
+    if (!xPolicy || !xEdit) return undefined;
+    const b = xPolicy.base;
+    const out: Partial<XParams> = {};
+    const post = splitTimes(xEdit.postTimes);
+    const scan = splitTimes(xEdit.scanTimes);
+    if (draft?.actionType === "generate_post" && post.join() !== b.postTimes.join()) Object.assign(out, { postTimes: post, postsPerDay: post.length });
+    if (draft?.actionType === "quote_post") {
+      if (scan.join() !== b.scanTimes.join()) out.scanTimes = scan;
+      for (const k of ["scanPosts", "shortlist", "quotesPerMonth"] as const) if (Number(xEdit[k]) !== b[k]) out[k] = Number(xEdit[k]);
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  const xChanged = !!xPolicyChanges();
 
   // 編集中の設定で、このルールの月額の増分（概算）を見積もる
   useEffect(() => {
@@ -264,7 +335,8 @@ export default function AutomationPage() {
               excludeAuthors: draft.excludeAuthors.split(/[,、\s]+/).filter(Boolean),
               allowReuseAcrossAvatars: draft.allowReuse,
             }
-          : { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval, extraPrompt: draft.extraPrompt },
+          : { accountIds: draft.accountIds, topics: draft.topics.split("\n"), mode: draft.mode, approval, extraPrompt: draft.extraPrompt, topicStrategy: draft.topicStrategy },
+      xPolicy: xPolicyChanges(),
     };
   }
 
@@ -273,9 +345,11 @@ export default function AutomationPage() {
     setBusy("save");
     const body = ruleBody(draft);
     try {
-      if (draft.id) await api(`/api/automations/${draft.id}`, { method: "PATCH", json: body });
-      else await api("/api/automations", { method: "POST", json: body });
-      setNotice({ kind: "ok", msg: "ルールを保存しました" });
+      const r = draft.id
+        ? await api<{ warnings?: string[]; xPolicyUpdated?: boolean }>(`/api/automations/${draft.id}`, { method: "PATCH", json: body })
+        : await api<{ warnings?: string[]; xPolicyUpdated?: boolean }>("/api/automations", { method: "POST", json: body });
+      const msg = ["ルールを保存しました", r.xPolicyUpdated && "アバターの X API をカスタマイズモードに切り替えて、値を保存しました", ...(r.warnings ?? []).map((w) => `⚠ ${w}`)].filter(Boolean).join("\n");
+      setNotice({ kind: "ok", msg });
       setDraft(null);
       load();
     } catch (e) {
@@ -470,8 +544,7 @@ export default function AutomationPage() {
                 value={draft.quoteAccountId}
                 onChange={(v) => setDraft({ ...draft, quoteAccountId: v })}
               />
-              <div className="grid gap-3 md:grid-cols-4">
-                <Field def={{ key: "scan", label: "1回に読む件数（10〜100）", help: "自動実行では、アバター > X API のモードの件数・時刻が優先されます（費用の上限管理のため）" }} value={draft.scanPosts} onChange={(v) => setDraft({ ...draft, scanPosts: v })} />
+              <div className="grid gap-3 md:grid-cols-3">
                 <Field def={{ key: "maxd", label: "1回に作る引用案の上限" }} value={draft.maxDrafts} onChange={(v) => setDraft({ ...draft, maxDrafts: v })} />
                 <Field def={{ key: "age", label: "対象にする投稿（何時間以内）" }} value={draft.maxAgeHours} onChange={(v) => setDraft({ ...draft, maxAgeHours: v })} />
                 <Field def={{ key: "cool", label: "同じ相手を引用しない日数" }} value={draft.cooldownDays} onChange={(v) => setDraft({ ...draft, cooldownDays: v })} />
@@ -515,8 +588,68 @@ export default function AutomationPage() {
             value={draft.topics}
             onChange={(v) => setDraft({ ...draft, topics: v })}
           />
+          <Field
+            def={{
+              key: "tstrat",
+              label: "トピックの選び方",
+              type: "select",
+              options: [
+                { value: "rotate", label: "順番に使う" },
+                { value: "growth", label: "成長アルゴリズム（成績の良いトピックを多めに、段階に応じて新しいトピックも試す）" },
+              ],
+            }}
+            value={draft.topicStrategy}
+            onChange={(v) => setDraft({ ...draft, topicStrategy: v as Draft["topicStrategy"] })}
+          />
+          {draft.topicStrategy === "growth" && (
+            <p className="-mt-2 text-[11px] text-white/40">
+              投稿先アカウントの成長フェーズ（アバター → 成長）のトピックの成績と探索の割合で選びます。まだ評価が無いうちは順番に使います。
+            </p>
+          )}
           <Field def={{ key: "extra", label: "追加の指示（任意）", placeholder: "最後に質問を投げかけて終える" }} value={draft.extraPrompt} onChange={(v) => setDraft({ ...draft, extraPrompt: v })} />
           </>
+          )}
+          {usesX && xPolicy && xEdit && (
+            <div className="space-y-3 rounded-lg border border-white/[0.06] p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-white/80">X API の設定</span>
+                <Badge className="bg-white/5 text-white/50">いまのモード: {xPolicy.setting.mode === "custom" ? "カスタマイズ" : xPolicy.modes[xPolicy.setting.mode]?.label ?? xPolicy.setting.mode}</Badge>
+                {xChanged && <Badge className="bg-amber-500/15 text-amber-300">保存するとカスタマイズに切り替わります</Badge>}
+              </div>
+              <p className="text-[11px] text-white/45">
+                アバター（{avatars.find((a) => a.id === draft.avatarId)?.name}）の X API の値です。アバター共通のため、ここで変えると同じアバターの他の X ルールにも反映されます。変えて保存すると X API のモードはカスタマイズになり、ここに無い項目（指標を取る時点など）は今の値を引き継ぎます。
+              </p>
+              {draft.actionType === "generate_post" ? (
+                <>
+                  <Field
+                    def={{ key: "xpost", label: `X の通常投稿の時刻（日本時間・カンマ区切り。個数 = 1 日の回数、いま ${splitTimes(xEdit.postTimes).length} 回）`, placeholder: "09:00, 19:00" }}
+                    value={xEdit.postTimes}
+                    onChange={(v) => setXEdit({ ...xEdit, postTimes: v })}
+                  />
+                  <p className="text-[11px] text-white/40">X への投稿は、ルールの実行時刻ではなくこの時刻の空いている枠に予約されます（今日・明日の枠が埋まっていれば下書き）。空にすると X には通常投稿しません。</p>
+                </>
+              ) : (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field def={{ key: "xscan", label: `引用探索の時刻（日本時間・カンマ区切り。いま ${splitTimes(xEdit.scanTimes).length} 回）`, placeholder: "08:00, 18:00" }} value={xEdit.scanTimes} onChange={(v) => setXEdit({ ...xEdit, scanTimes: v })} />
+                    <Field def={{ key: "xscanposts", label: "1 回に読む投稿数（5〜100）" }} value={xEdit.scanPosts} onChange={(v) => setXEdit({ ...xEdit, scanPosts: v })} />
+                    <Field def={{ key: "xshort", label: "詳しく判定する上位の件数（1〜10）" }} value={xEdit.shortlist} onChange={(v) => setXEdit({ ...xEdit, shortlist: v })} />
+                    <Field def={{ key: "xquotes", label: "月に作る引用案の上限" }} value={xEdit.quotesPerMonth} onChange={(v) => setXEdit({ ...xEdit, quotesPerMonth: v })} />
+                  </div>
+                  <p className="text-[11px] text-white/40">引用を自動投稿するときは、通常投稿の時刻（{xPolicy.base.postTimes.join("・") || "なし"}）と他の X の投稿から 30 分以上空けて予約します（24 時間以内に空きが無ければ下書き）。</p>
+                </>
+              )}
+              <div className="flex gap-2">
+                {xChanged && (
+                  <Button variant="ghost" onClick={() => setXEdit(toXEdit(xPolicy.base))}>
+                    X API の変更を取り消す
+                  </Button>
+                )}
+                <Link href="/avatars" className="self-center text-[11px] text-white/40 underline">
+                  アバター → X API で費用の見積もり・予算を見る
+                </Link>
+              </div>
+            </div>
           )}
           {estimate && (
             <p className="text-[11px] text-white/45">
@@ -579,13 +712,15 @@ export default function AutomationPage() {
                     </>
                   ) : r.actionType === "quote_post" ? (
                     <div className="mt-1 text-xs text-white/50">
-                      X 引用（URL を本文に挿入）: {accountName(r.action.accountId ?? "")}・1回 {r.action.scanPosts ?? 30} 件を読み、最大 {r.action.maxDrafts ?? 3} 件
+                      X 引用（URL を本文に挿入）: {accountName(r.action.accountId ?? "")}・1回に最大 {r.action.maxDrafts ?? 3} 件
                       {r.action.excludeAuthors?.length ? `・除外 ${r.action.excludeAuthors.length} 人` : ""}
                     </div>
                   ) : (
                     <>
                       <div className="mt-1 text-xs text-white/50">投稿先: {r.action.accountIds.map(accountName).join("、")}</div>
-                      <div className="mt-1 text-xs text-white/40">トピック: {r.action.topics.join(" / ")}</div>
+                      <div className="mt-1 text-xs text-white/40">
+                        トピック{r.action.topicStrategy === "growth" ? "（成長アルゴリズムで選ぶ）" : ""}: {r.action.topics.join(" / ")}
+                      </div>
                     </>
                   )}
                   <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-white/35">
@@ -599,6 +734,11 @@ export default function AutomationPage() {
                       onDismiss={() => act(r.id, () => api(`/api/automations/${r.id}`, { method: "PATCH", json: { clearError: true } }), "エラー表示を消しました")}
                     />
                   )}
+                  {r.warnings?.map((w, i) => (
+                    <p key={i} className="mt-2 text-[11px] text-amber-300">
+                      ⚠ {w}
+                    </p>
+                  ))}
                   {r.performance && <PerformanceBlock p={r.performance} />}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

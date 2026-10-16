@@ -18,6 +18,7 @@ let acc2 = "";
 const TOUCHED = ["anthropic_api_key", "jev_api_key", "jev_mode"];
 let saved: { key: string; value: string; secret: boolean }[] = [];
 let review = "ok";
+let jevAction = "publish";
 
 before(async () => {
   if (!hasDb) return;
@@ -85,6 +86,31 @@ function mocks() {
       },
     ],
     ["POST", /api\.x\.com\/2\/tweets$/, { data: { id: "777" } }],
+    // Jev（キーを設定したテストだけ呼ばれる）: 引用候補の判定と、投稿の可否（post_gate）
+    [
+      "POST",
+      /api\.typesafe\.ai\/v1\/systemone/,
+      (c) => ({
+        json: {
+          model: "jev-test",
+          answers: c.body.includes('"direction"')
+            ? {
+                direction: { type: "choice", choice: "aligned", confidence: 0.9, probabilities: { aligned: 0.9, partial: 0.05, opposed: 0.03, unrelated: 0.02 } },
+                worth: { type: "noul", noul: 0.9 },
+                risk: { type: "score", score: 0.1, confidence: 0.8, legend: {}, probabilities: {} },
+                angle: { type: "choice", choice: "knowledge", confidence: 0.8, probabilities: { knowledge: 0.8, experience: 0.2 } },
+              }
+            : {
+                action: { type: "choice", choice: jevAction, confidence: 0.9, probabilities: { [jevAction]: 0.9 } },
+                personaFit: { type: "score", score: 1.8, confidence: 0.8, legend: {}, probabilities: {} },
+                salesPressure: { type: "score", score: 0.1, confidence: 0.8, legend: {}, probabilities: {} },
+                duplicateRisk: { type: "noul", noul: 0.05 },
+                brandRisk: { type: "score", score: 0.1, confidence: 0.8, legend: {}, probabilities: {} },
+              },
+          usage: { input_tokens: 10, output_tokens: 2 },
+        },
+      }),
+    ],
   ]);
 }
 
@@ -111,6 +137,11 @@ test("引用ルール: ルールの設定（除外する相手・承認方法）
 
     const c = await prisma.content.findFirstOrThrow({ where: { avatarId: a1, category: "quote" }, include: { scheduledPost: true } });
     assert.equal(c.status, "SCHEDULED");
+    // 通常投稿の時刻（BALANCED: 9:00 / 19:00 JST）から 30 分以上離して予約する
+    const at = c.scheduledPost!.scheduledAt.getTime();
+    const day = Date.UTC(new Date(at + 9 * 3600_000).getUTCFullYear(), new Date(at + 9 * 3600_000).getUTCMonth(), new Date(at + 9 * 3600_000).getUTCDate()) - 9 * 3600_000;
+    for (const d of [-1, 0, 1]) for (const h of [9, 19]) assert.ok(Math.abs(at - (day + d * 86400_000 + h * 3600_000)) >= 30 * 60_000);
+    assert.equal((c.metadata as any).autoApproved, "strict");
     assert.equal((c.metadata as any).quote.method, "url_inline");
     assert.equal((c.metadata as any).automationId, rule.id);
     // 生成文に混ざった URL は本文に残さない（投稿時に1回だけ入れる）
@@ -158,6 +189,33 @@ test("引用ルール（自動・厳格）: 投稿前チェックが要確認な
     assert.match((c.metadata as any).heldReason, /引用ルールの自動投稿で保留/);
   } finally {
     review = "ok";
+    m.restore();
+  }
+});
+
+test("引用ルール: 自動投稿でも Jev（gate）が保留と判定したら下書きにする。人が承認すると判定ログに記録", opts, async () => {
+  const m = mocks();
+  try {
+    await prisma.quoteCandidate.deleteMany({ where: { avatarId: a1 } });
+    await prisma.content.deleteMany({ where: { avatarId: a1 } });
+    await prisma.automationRule.deleteMany({ where: { avatarId: a1 } });
+    await prisma.snsAccount.update({ where: { id: acc1 }, data: { settings: {} } });
+    await svc.setSetting("jev_api_key", "jk-test");
+    await svc.setSetting("jev_mode", "gate");
+    jevAction = "hold";
+    const rule = await svc.createRule({ avatarId: a1, name: "引用（条件付き）", actionType: "quote_post", trigger: { type: "interval", hours: 24 }, action: { accountId: acc1, mode: "auto", approval: "standard", excludeAuthors: ["blocked_user"] } as any });
+    await svc.runRule(rule.id);
+    const c = await prisma.content.findFirstOrThrow({ where: { avatarId: a1, category: "quote" } });
+    assert.equal(c.status, "DRAFT");
+    assert.match((c.metadata as any).heldReason, /Jev: 公開すべきでない/);
+    assert.equal((c.metadata as any).jev.action, "hold");
+    const ev = await prisma.decisionEvent.findFirstOrThrow({ where: { decisionType: "post_gate", subjectId: c.id } });
+    assert.equal(ev.applied, true);
+    await svc.approveDraft(c.id);
+    assert.equal((await prisma.decisionEvent.findUniqueOrThrow({ where: { id: ev.id } })).humanAction, "approved");
+  } finally {
+    jevAction = "publish";
+    await prisma.appSetting.deleteMany({ where: { key: { in: ["jev_api_key", "jev_mode"] } } });
     m.restore();
   }
 });

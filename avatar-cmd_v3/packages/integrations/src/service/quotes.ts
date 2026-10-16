@@ -8,7 +8,8 @@
 //   3. 残りを判定: Jev（設定があれば）/ 無ければ「引用投稿」用途の LLM
 //        方向性の一致・引用する価値・関わるリスク・添える観点（知見 / 体験）
 //   4. 通過したものだけ引用文を生成 → 投稿前チェック → 下書き（承認制）
-//      自動化ルール（actionType: "quote_post"）で「自動投稿」にした場合だけ、承認範囲に従って予約キューに入れる
+//      自動化ルール（actionType: "quote_post"）で「自動投稿」にした場合だけ、承認範囲（投稿前チェック + Jev の gate）に従って
+//      予約キューに入れる。時刻は通常投稿の時刻・他の X の投稿から 30 分以上離す（24 時間以内に空きが無ければ下書き）
 //   5. 投稿時に元投稿の URL を本文に入れる（quote_tweet_id は使わない。URL の前後に半角スペース。post-text.ts）
 // 同じ元投稿は、同じアバターでは二度と使わない（一意制約）。アバターをまたいだ再利用も既定で禁止。
 // 判定と人の判断（承認・却下）は DecisionEvent に記録し、精度を比べられるようにする。
@@ -20,11 +21,12 @@ import { getPlatform } from "../platforms";
 import { ConfigError } from "../http";
 import { loadFreshCredentials } from "./accounts";
 import { buildPrompts, loadAvatarContext, readPersona, reviewPost } from "./ai";
-import { decideWithJev, logDecision, topChoice } from "./decision";
+import { decideWithJev, jevConfig, logDecision, markApplied, topChoice } from "./decision";
+import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { completeJson, completeText } from "./llm";
 import { errorMessage } from "./publish";
 import { canonicalStatusUrl, cleanPostText, INLINE_QUOTE_WEIGHT } from "../post-text";
-import { autoApprovalDecision } from "./automation";
+import { autoApprovalDecision, xQuoteSlot } from "./automation";
 import { getSystemConfig } from "./store";
 import { assertBudget, recordUsage, withUsageContext } from "./usage";
 import { effectiveXPolicy, scanDue } from "./x-policy";
@@ -440,31 +442,51 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
       } catch (e) {
         review = { verdict: "error", summary: "", error: errorMessage(e) };
       }
-      // 自動化ルールで「自動投稿」なら、承認範囲（投稿前チェックの結果）に従って予約キューに入れる
-      const auto = opts.config?.mode === "auto" ? autoApprovalDecision(rules.approval ?? "all", review) : null;
+      // 自動化ルールで「自動投稿」なら、承認範囲（投稿前チェック + Jev の gate）に従い、空いている時刻に予約キューに入れる
+      const isAuto = opts.config?.mode === "auto";
+      const approval = rules.approval ?? "all";
+      let jev: Awaited<ReturnType<typeof judgePost>> = null;
+      let jevMeta: (Record<string, unknown> & { publish: boolean; reason: string }) | undefined;
+      let auto: ReturnType<typeof autoApprovalDecision> | null = null;
+      let slot: Date | null = null;
+      let heldReason: string | undefined = isAuto ? undefined : "引用案（承認すると元投稿の URL を本文に入れて投稿）";
+      if (isAuto) {
+        const jevCfg = await jevConfig();
+        jev = await judgePost({ avatarId: acc.avatarId, platform: acc.platform, text, topic: `引用: ${f.post.text.slice(0, 120)}` });
+        jevMeta = jev ? { action: jev.action, confidence: jev.confidence, mode: jev.mode, model: jev.model, ...postGatePolicy(jev) } : undefined;
+        auto = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined, jevCfg?.mode === "gate" && !jev);
+        if (jev && auto.gateApplied) await markApplied(jev.eventId);
+        if (!auto.publish) heldReason = `引用ルールの自動投稿で保留: ${auto.reason ?? ""}`;
+        else if (acc.platform === "x" && !(slot = await xQuoteSlot(acc.id, acc.avatarId))) heldReason = "24 時間以内に、通常投稿・他の投稿と重ならない空き時刻が無いため、下書きにしました";
+        else slot ??= new Date();
+      }
+      const publish = !!auto?.publish && !!slot;
       const content = await prisma.content.create({
         data: {
           avatarId: acc.avatarId,
           platform: acc.platform,
           snsAccountId: acc.id,
           content: text,
-          status: auto?.publish ? "SCHEDULED" : "DRAFT",
+          status: publish ? "SCHEDULED" : "DRAFT",
           category: "quote",
-          ...(auto?.publish ? { scheduledPost: { create: { scheduledAt: new Date(), status: "pending" } } } : {}),
+          ...(publish ? { scheduledPost: { create: { scheduledAt: slot!, status: "pending" } } } : {}),
           metadata: {
             media: [],
             options: {},
             model,
             review,
+            ...(jevMeta ? { jev: jevMeta } : {}),
             ...(opts.ruleId ? { automationId: opts.ruleId } : {}),
-            ...(auto?.publish ? { autoApproved: rules.approval ?? "all" } : {}),
-            heldReason: opts.config?.mode === "auto" ? (auto?.publish ? undefined : `引用ルールの自動投稿で保留: ${auto?.reason ?? ""}`) : "引用案（承認すると元投稿の URL を本文に入れて投稿）",
+            ...(isAuto ? { ruleMode: "auto" } : {}),
+            ...(publish ? { autoApproved: approval } : {}),
+            heldReason,
             quote: { postId: f.post.id, url: canonicalStatusUrl(f.post.url, f.post.id) ?? f.post.url, method: "url_inline", authorUsername: f.post.authorUsername, text: f.post.text.slice(0, 500), candidateId: f.id },
             quoteJudgement: { engine: j.engine, direction: j.direction, worth: j.worth, risk: j.risk, angle: j.angle, reason: j.reason ?? policy.reason },
           } as object,
         },
       });
-      await prisma.quoteCandidate.update({ where: { id: f.id }, data: { status: auto?.publish ? "approved" : "drafted", reason: j.reason ?? policy.reason, angle: j.angle, contentId: content.id } });
+      if (jev) await linkDecision(jev.eventId, content.id);
+      await prisma.quoteCandidate.update({ where: { id: f.id }, data: { status: publish ? "approved" : "drafted", reason: j.reason ?? policy.reason, angle: j.angle, contentId: content.id } });
       if (f.post.authorId) recentAuthors.add(f.post.authorId);
       result.drafted++;
     } catch (e) {

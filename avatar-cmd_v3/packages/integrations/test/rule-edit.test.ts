@@ -239,3 +239,41 @@ test("停止時の選択: holdQueued なら既存の予約も下書きに戻す�
     m.restore();
   }
 });
+
+test("ルール保存: X API の値を変えるとアバターの X API をカスタマイズに切り替える。変えなければモードはそのまま", opts, async () => {
+  await prisma.avatar.update({ where: { id: avatarId }, data: { xPolicy: {} } });
+  try {
+    // 今の値（BALANCED: 9:00 / 19:00）のままなら切り替えない
+    const r = await svc.createRule({ avatarId, name: "X 枠そのまま", isActive: false, trigger: { type: "interval", hours: 24 }, action: { ...base(), mode: "draft" }, xPolicy: { postTimes: ["19:00", "09:00"] } });
+    assert.equal(r.xPolicyUpdated, false);
+    assert.equal((await svc.getXPolicy(avatarId)).mode, "balanced");
+    // 不正な時刻はルールごと保存しない
+    await assert.rejects(svc.updateRule(r.id, { name: "変わらない", xPolicy: { postTimes: ["08:00", "25:00"] } }), /通常投稿の時刻/);
+    assert.equal((await prisma.automationRule.findUniqueOrThrow({ where: { id: r.id } })).name, "X 枠そのまま");
+    // 3 回に変える → カスタマイズ。指標の時点などは BALANCED の値を引き継ぐ
+    const u = await svc.updateRule(r.id, { xPolicy: { postTimes: ["20:00", "08:00", "12:00"] } });
+    assert.equal(u.xPolicyUpdated, true);
+    const p = await svc.getXPolicy(avatarId);
+    assert.equal(p.mode, "custom");
+    assert.deepEqual([p.custom.postsPerDay, p.custom.postTimes], [3, ["08:00", "12:00", "20:00"]]);
+    assert.deepEqual(p.custom.metricsCheckpoints, svc.X_MODES.balanced.params.metricsCheckpoints);
+    assert.deepEqual((await svc.effectiveXPolicy(avatarId)).params.postTimes, ["08:00", "12:00", "20:00"]);
+  } finally {
+    await prisma.avatar.update({ where: { id: avatarId }, data: { xPolicy: {} } });
+  }
+});
+
+test("ルール保存: 同じアカウントで下書きと自動投稿が混在すると警告を返す（保存はする）", opts, async () => {
+  const d = await svc.createRule({ avatarId, name: "重なり-下書き", trigger: { type: "interval", hours: 24 }, action: { ...base(), mode: "draft" } });
+  const a = await svc.createRule({ avatarId, name: "重なり-自動", trigger: { type: "interval", hours: 24 }, action: { ...base(), mode: "auto", approval: "all" } });
+  try {
+    assert.ok(a.id);
+    assert.ok(a.warnings.some((w) => w.includes("「重なり-下書き」") && w.includes("X (Twitter) @me")));
+    // 停止したルールは対象外
+    const u = await svc.updateRule(d.id, { isActive: false });
+    assert.deepEqual(u.warnings, []);
+    assert.ok(!(await svc.ruleConflictWarnings(a.id)).some((w) => w.includes("重なり-下書き")));
+  } finally {
+    await prisma.automationRule.deleteMany({ where: { id: { in: [d.id, a.id] } } });
+  }
+});

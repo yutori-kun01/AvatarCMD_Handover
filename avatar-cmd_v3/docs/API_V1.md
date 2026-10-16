@@ -95,8 +95,8 @@ Idempotency-Key: 2026-10-03-draft-0001   # 8〜128文字の英数字・_-.:
 | GET | `/learning/articles/{id}` | read | 記事の詳細（取得済みの本文 `content` を含む） |
 | POST | `/learning/articles/{id}/summarize` | knowledge:write | 本文・要約の登録 `{ content?, summary?, summarize?: false }`（下記 4-2） |
 | GET | `/rules` / `/rules/{id}` | read | 自動化ルール（最新の「改善か継続か」判定付き） |
-| POST | `/rules` | rules:write | 作成。管理画面と同じ形式（`action.mode: "auto"` なら `approval` 必須） |
-| PATCH | `/rules/{id}` | rules:write | 変更・停止 `{ isActive: false, holdQueued?: true }`（`holdQueued` で既存の予約も下書きに戻す） |
+| POST | `/rules` | rules:write | 作成。管理画面と同じ形式（`action.mode: "auto"` なら `approval` 必須）。応答の `warnings` に、同じアカウントに投稿する他のルールとの重なり（下書きと自動投稿の混在・引用ルールの重複）が入る（保存は止めない）。`xPolicy`（アバターの X API）は管理画面だけで変更でき、ここでは無視する |
+| PATCH | `/rules/{id}` | rules:write | 変更・停止 `{ isActive: false, holdQueued?: true }`（`holdQueued` で既存の予約も下書きに戻す）。応答に `warnings`（POST と同じ） |
 | GET | `/drafts` | read | 下書き（承認待ち）。`heldReason` に下書きになった理由 |
 | POST | `/drafts` | draft | 本文を指定して下書き作成 `{ accountIds: [...], text, title? }`（アカウントごとに1件） |
 | POST | `/drafts/generate` | draft | AI で下書き生成 `{ accountIds, topic, extraPrompt? }`（ナレッジ検索を使う。予算の停止設定に従う） |
