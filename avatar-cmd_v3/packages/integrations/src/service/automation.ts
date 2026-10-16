@@ -22,7 +22,7 @@ import { jevConfig, markApplied, recordHumanAction } from "./decision";
 import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
 import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
-import { effectiveXPolicy, nextPostSlot } from "./x-policy";
+import { effectiveXPolicy, getXPolicy, nextPostSlot, nextQuoteSlot, normalizeParams, paramsOf, saveXPolicy, type XPolicyParams } from "./x-policy";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 
@@ -182,6 +182,106 @@ export interface RuleInput {
   action?: ActionConfig | QuoteActionConfig | NoteArticleActionConfig;
   /** 停止時に、このルールで自動承認されて予約キューにある投稿も止める（下書きに戻す） */
   holdQueued?: boolean;
+  /**
+   * X のアカウントに投稿するルールで、アバターの X API の値を合わせて変える（管理画面のみ。アバター共通）。
+   * 今の値から変わっていれば、アバターの X API のモードをカスタマイズに切り替えて保存する
+   */
+  xPolicy?: RuleXPolicy;
+}
+
+/** 自動化ルールの画面から変えられる X API の値 */
+export const RULE_X_POLICY_KEYS = ["postsPerDay", "postTimes", "scanTimes", "scanPosts", "shortlist", "quotesPerMonth"] as const;
+export type RuleXPolicy = Partial<Pick<XPolicyParams, (typeof RULE_X_POLICY_KEYS)[number]>>;
+
+/** 作成・更新の結果に添える情報 */
+export interface RuleSaveReport {
+  /** 同じアカウントに投稿する他のルールとの重なり */
+  warnings: string[];
+  /** アバターの X API をカスタマイズに切り替えて保存したか */
+  xPolicyUpdated: boolean;
+}
+
+/** ルールが投稿・探索に使うアカウント */
+export function ruleAccountIds(actionType: string, actionConfig: unknown): string[] {
+  const a = (actionConfig ?? {}) as { accountIds?: string[]; accountId?: string };
+  return actionType === "generate_post" ? [...(a.accountIds ?? [])] : a.accountId ? [a.accountId] : [];
+}
+
+/**
+ * ルールの X API の値を検証し、今の値から変わる場合だけカスタマイズの値（全項目）を返す。変わらなければ null。
+ * 保存はルールの保存の後に行う（検証エラーでルールだけ保存されないように先に呼ぶ）
+ */
+async function prepareRuleXPolicy(avatarId: string, accountIds: string[], input: RuleXPolicy | undefined): Promise<XPolicyParams | null> {
+  if (!input || !accountIds.length) return null;
+  const xAccounts = await prisma.snsAccount.count({ where: { id: { in: accountIds }, platform: "x" } });
+  if (!xAccounts) return null;
+  const base = paramsOf(await getXPolicy(avatarId));
+  const picked: RuleXPolicy = {};
+  for (const k of RULE_X_POLICY_KEYS) if (input[k] !== undefined) (picked as Record<string, unknown>)[k] = input[k];
+  if (picked.postTimes && picked.postsPerDay === undefined) picked.postsPerDay = picked.postTimes.length;
+  const next = normalizeParams({ ...base, ...picked }, base);
+  if (picked.postTimes && next.postTimes.join() !== [...new Set(picked.postTimes.map((t) => String(t).trim()))].sort().join()) {
+    throw new ConfigError(`X の通常投稿の時刻は HH:MM で ${next.postsPerDay} 個（1 日の回数と同じ数）にしてください`);
+  }
+  if (picked.scanTimes && next.scanTimes.length !== new Set(picked.scanTimes.map((t) => String(t).trim()).filter(Boolean)).size) {
+    throw new ConfigError("X の引用探索の時刻は HH:MM で入力してください");
+  }
+  const changed = RULE_X_POLICY_KEYS.some((k) => JSON.stringify(next[k]) !== JSON.stringify(base[k]));
+  return changed ? next : null;
+}
+
+async function saveRuleXPolicy(avatarId: string, next: XPolicyParams | null, ruleName: string): Promise<boolean> {
+  if (!next) return false;
+  await saveXPolicy(avatarId, { mode: "custom", custom: next });
+  await prisma.activityLog.create({
+    data: { avatarId, action: "x_policy_updated", category: "system", level: "info", description: `自動化「${ruleName}」の保存に合わせて、X API をカスタマイズモードに切り替えました` },
+  });
+  return true;
+}
+
+const modeLabel = (actionType: string, cfg: { mode?: string; approval?: string }) =>
+  actionType === "note_article" ? "note 記事" : cfg.mode === "auto" ? `自動投稿（${APPROVAL_LABEL[(cfg.approval as AutoApproval) ?? "all"] ?? cfg.approval}）` : "下書き（承認制）";
+
+type RuleLike = { id: string; name: string; isActive: boolean; actionType: string; actionConfig: unknown };
+
+/**
+ * 同じアカウントに投稿する、有効な他のルールとの重なり（警告の文）。保存は止めない。
+ * - AI 生成ルール同士で「下書き」と「自動投稿」、または自動承認の範囲が混在している
+ * - 同じ X アカウントに引用ルールが複数ある（タイムラインの読み位置・探索時刻を共有するため、先に動いた方が候補を取る）
+ */
+export function ruleConflicts(rule: RuleLike, others: RuleLike[], accountName: (id: string) => string = (id) => id): string[] {
+  const mine = new Set(ruleAccountIds(rule.actionType, rule.actionConfig));
+  const cfg = (rule.actionConfig ?? {}) as { mode?: string; approval?: string };
+  const out: string[] = [];
+  for (const o of others) {
+    if (o.id === rule.id || !o.isActive || o.actionType !== rule.actionType) continue;
+    const shared = ruleAccountIds(o.actionType, o.actionConfig).filter((id) => mine.has(id));
+    if (!shared.length) continue;
+    const names = shared.map(accountName).join("、");
+    const oc = (o.actionConfig ?? {}) as { mode?: string; approval?: string };
+    if (rule.actionType === "quote_post") {
+      out.push(`「${o.name}」も同じ X アカウント（${names}）で引用を探します。タイムラインの読み位置と探索時刻を共有するため、先に動いたルールが候補を取ります（こちら: ${modeLabel(rule.actionType, cfg)}、「${o.name}」: ${modeLabel(o.actionType, oc)}）`);
+    } else if (rule.actionType === "generate_post") {
+      const a = modeLabel(rule.actionType, cfg);
+      const b = modeLabel(o.actionType, oc);
+      if (a !== b) out.push(`「${o.name}」と同じアカウント（${names}）に投稿します。こちらは${a}、「${o.name}」は${b}のため、同じアカウントで承認待ちと自動投稿が混在します`);
+    }
+  }
+  return out;
+}
+
+/** 保存したルールについて、同じアバターの有効なルールとの重なりを調べる */
+export async function ruleConflictWarnings(ruleId: string): Promise<string[]> {
+  const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id: ruleId } });
+  if (!rule.isActive) return [];
+  const others = await prisma.automationRule.findMany({ where: { avatarId: rule.avatarId, isActive: true, id: { not: rule.id } } });
+  const ids = [...new Set([rule, ...others].flatMap((r) => ruleAccountIds(r.actionType, r.actionConfig)))];
+  const accounts = await prisma.snsAccount.findMany({ where: { id: { in: ids } }, select: { id: true, platform: true, accountName: true } });
+  const name = (id: string) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? `${getPlatform(a.platform)?.name ?? a.platform} ${a.accountName}` : id;
+  };
+  return ruleConflicts(rule, others, name);
 }
 
 /** ルールを作成する（画面・外部 API 共通） */
@@ -192,7 +292,8 @@ export async function createRule(b: RuleInput) {
   const trigger = validateTrigger(b.trigger);
   const actionType: RuleActionType = b.actionType === "quote_post" || b.actionType === "note_article" ? b.actionType : "generate_post";
   const action = await validateRuleAction(actionType, b.avatarId, b.action);
-  return prisma.automationRule.create({
+  const xPolicy = await prepareRuleXPolicy(b.avatarId, ruleAccountIds(actionType, action), b.xPolicy);
+  const rule = await prisma.automationRule.create({
     data: {
       avatarId: b.avatarId,
       name: b.name.trim(),
@@ -205,6 +306,8 @@ export async function createRule(b: RuleInput) {
       nextRunAt: nextRunAfter(trigger, new Date()),
     },
   });
+  const report: RuleSaveReport = { xPolicyUpdated: await saveRuleXPolicy(b.avatarId, xPolicy, rule.name), warnings: await ruleConflictWarnings(rule.id) };
+  return { ...rule, ...report };
 }
 
 /** 画面・API からの作成/更新時の actionConfig の検証（種類ごと） */
@@ -234,8 +337,8 @@ async function assertAccountsOf(avatarId: string, accountIds: string[]) {
   if (accounts.length !== accountIds.length || accounts.some((a) => a.avatarId !== avatarId)) throw new ConfigError("選択したアカウントはこのアバターのものではありません");
 }
 
-/** ルールを更新する（画面・外部 API 共通）。保存後のルールと、下書きに戻した予約の件数を返す */
-export async function updateRule(id: string, b: RuleInput) {
+/** ルールを更新する（画面・外部 API 共通）。保存後のルール・下書きに戻した予約の件数・他のルールとの重なりを返す */
+export async function updateRule(id: string, b: RuleInput): Promise<{ rule: Awaited<ReturnType<typeof prisma.automationRule.update>>; held: number } & RuleSaveReport> {
   const rule = await prisma.automationRule.findUniqueOrThrow({ where: { id } });
   const trigger = b.trigger ? validateTrigger(b.trigger) : (rule.triggerConfig as unknown as TriggerConfig);
   const data: Record<string, unknown> = {};
@@ -244,12 +347,13 @@ export async function updateRule(id: string, b: RuleInput) {
   if (b.trigger) data.triggerConfig = trigger;
   if (b.action) data.actionConfig = await validateRuleAction(rule.actionType as RuleActionType, rule.avatarId, b.action);
   if (b.isActive !== undefined) data.isActive = b.isActive;
+  const xPolicy = await prepareRuleXPolicy(rule.avatarId, ruleAccountIds(rule.actionType, data.actionConfig ?? rule.actionConfig), b.xPolicy);
   // 再開・スケジュール変更時は次回時刻を計算し直す
   if (b.trigger || (b.isActive && !rule.isActive)) data.nextRunAt = nextRunAfter(validateTrigger(trigger), new Date());
   if (b.isActive || b.clearError) data.lastError = null;
   const saved = await prisma.automationRule.update({ where: { id }, data: data as object });
   const held = b.isActive === false && b.holdQueued ? await holdQueuedPosts(id, `自動化「${saved.name}」の停止に合わせて予約を止めました`) : 0;
-  return { rule: saved, held };
+  return { rule: saved, held, xPolicyUpdated: await saveRuleXPolicy(rule.avatarId, xPolicy, saved.name), warnings: await ruleConflictWarnings(id) };
 }
 
 /** このルールで自動承認され、まだ送信されていない予約（pending）。停止時の影響範囲の表示用 */
@@ -446,6 +550,26 @@ export async function xPostSlot(accountId: string, avatarId: string, now = new D
   });
   const taken = rows.map((r) => r.scheduledPost?.scheduledAt ?? r.publishedAt).filter((d): d is Date => !!d);
   return nextPostSlot(params.postTimes, taken, now);
+}
+
+/**
+ * X の引用を自動投稿する時刻。通常投稿の時刻・予約済み/投稿済みの X の投稿（自動化・引用）から 30 分以上離れた最も早い時刻。
+ * 24 時間以内に空きが無ければ null（下書きにする）
+ */
+export async function xQuoteSlot(accountId: string, avatarId: string, now = new Date()): Promise<Date | null> {
+  const { params } = await effectiveXPolicy(avatarId, now);
+  const since = new Date(now.getTime() - 3600_000);
+  const rows = await prisma.content.findMany({
+    where: {
+      snsAccountId: accountId,
+      category: { in: ["automation", "quote"] },
+      status: { in: ["SCHEDULED", "PUBLISHING", "PUBLISHED"] },
+      OR: [{ scheduledPost: { scheduledAt: { gte: since } } }, { publishedAt: { gte: since } }],
+    },
+    select: { publishedAt: true, scheduledPost: { select: { scheduledAt: true } } },
+  });
+  const taken = rows.map((r) => r.publishedAt ?? r.scheduledPost?.scheduledAt).filter((d): d is Date => !!d);
+  return nextQuoteSlot(params.postTimes, taken, now);
 }
 
 /** 期限の来たルールを実行（worker から定期実行）。二重実行しないよう nextRunAt を条件付き更新で確保する */

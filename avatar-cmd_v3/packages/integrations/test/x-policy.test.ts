@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers";
 import { candidateScore } from "../src/service/quotes";
-import { defaultTimes, nextPostSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
+import { defaultTimes, nextPostSlot, nextQuoteSlot, degrade, dueCheckpoint, estimateXMonthly, lastScanSlot, normalizeParams, normalizeSetting, paramsOf, scanDue, X_MODES } from "../src/service/x-policy";
 
 test("モード: 既定は BALANCED。カスタマイズは範囲内に丸め、無い項目は BALANCED の値", () => {
   const d = normalizeSetting(null);
@@ -71,6 +71,23 @@ test("通常投稿の時刻: 回数はモードで固定・時刻は利用者が
   assert.equal(nextPostSlot(times, taken, now)!.toISOString(), "2026-10-07T00:00:00.000Z"); // 明日 9:00
   taken.push(new Date("2026-10-07T00:05:00Z"), new Date("2026-10-07T10:00:00Z"));
   assert.equal(nextPostSlot(times, taken, now), null); // 今日・明日が埋まっている
+});
+
+test("引用の自動投稿の時刻: 通常投稿の枠・他の投稿から 30 分以上離す", () => {
+  const times = ["09:00", "19:00"];
+  // 10:00 JST: 枠にも投稿にも近くないので今すぐ
+  const now = new Date("2026-10-06T01:00:00Z");
+  assert.equal(nextQuoteSlot(times, [], now)!.toISOString(), now.toISOString());
+  // 08:50 JST: 09:00 の通常投稿の枠（予約がまだ無くても）から 30 分離して 09:30
+  assert.equal(nextQuoteSlot(times, [], new Date("2026-10-05T23:50:00Z"))!.toISOString(), "2026-10-06T00:30:00.000Z");
+  // 10:00 JST に別の投稿 → 10:30。続けて 10:30 にも入っていれば 11:00（まとめて出さない）
+  const taken = [new Date("2026-10-06T01:00:00Z")];
+  assert.equal(nextQuoteSlot(times, taken, now)!.toISOString(), "2026-10-06T01:30:00.000Z");
+  taken.push(new Date("2026-10-06T01:30:00Z"));
+  assert.equal(nextQuoteSlot(times, taken, now)!.toISOString(), "2026-10-06T02:00:00.000Z");
+  // 24 時間以内に空きが無ければ null
+  const full = Array.from({ length: 24 * 4 + 4 }, (_, i) => new Date(now.getTime() + i * 15 * 60_000));
+  assert.equal(nextQuoteSlot(times, full, now), null);
 });
 
 test("引用候補の採点: ジャンルが近く・反応があり・新しい投稿が上", () => {

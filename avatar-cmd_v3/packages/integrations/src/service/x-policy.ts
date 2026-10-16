@@ -326,3 +326,26 @@ export function nextPostSlot(postTimes: string[], taken: Date[], now = new Date(
   }
   return null;
 }
+
+/**
+ * 自動投稿する引用の時刻。通常投稿の時刻（postTimes）と、予約・投稿済みの X の投稿（taken）から
+ * gapMinutes 以上離れた、now 以降で最も早い時刻（今すぐ、またはどれかの投稿のちょうど gapMinutes 後）。horizonHours 以内に無ければ null。
+ * 引用の回数は quotesPerMonth（探索時）で決まるので、ここでは通常投稿・他の引用と重ねない・まとめて出さないためだけに使う。
+ */
+export function nextQuoteSlot(postTimes: string[], taken: Date[], now = new Date(), opts: { gapMinutes?: number; horizonHours?: number } = {}): Date | null {
+  const gap = (opts.gapMinutes ?? 30) * 60_000;
+  const horizon = now.getTime() + (opts.horizonHours ?? 24) * 3600_000;
+  const j = new Date(now.getTime() + JST);
+  // 通常投稿の枠（今日・明日・明後日）は、まだ予約が無くても空けておく
+  const slots: number[] = [];
+  for (let d = 0; d < 3; d++) {
+    for (const t of postTimes) {
+      const [h, m] = t.split(":").map(Number);
+      slots.push(Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate() + d, h, m) - JST);
+    }
+  }
+  const busy = [...slots, ...taken.map((x) => x.getTime())];
+  const candidates = [now.getTime(), ...busy.map((b) => b + gap)].filter((at) => at >= now.getTime() && at <= horizon).sort((x, y) => x - y);
+  const at = candidates.find((c) => busy.every((b) => Math.abs(b - c) >= gap));
+  return at === undefined ? null : new Date(at);
+}

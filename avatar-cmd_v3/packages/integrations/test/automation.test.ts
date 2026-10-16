@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoApprovalDecision, nextRunAfter, validateAction, validateTrigger } from "../src/service/automation";
+import { autoApprovalDecision, nextRunAfter, ruleConflicts, validateAction, validateTrigger } from "../src/service/automation";
 import { buildPrompts, readPersona, taskForPlatform } from "../src/service/ai";
 
 test("daily: Asia/Tokyo の 09:00 / 19:00 の次回時刻", () => {
@@ -94,4 +94,30 @@ test("AI の用途: 長文プラットフォームは記事、それ以外は SN
   assert.equal(taskForPlatform(undefined), "post");
   assert.equal(taskForPlatform("zenn"), "article");
   assert.equal(taskForPlatform("wordpress"), "article");
+});
+
+test("ルールの重なり: 同じアカウントで下書きと自動投稿・承認範囲の混在、引用ルールの重複を警告", () => {
+  const gen = (id: string, accountIds: string[], mode: string, approval?: string, isActive = true) => ({ id, name: id, isActive, actionType: "generate_post", actionConfig: { accountIds, topics: ["t"], mode, approval } });
+  const quote = (id: string, accountId: string, mode: string, approval?: string) => ({ id, name: id, isActive: true, actionType: "quote_post", actionConfig: { accountId, mode, approval } });
+  const name = (id: string) => `@${id}`;
+
+  const auto = gen("auto", ["x1", "th1"], "auto", "all");
+  // 同じアカウントで下書きと自動投稿 → 警告（重なったアカウントだけ名前を出す）
+  const w = ruleConflicts(auto, [gen("draft", ["th1"], "draft")], name);
+  assert.equal(w.length, 1);
+  assert.match(w[0], /「draft」と同じアカウント（@th1）/);
+  assert.match(w[0], /自動投稿（すべて自動承認）/);
+  // 自動投稿同士でも承認範囲が違えば警告、同じなら警告しない
+  assert.equal(ruleConflicts(auto, [gen("strict", ["x1"], "auto", "strict")]).length, 1);
+  assert.equal(ruleConflicts(auto, [gen("same", ["x1"], "auto", "all")]).length, 0);
+  // 承認範囲の未指定は all と同じ扱い
+  assert.equal(ruleConflicts(auto, [gen("legacy", ["x1"], "auto")]).length, 0);
+  // 別アカウント・停止中・自分自身・種類違いは対象外
+  assert.equal(ruleConflicts(auto, [gen("other", ["x2"], "draft"), gen("off", ["x1"], "draft", undefined, false), auto, quote("q", "x1", "draft")]).length, 0);
+
+  // 同じ X アカウントに引用ルールが 2 つ → モードが同じでも警告
+  const q1 = quote("q1", "x1", "auto", "standard");
+  const qw = ruleConflicts(q1, [quote("q2", "x1", "draft"), quote("q3", "x9", "draft")], name);
+  assert.equal(qw.length, 1);
+  assert.match(qw[0], /「q2」も同じ X アカウント（@x1）/);
 });
