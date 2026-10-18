@@ -43,6 +43,9 @@ export interface AccountInfo {
   isActive: boolean;
   tokenExpiry: string | null;
   lastError: string | null;
+  /** API クレジット不足が続いて自動化を一時停止した時刻（再開ボタンで解除） */
+  automationPausedAt: string | null;
+  automationPausedReason: string | null;
   settings: Record<string, unknown>;
   connected: boolean;
   /** 接続に使った開発者アプリ: shared = 共通 / avatar = アバター専用 */

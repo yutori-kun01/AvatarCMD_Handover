@@ -233,6 +233,11 @@ model SnsAccount {
   // v3.3 — 接続に使った開発者アプリ: shared = 共通（設定 > SNS連携アプリ）/ avatar = アバター専用
   // トークンの更新は、発行したのと同じアプリで行う必要があるため記録する
   appScope      String    @default("shared") @map("app_scope")
+  // v3.9 — API クレジット不足で投稿できなかった連続回数。2 回続いたらこのアカウントの自動化を一時停止する
+  // （自動化ルール・自動の引用探索・予約投稿を止める。再開は画面のボタンで行う）
+  creditFailures         Int       @default(0) @map("credit_failures")
+  automationPausedAt     DateTime? @map("automation_paused_at")
+  automationPausedReason String?   @map("automation_paused_reason")
 
   avatar        Avatar    @relation(fields: [avatarId], references: [id], onDelete: Cascade)
   contents      Content[]

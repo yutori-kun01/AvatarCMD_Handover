@@ -17,7 +17,7 @@
 //   読み取りの回数・件数はアバターごとの X API の利用方針（service/x-policy.ts）で決める
 
 import type { MediaFile, PlatformDefinition, PostMetrics, PublishContext, TimelinePost } from "../types";
-import { ApiError, basicAuth, ConfigError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
+import { ApiError, basicAuth, ConfigError, CreditError, expiresWithin, MINUTE, poll, requestJson, requireFields, tokenTimes, withQuery } from "../http";
 import { appendInlineQuote, canonicalStatusUrl, formatPostText, INLINE_QUOTE_WEIGHT, LONG_POST_MODE_FIELD, longPostMode, stripQuoteUrl, xLength, xPostLimit } from "../post-text";
 
 const API = "https://api.x.com";
@@ -31,7 +31,7 @@ function bearer(ctx: PublishContext): Record<string, string> {
 }
 
 function readError(e: unknown): never {
-  if (e instanceof ApiError && e.status === 402) throw new ConfigError(`X: API クレジットが不足しています (${e.body.slice(0, 200)})`);
+  if (e instanceof ApiError && e.status === 402) throw new CreditError(`X: API クレジットが不足しています (${e.body.slice(0, 200)})`);
   throw e;
 }
 
@@ -43,7 +43,7 @@ function postError(e: unknown): never {
   if (!(e instanceof ApiError)) throw e;
   const body = e.body.slice(0, 200);
   const lower = e.body.toLowerCase();
-  if (e.status === 402) throw new ConfigError(`X: API クレジット/プランが不足しています。アバター専用アプリの場合は、そのアプリの開発者アカウント側にクレジットが必要です (${body})`);
+  if (e.status === 402) throw new CreditError(`X: API クレジット/プランが不足しています。アバター専用アプリの場合は、そのアプリの開発者アカウント側にクレジットが必要です (${body})`);
   if (e.status === 401) throw new ConfigError(`X: 認証に失敗しました。アカウントを再接続してください（アプリの Client ID/Secret を変更した場合も再接続が必要です） (${body})`);
   if (lower.includes("too long") || lower.includes("text is too long")) {
     throw new ConfigError(`X: 文字数が上限を超えています。X Premium でないアカウントは日本語で約140文字までです。アカウント設定の「X Premium」を確認してください (${body})`);

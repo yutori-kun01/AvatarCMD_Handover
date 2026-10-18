@@ -255,6 +255,19 @@ export default function AutomationPage() {
   }, [load]);
 
   const byId = useMemo(() => Object.fromEntries(platforms.map((p) => [p.id, p])), [platforms]);
+  async function resumeAutomation(a: AccountInfo) {
+    if (!confirm(`${a.accountName} の自動化を再開しますか？（API クレジットをチャージ済みか確認してください）`)) return;
+    setBusy(`resume:${a.id}`);
+    try {
+      await api(`/api/accounts/${a.id}/resume-automation`, { method: "POST" });
+      setNotice({ kind: "ok", msg: `${a.accountName} の自動化を再開しました` });
+      await load();
+    } catch (e) {
+      setNotice({ kind: "error", msg: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
   const accountName = (id: string) => {
     const a = accounts.find((x) => x.id === id);
     return a ? `${byId[a.platform]?.name ?? ""} ${a.accountName}` : "(削除済み)";
@@ -408,6 +421,20 @@ export default function AutomationPage() {
           で入力してください。
         </Notice>
       )}
+      {accounts
+        .filter((a) => a.automationPausedAt)
+        .map((a) => (
+          <Notice key={a.id} kind="error">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="min-w-0 flex-1">
+                {accountName(a.id)}（{a.avatarName}）の自動化を一時停止中です: {a.automationPausedReason ?? "API クレジット不足"}。クレジットをチャージしてから再開してください（下書きに戻った予約は承認し直してください）。
+              </span>
+              <Button onClick={() => resumeAutomation(a)} disabled={busy === `resume:${a.id}`}>
+                自動化を再開
+              </Button>
+            </div>
+          </Notice>
+        ))}
 
       {draft ? (
         <Card className="mb-6 space-y-4">

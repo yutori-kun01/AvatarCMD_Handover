@@ -2,6 +2,7 @@ import { checkInlineQuote, xLength } from "../src/post-text";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PLATFORMS } from "../src/platforms";
+import { ConfigError } from "../src/http";
 import { escapeLittleText } from "../src/platforms/linkedin";
 import { tiktokChunks } from "../src/platforms/tiktok";
 import { zennTopics } from "../src/platforms/zenn";
@@ -174,10 +175,11 @@ test("X: 2件目以降が失敗しても1件目は投稿済みとして返す（
 });
 
 test("X: 402 はクレジット不足の設定エラー、401 は再接続を促す", async () => {
-  for (const [status, re] of [[402, /クレジット/], [401, /再接続/]] as const) {
+  // 402 は CreditError（ConfigError の一種。続いたら自動化を一時停止する判定に使う）
+  for (const [status, re, name] of [[402, /クレジット/, "CreditError"], [401, /再接続/, "ConfigError"]] as const) {
     const m = mockFetch([["POST", /\/2\/tweets$/, () => ({ status, json: { title: "err" } })]]);
     try {
-      await assert.rejects(PLATFORMS.x.publish!(ctx(), post()), (e: Error) => e.name === "ConfigError" && re.test(e.message));
+      await assert.rejects(PLATFORMS.x.publish!(ctx(), post()), (e: Error) => e instanceof ConfigError && e.name === name && re.test(e.message));
     } finally {
       m.restore();
     }

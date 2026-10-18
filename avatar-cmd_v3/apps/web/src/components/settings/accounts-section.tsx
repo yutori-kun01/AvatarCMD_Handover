@@ -341,6 +341,18 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
       onChanged((e as Error).message, false);
     }
   }
+  async function resumeAutomation() {
+    if (!confirm(`${a.accountName} の自動化を再開しますか？（API クレジットをチャージ済みか確認してください。下書きに戻った予約は承認し直してください）`)) return;
+    setBusy(true);
+    try {
+      await api(`/api/accounts/${a.id}/resume-automation`, { method: "POST" });
+      onChanged(`${a.accountName} の自動化を再開しました`, true);
+    } catch (e) {
+      onChanged((e as Error).message, false);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function remove() {
     if (!confirm(`${a.accountName} の接続を削除しますか？（保存された認証情報も削除されます）`)) return;
     try {
@@ -365,12 +377,25 @@ function AccountRow({ a, p, onChanged }: { a: AccountInfo; p?: PlatformInfo; onC
         <span className="flex-1" />
         {a.appScope === "avatar" && <Badge className="bg-violet-500/15 text-violet-300">専用アプリ</Badge>}
         {!a.isActive && <Badge className="bg-white/10 text-white/50">停止中</Badge>}
+        {a.automationPausedAt && <Badge className="bg-amber-500/15 text-amber-300">自動化を一時停止中</Badge>}
         {expired ? (
           <Badge className="bg-red-500/15 text-red-300">トークン期限切れ（再接続）</Badge>
         ) : expiry ? (
           <Badge className="bg-white/5 text-white/40">期限 {expiry.toLocaleString("ja-JP")}</Badge>
         ) : null}
       </div>
+      {a.automationPausedAt && (
+        <div className="mt-2 flex flex-wrap items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-2">
+          <p className="min-w-0 flex-1 break-all text-xs text-amber-200">
+            {new Date(a.automationPausedAt).toLocaleString("ja-JP")} に自動化を一時停止しました: {a.automationPausedReason ?? "API クレジット不足"}
+            <br />
+            <span className="text-amber-200/60">自動化ルール・自動の引用探索・予約投稿を止めています。クレジットをチャージしてから再開してください。</span>
+          </p>
+          <Button onClick={resumeAutomation} disabled={busy}>
+            自動化を再開
+          </Button>
+        </div>
+      )}
       {a.lastError && <LastError message={a.lastError} onDismiss={() => dismissError()} />}
       {(p?.settingFields.length ?? 0) > 0 && (
         <div className="mt-3 grid gap-3 md:grid-cols-2">

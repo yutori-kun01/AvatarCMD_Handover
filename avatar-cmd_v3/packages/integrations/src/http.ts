@@ -33,6 +33,14 @@ export class ConfigError extends Error {
   }
 }
 
+/** API のクレジット（従量課金の残高）・プランが足りない（X の 402 など）。チャージするまで再試行しても無駄 */
+export class CreditError extends ConfigError {
+  constructor(message: string) {
+    super(message);
+    this.name = "CreditError";
+  }
+}
+
 export interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: BodyInit | null;
   json?: unknown;
