@@ -53,6 +53,8 @@ export async function listAccounts() {
     isActive: r.isActive,
     tokenExpiry: r.tokenExpiry,
     lastError: r.lastError,
+    automationPausedAt: r.automationPausedAt,
+    automationPausedReason: r.automationPausedReason,
     settings: r.settings as Record<string, unknown>,
     connected: !!r.credentials,
     appScope: r.appScope,

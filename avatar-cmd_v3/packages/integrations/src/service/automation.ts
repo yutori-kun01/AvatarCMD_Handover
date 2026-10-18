@@ -24,6 +24,7 @@ import { judgePost, linkDecision, postGatePolicy } from "./post-decision";
 import { assertBudget, withUsageContext } from "./usage";
 import { scanQuoteCandidates, validateQuoteAction, type QuoteActionConfig } from "./quotes";
 import { effectiveXPolicy, getXPolicy, nextPostSlot, nextQuoteSlot, normalizeParams, paramsOf, saveXPolicy, type XPolicyParams } from "./x-policy";
+import { pausedAccountIds } from "./automation-pause";
 import { enqueueArticleJob } from "./article-jobs";
 import { getArticleTemplate, type ArticlePublishMode } from "./article-templates";
 import { chooseTopic, growthOf, markGrowthChange, mergeArms } from "./growth";
@@ -409,8 +410,9 @@ export async function runRule(ruleId: string): Promise<number> {
 
 async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRule.findUniqueOrThrow>>): Promise<number> {
   const action = validateAction(rule.actionConfig as unknown as ActionConfig);
-  const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true } });
-  if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止されていないか確認してください）");
+  // クレジット不足で自動化を一時停止中のアカウントには投稿しない（全部止まっていれば processDueRules が実行前に飛ばす）
+  const accounts = await prisma.snsAccount.findMany({ where: { id: { in: action.accountIds }, isActive: true, automationPausedAt: null } });
+  if (!accounts.length) throw new ConfigError("有効な投稿先アカウントがありません（削除・停止・自動化の一時停止中でないか確認してください）");
   const { topic, topicPick } = await pickTopic(action, accounts.map((a) => a.id), rule.executionCount);
 
   // プラットフォームごとに文字数が違うので、プラットフォーム単位で生成する
@@ -620,6 +622,13 @@ export async function processDueRules(): Promise<number> {
       data: { nextRunAt: next },
     });
     if (!claimed.count) continue;
+    // 投稿先がすべて自動化の一時停止中（クレジット不足）なら実行しない。毎回の失敗ログは残さず、ルールの状態にだけ出す
+    const targets = ruleAccountIds(rule.actionType, rule.actionConfig);
+    const paused = await pausedAccountIds(targets);
+    if (targets.length && targets.every((id) => paused.has(id))) {
+      await prisma.automationRule.update({ where: { id: rule.id }, data: { lastError: "投稿先のアカウントが自動化の一時停止中です（API クレジット不足）。設定 > アカウント で再開してください" } });
+      continue;
+    }
     n++;
     try {
       await runRule(rule.id);

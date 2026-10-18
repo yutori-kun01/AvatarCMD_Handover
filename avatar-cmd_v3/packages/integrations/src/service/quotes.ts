@@ -316,6 +316,8 @@ async function scanInner(acc: Awaited<ReturnType<typeof prisma.snsAccount.findUn
   if (xp?.level === "stopped") {
     throw new ConfigError(`X API の今月の費用（¥${xp.usage.yen}）が上限 ¥${xp.setting.capYen} に達したため、引用探索を止めています（通常投稿と自分の投稿の分析は続けます）`);
   }
+  // クレジット不足で自動化を一時停止中のアカウントは、自動の探索をしない（手動の探索は行う）
+  if (opts.scheduled && acc.automationPausedAt) return { ...empty, waiting: "自動化を一時停止中（API クレジット不足）。設定 > アカウント で再開してください" };
   if (xp && opts.scheduled) {
     const last = typeof settings.lastQuoteScanAt === "string" ? new Date(settings.lastQuoteScanAt) : null;
     if (!scanDue(xp.params.scanTimes, last, now0)) return { ...empty, waiting: `次の探索時刻まで待機（${xp.params.scanTimes.join(" / ") || "探索なし"}）` };

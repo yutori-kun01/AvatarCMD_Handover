@@ -11,6 +11,7 @@ import { toMediaFile, type MediaRef } from "./media";
 import { cleanPostText } from "../post-text";
 import { taskForPlatform } from "./ai";
 import { recordUsage } from "./usage";
+import { clearCreditFailures, isCreditError, recordCreditFailure } from "./automation-pause";
 
 export interface ContentMetadata {
   title?: string;
@@ -108,10 +109,14 @@ export async function publishContent(contentId: string) {
   if (post.quotePostId && !def.supportsQuote) throw new ConfigError(`${def.name} は引用投稿に対応していません`);
 
   await prisma.content.update({ where: { id: contentId }, data: { status: "PUBLISHING" } });
-  const result = await def.publish(
-    { app, credentials, settings: (acc.settings ?? {}) as Record<string, unknown>, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system },
-    post
-  );
+  const result = await def
+    .publish({ app, credentials, settings: (acc.settings ?? {}) as Record<string, unknown>, account: { accountId: acc.accountId ?? "", accountName: acc.accountName }, system }, post)
+    .catch(async (e) => {
+      // クレジット不足が続いたら、このアカウントの自動化を一時停止する（再開は画面のボタン）
+      if (isCreditError(e)) await recordCreditFailure(acc.id, errorMessage(e));
+      throw e;
+    });
+  await clearCreditFailures(acc.id);
   // 投稿 API の呼び出し回数（ツリー投稿は件数分）。単価は料金表で登録したときだけ費用になる
   await recordUsage({ provider: acc.platform, purpose: "post_publish", avatarId: content.avatarId, context: "publish", subjectId: contentId, requests: Math.max(1, Number(/ツリー投稿（(\d+)件）/.exec(result.note ?? "")?.[1]) || 1) });
   const now = new Date();
@@ -169,6 +174,7 @@ export async function prePublishCheck(contentId: string): Promise<string | null>
   const c = await prisma.content.findUniqueOrThrow({ where: { id: contentId }, include: { snsAccount: true, avatar: { select: { status: true } } } });
   if (!c.snsAccount) return "投稿先アカウントが削除されています";
   if (!c.snsAccount.isActive) return "投稿先アカウントが停止中です";
+  if (c.snsAccount.automationPausedAt) return `アカウントの自動化が一時停止中です（${c.snsAccount.automationPausedReason ?? "API クレジット不足"}）。再開してから承認し直してください`;
   if (c.avatar.status !== "ACTIVE") return `アバターが稼働中ではありません（${c.avatar.status}）`;
   const meta = (c.metadata ?? {}) as Record<string, any>;
   if (!meta.automationId || !meta.autoApproved || meta.humanApprovedAt) return null;

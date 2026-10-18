@@ -14,6 +14,7 @@ export * from "./service/metrics";
 export * from "./service/performance";
 export * from "./service/quotes";
 export * from "./service/automation";
+export * from "./service/automation-pause";
 export * from "./service/stats";
 export * from "./service/analytics";
 export * from "./service/usage";

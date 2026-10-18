@@ -11,10 +11,20 @@ interface Settings {
   format: "png" | "webp";
   models: Record<Provider, string>;
   keys: Record<Provider, boolean>;
+  article: Record<Target, ArticleChoice>;
+}
+type Target = "section" | "eyecatch";
+type Quality = "low" | "medium" | "high";
+/** 記事の画像の指定（provider = null は共通の設定、model = "" は既定、quality = null は既定） */
+interface ArticleChoice {
+  provider: Provider | null;
+  model: string;
+  quality: Quality | null;
 }
 interface ProviderInfo {
   name: string;
   defaultModel: string;
+  bestModel: string;
   modelHelp: string;
   pricingUrl: string;
   models: { id: string; label: string; note: string }[];
@@ -36,6 +46,20 @@ const money = (amounts: Record<string, number> | undefined) =>
   amounts && Object.keys(amounts).length ? Object.entries(amounts).map(([c, v]) => `${c} ${v < 1 ? v.toFixed(4) : v.toFixed(2)}`).join(" / ") : null;
 
 const CUSTOM = "__custom__";
+
+/** 記事の画像で実際に使うプロバイダ・モデル・画質（サーバーの resolveArticleImage と同じ決め方） */
+function resolveArticle(s: Settings, info: Record<Provider, ProviderInfo>, t: Target) {
+  const c = s.article[t];
+  const provider = c.provider ?? s.provider;
+  if (!provider) return null;
+  const model = (c.provider && c.model) || (t === "eyecatch" ? info[provider].bestModel : s.models[provider]);
+  return { provider, model, quality: c.quality ?? (t === "eyecatch" ? "high" : s.quality) };
+}
+
+const ARTICLE_TARGETS: { key: Target; label: string; help: string }[] = [
+  { key: "eyecatch", label: "見出し画像（サムネイル）", help: "記事でいちばん目に入る 1 枚。既定はプロバイダの最上位モデル・画質 high" },
+  { key: "section", label: "見出しの下の画像", help: "既定は上の共通の設定（使用中のプロバイダ・モデル・画質）" },
+];
 
 /** モデルは一覧から選ぶ（一覧にない新しいモデルは ID を直接入力） */
 function ModelPicker({ info, value, disabled, onChange }: { info: ProviderInfo; value: string; disabled?: boolean; onChange: (v: string) => void }) {
@@ -75,6 +99,61 @@ function ModelPicker({ info, value, disabled, onChange }: { info: ProviderInfo; 
   );
 }
 
+/** 記事の画像（見出し画像・見出しの下の画像）に使うモデル。共通の設定と別に指定できる */
+function ArticleModels({ s, info, busy, onSave }: { s: Settings; info: Record<Provider, ProviderInfo>; busy: boolean; onSave: (article: Record<Target, ArticleChoice>) => void }) {
+  const [a, setA] = useState(s.article);
+  const set = (t: Target, c: Partial<ArticleChoice>) => setA({ ...a, [t]: { ...a[t], ...c } });
+  const preview: Settings = { ...s, article: a };
+  return (
+    <div className="space-y-3 rounded-lg border border-white/[0.06] p-3">
+      <div>
+        <div className="text-xs font-semibold text-white/80">記事の画像に使うモデル</div>
+        <p className="mt-0.5 text-[11px] text-white/40">比較テストで良かったモデルを、記事の画像にそのまま使うための指定です。「共通の設定」のままなら上の設定に従います。</p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {ARTICLE_TARGETS.map((t) => {
+          const c = a[t.key];
+          const used = resolveArticle(preview, info, t.key);
+          return (
+            <div key={t.key} className="space-y-2 rounded-lg bg-black/20 p-3 text-xs text-white/60">
+              <div className="font-semibold text-white/80">{t.label}</div>
+              <p className="text-[11px] text-white/40">{t.help}</p>
+              <label className="block">
+                プロバイダ
+                <select value={c.provider ?? ""} disabled={busy} onChange={(e) => set(t.key, { provider: (e.target.value || null) as Provider | null, model: "" })} className={`${inputCls} mt-1`}>
+                  <option value="" className="bg-[#111]">共通の設定（使用中のプロバイダ）</option>
+                  {PROVIDERS.map((p) => (
+                    <option key={p} value={p} disabled={!s.keys[p]} className="bg-[#111]">
+                      {info[p].name}
+                      {s.keys[p] ? "" : "（キーなし）"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {c.provider && <ModelPicker info={info[c.provider]} value={c.model || (t.key === "eyecatch" ? info[c.provider].bestModel : s.models[c.provider])} disabled={busy} onChange={(v) => set(t.key, { model: v })} />}
+              <label className="block">
+                画質（OpenAI）
+                <select value={c.quality ?? ""} disabled={busy} onChange={(e) => set(t.key, { quality: (e.target.value || null) as Quality | null })} className={`${inputCls} mt-1`}>
+                  <option value="" className="bg-[#111]">既定（{t.key === "eyecatch" ? "high" : `共通の設定: ${s.quality}`}）</option>
+                  <option value="high" className="bg-[#111]">high</option>
+                  <option value="medium" className="bg-[#111]">medium</option>
+                  <option value="low" className="bg-[#111]">low</option>
+                </select>
+              </label>
+              <p className="text-[11px] text-cyan-200/80">
+                実際に使うもの: {used ? `${info[used.provider].name} ${used.model}（画質 ${used.quality}）` : "API キーが未設定です"}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <Button disabled={busy} onClick={() => onSave(a)}>
+        記事の画像の設定を保存
+      </Button>
+    </div>
+  );
+}
+
 export function ImageSection({ avatars, onChanged }: { avatars: { id: string; name: string }[]; onChanged: (msg: string, ok: boolean) => void }) {
   const [s, setS] = useState<Settings | null>(null);
   const [info, setInfo] = useState<Record<Provider, ProviderInfo> | null>(null);
@@ -99,7 +178,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
 
   const [target, setTarget] = useState<"section" | "eyecatch">("section");
 
-  async function save(next: Partial<{ provider: string | null; quality: string; format: string; models: Partial<Record<Provider, string>> }>) {
+  async function save(next: Partial<{ provider: string | null; quality: string; format: string; models: Partial<Record<Provider, string>>; article: Record<Target, ArticleChoice> }>) {
     setBusy(true);
     try {
       const d = await api<{ settings: Settings }>("/api/images/settings", { method: "PUT", json: next });
@@ -116,7 +195,8 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
     setTesting(true);
     setResults(null);
     try {
-      const d = await api<{ results: CompareResult[] }>("/api/images/compare", { method: "POST", json: { prompt, target, quality, avatarId: avatarId || undefined, useStyle } });
+      // 画面に表示しているモデル（保存前の選択も含む）で比べる
+      const d = await api<{ results: CompareResult[] }>("/api/images/compare", { method: "POST", json: { prompt, target, quality, avatarId: avatarId || undefined, useStyle, models: s?.models } });
       setResults(d.results);
     } catch (e) {
       onChanged((e as Error).message, false);
@@ -173,6 +253,7 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
             モデルを保存
           </Button>
         </div>
+        <ArticleModels key={JSON.stringify(s.article)} s={s} info={info} busy={busy} onSave={(article) => save({ article })} />
         <div className="rounded-lg border border-white/[0.06] p-3 text-xs text-white/60">
           <div className="mb-1 font-semibold text-white/80">出力サイズ（生成後に中央基準で切り抜き）</div>
           <div>見出し画像（note のサムネイル）: 1280 × 670（note 推奨）</div>
@@ -251,6 +332,9 @@ export function ImageSection({ avatars, onChanged }: { avatars: { id: string; na
                     </dl>
                     <Button variant="ghost" disabled={busy || s.provider === r.provider} onClick={() => save({ provider: r.provider, models: { [r.provider]: r.model } })}>
                       {s.provider === r.provider ? "使用中" : "こちらを使う"}
+                    </Button>
+                    <Button variant="ghost" disabled={busy} onClick={() => save({ article: { ...s.article, [target]: { provider: r.provider, model: r.model, quality } } })}>
+                      記事の{target === "eyecatch" ? "見出し画像" : "見出しの下の画像"}に使う
                     </Button>
                   </>
                 ) : (

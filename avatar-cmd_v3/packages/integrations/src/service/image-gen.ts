@@ -10,6 +10,8 @@
 //   （見出し画像 1280×670 = note 推奨、本文の見出し下の画像 1280×720）。図解も同じサイズ・形式にそろえる。
 // ・v3.8: モデルは一覧から選べるようにし、入力の表記ゆれ（gpt-image2.5-sunburst など）は API のモデル ID に直す。
 //   gpt-image-2 以降は用途のサイズ（1280×672 → 1280×670 に切り抜き）で直接生成する。
+// ・v3.9: 記事の画像（見出しの下・見出し画像）は、共通の設定とは別にプロバイダ・モデルを指定できる（resolveArticleImage）。
+//   見出し画像は既定でプロバイダの最上位モデル・画質 high で作る。使ったモデルは結果に表示する（imageModelLabel）。
 
 import sharp from "sharp";
 import { ApiError, ConfigError, requestJson } from "../http";
@@ -48,11 +50,13 @@ export interface ImageModelOption {
   note: string;
 }
 
-export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel: string; modelHelp: string; pricingUrl: string; models: ImageModelOption[] }> = {
+export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel: string; bestModel: string; modelHelp: string; pricingUrl: string; models: ImageModelOption[] }> = {
   openai: {
     name: "OpenAI",
     // 推奨（2026-10 決定）。API のモデル ID は「gpt-image-2.5-sunburst」（gpt-image の後にハイフンが入る）
     defaultModel: "gpt-image-2.5-sunburst",
+    /** 見出し画像（記事でいちばん目に入る 1 枚）の既定 */
+    bestModel: "gpt-image-2.5-sunburst",
     modelHelp: "一覧から選ぶか、API のモデル ID をそのまま入力（例: gpt-image-2.5-sunburst）。最新は platform.openai.com/docs/models",
     pricingUrl: "https://platform.openai.com/docs/pricing",
     models: [
@@ -66,6 +70,7 @@ export const IMAGE_PROVIDERS: Record<ImageProvider, { name: string; defaultModel
   gemini: {
     name: "Google Gemini",
     defaultModel: "gemini-2.5-flash-image",
+    bestModel: "gemini-3-pro-image-preview",
     modelHelp: "一覧から選ぶか、画像出力に対応したモデル ID を入力。最新は ai.google.dev/gemini-api/docs/models",
     pricingUrl: "https://ai.google.dev/gemini-api/docs/pricing",
     models: [
@@ -119,7 +124,16 @@ export const IMAGE_SETTING_KEYS = {
   quality: "image_quality",
   format: "image_format",
   model: (p: ImageProvider) => `image_model_${p}`,
+  /** 記事の画像の指定（JSON）。section = 見出しの下の画像 / eyecatch = 見出し画像 */
+  article: (t: ImageTarget) => `image_article_${t}`,
 };
+
+/** 記事の画像に使うプロバイダ・モデル・画質。provider = null は共通の設定（使用中のプロバイダ）、model = "" は既定 */
+export interface ArticleImageChoice {
+  provider: ImageProvider | null;
+  model: string;
+  quality: ImageQuality | null;
+}
 
 export interface ImageSettings {
   provider: ImageProvider | null;
@@ -127,10 +141,25 @@ export interface ImageSettings {
   format: ImageFormat;
   models: Record<ImageProvider, string>;
   keys: Record<ImageProvider, boolean>;
+  /** 記事の画像の指定（空なら共通の設定。見出し画像は既定で最上位モデル・high） */
+  article: Record<ImageTarget, ArticleImageChoice>;
+}
+
+const QUALITIES: ImageQuality[] = ["low", "medium", "high"];
+
+function parseArticleChoice(raw: string | null | undefined): ArticleImageChoice {
+  let r: Partial<ArticleImageChoice> = {};
+  try {
+    r = JSON.parse(raw ?? "{}") ?? {};
+  } catch {
+    r = {};
+  }
+  const provider = r.provider === "openai" || r.provider === "gemini" ? r.provider : null;
+  return { provider, model: provider ? normalizeImageModel(provider, r.model) : "", quality: QUALITIES.includes(r.quality as ImageQuality) ? (r.quality as ImageQuality) : null };
 }
 
 export async function getImageSettings(): Promise<ImageSettings> {
-  const [p, q, f, mo, mg, ko, kg] = await Promise.all([
+  const [p, q, f, mo, mg, ko, kg, as, ae] = await Promise.all([
     getSetting(IMAGE_SETTING_KEYS.provider),
     getSetting(IMAGE_SETTING_KEYS.quality),
     getSetting(IMAGE_SETTING_KEYS.format),
@@ -138,6 +167,8 @@ export async function getImageSettings(): Promise<ImageSettings> {
     getSetting(IMAGE_SETTING_KEYS.model("gemini")),
     providerKey("openai"),
     providerKey("gemini"),
+    getSetting(IMAGE_SETTING_KEYS.article("section")),
+    getSetting(IMAGE_SETTING_KEYS.article("eyecatch")),
   ]);
   const keys = { openai: !!ko, gemini: !!kg };
   const selected = p === "openai" || p === "gemini" ? p : null;
@@ -150,10 +181,36 @@ export async function getImageSettings(): Promise<ImageSettings> {
     // 以前に保存したモデル名の表記ゆれ（例: gpt-image2.5-sunburst）も正しい ID にして使う
     models: { openai: normalizeImageModel("openai", mo) || IMAGE_PROVIDERS.openai.defaultModel, gemini: normalizeImageModel("gemini", mg) || IMAGE_PROVIDERS.gemini.defaultModel },
     keys,
+    article: { section: parseArticleChoice(as), eyecatch: parseArticleChoice(ae) },
   };
 }
 
-export async function saveImageSettings(input: { provider?: string | null; quality?: string | null; format?: string | null; models?: Partial<Record<ImageProvider, string>> }) {
+/**
+ * 記事の画像に使うプロバイダ・モデル・画質を決める。
+ * ・プロバイダ: 記事の指定 → 共通の設定（使用中）
+ * ・モデル: 記事の指定 → 見出し画像はプロバイダの最上位モデル / 見出しの下は共通の設定のモデル
+ * ・画質: 記事の指定 → 見出し画像は high / 見出しの下は共通の設定
+ */
+export function resolveArticleImage(s: ImageSettings, target: ImageTarget): { provider: ImageProvider | null; model: string; quality: ImageQuality } {
+  const c = s.article[target];
+  const provider = c.provider ?? s.provider;
+  if (!provider) return { provider: null, model: "", quality: c.quality ?? s.quality };
+  const model = (c.provider && c.model) || (target === "eyecatch" ? IMAGE_PROVIDERS[provider].bestModel : s.models[provider]);
+  return { provider, model, quality: c.quality ?? (target === "eyecatch" ? "high" : s.quality) };
+}
+
+/** 結果に出す「どのモデルで作ったか」 */
+export function imageModelLabel(provider: ImageProvider, model: string): string {
+  return `${IMAGE_PROVIDERS[provider].name} ${model}`;
+}
+
+export async function saveImageSettings(input: {
+  provider?: string | null;
+  quality?: string | null;
+  format?: string | null;
+  models?: Partial<Record<ImageProvider, string>>;
+  article?: Partial<Record<ImageTarget, Partial<{ provider: string | null; model: string | null; quality: string | null }>>>;
+}) {
   if (input.format !== undefined) {
     if (input.format && !["png", "webp"].includes(input.format)) throw new ConfigError("画像の形式は png か webp です");
     await setSetting(IMAGE_SETTING_KEYS.format, input.format || null);
@@ -172,6 +229,15 @@ export async function saveImageSettings(input: { provider?: string | null; quali
     const id = normalizeImageModel(p, m);
     // 既定と同じなら保存しない（既定が変わったときに追従する）
     await setSetting(IMAGE_SETTING_KEYS.model(p), id && id !== IMAGE_PROVIDERS[p].defaultModel ? id : null);
+  }
+  for (const t of Object.keys(IMAGE_TARGETS) as ImageTarget[]) {
+    const a = input.article?.[t];
+    if (!a) continue;
+    if (a.provider && !(a.provider in IMAGE_PROVIDERS)) throw new ConfigError("記事の画像のプロバイダが不正です");
+    if (a.quality && !QUALITIES.includes(a.quality as ImageQuality)) throw new ConfigError("記事の画像の画質の指定が不正です");
+    const provider = (a.provider || null) as ImageProvider | null;
+    const next: ArticleImageChoice = { provider, model: provider ? normalizeImageModel(provider, a.model) : "", quality: (a.quality || null) as ImageQuality | null };
+    await setSetting(IMAGE_SETTING_KEYS.article(t), next.provider || next.quality ? JSON.stringify(next) : null);
   }
 }
 

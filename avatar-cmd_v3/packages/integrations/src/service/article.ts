@@ -9,6 +9,8 @@
 //        <!-- image: 説明 -->  /  <!-- infographic: 説明 -->
 //   3. renderVisualMarkers(): 目印を順に画像にして ![説明](media:{name}) に置き換える
 //        イメージ画像 = 画像生成 AI（アバターのスタイル定義と参考画像を渡す。画像内に文字を入れない）
+//          目印の短い説明（40 文字）だけでは絵が平凡になるため、先に AI（task: visual）が英語の詳しい指示
+//          （被写体・場面・構図・光・画角）を書いてから生成する（writeImageBrief）。使ったモデルは結果に残す
 //        図解 = AI が設計図（JSON）を作り、テンプレートで描く（infographic.ts）
 //   4. 投稿（createPosts）→ note の下書きに本文・画像・見出し画像・有料ライン・価格・タグが入る
 // どの段階も人が編集・作り直しできる（目印や画像の行は Markdown のまま見える）。
@@ -17,7 +19,7 @@ import { ConfigError } from "../http";
 import { MARKER_RE } from "../markdown";
 import { buildPrompts, loadAvatarContext } from "./ai";
 import { cleanPostText } from "../post-text";
-import { fitImage, generateAndSaveImage, getImageSettings, IMAGE_TARGETS, type ImageAspect, type ImageTarget } from "./image-gen";
+import { fitImage, generateAndSaveImage, getImageSettings, IMAGE_TARGETS, imageModelLabel, resolveArticleImage, type ImageAspect, type ImageTarget } from "./image-gen";
 import { INFOGRAPHIC_TYPES, LIMITS, normalizeSpec, renderInfographic, type InfographicSpec, type VisualStyle } from "./infographic";
 import { completeJson } from "./llm";
 import { saveMedia, type MediaRef } from "./media";
@@ -304,17 +306,61 @@ export async function designInfographic(input: { description: string; context: s
   return last;
 }
 
+const BRIEF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["subject", "scene", "composition", "lighting", "details"],
+  properties: {
+    subject: { type: "string", description: "Main subject: who/what, pose, expression, action (English)" },
+    scene: { type: "string", description: "Setting and props that make the topic obvious at a glance (English)" },
+    composition: { type: "string", description: "Framing, camera angle, focal point, negative space (English)" },
+    lighting: { type: "string", description: "Lighting and color temperature (English)" },
+    details: { type: "string", description: "2-4 concrete visual details that make it specific, not generic (English)" },
+  },
+};
+
+/**
+ * イメージ画像の詳しい指示（英語）を AI に書かせる。目印の説明（日本語 40 文字）だけだと画像モデル任せになり、
+ * ありきたりな絵になるため、被写体・場面・構図・光・具体的な小物まで決めてから生成する。失敗したら null（説明だけで生成）
+ */
+export async function writeImageBrief(input: { description: string; context: string; style: VisualStyle; target: ImageTarget }): Promise<string | null> {
+  try {
+    const { data } = await completeJson<{ subject: string; scene: string; composition: string; lighting: string; details: string }>({
+      task: "visual",
+      system: [
+        "You are an art director writing a brief for an image generation model.",
+        input.target === "eyecatch"
+          ? "The image is the cover thumbnail of a Japanese note.com article. It must stop the scroll: one strong focal subject, bold simple shapes, readable at small size."
+          : "The image illustrates one section of a Japanese note.com article. It must make the section's point understandable at a glance.",
+        "Be concrete and specific (who, where, what they are doing, which objects). Avoid generic stock-photo clichés.",
+        "Never ask for text, letters, numbers, logos or UI in the image. Write in English.",
+        input.style.illustration ? `The art style is fixed: ${input.style.illustration}. Describe content, not a different style.` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      user: `What to show (Japanese): ${input.description}\n\nArticle context (Japanese):\n${input.context.slice(0, 1200)}`,
+      json: { name: "image_brief", schema: BRIEF_SCHEMA },
+    });
+    const parts = [data.subject, data.scene && `Scene: ${data.scene}`, data.composition && `Composition: ${data.composition}`, data.lighting && `Lighting: ${data.lighting}`, data.details && `Details: ${data.details}`];
+    const brief = parts.filter((x) => typeof x === "string" && x.trim()).join("\n");
+    return brief || null;
+  } catch (e) {
+    console.warn(`[article] image brief failed: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 /**
  * イメージ画像のプロンプト（画像内に文字を入れない・デザイン DNA を反映）。
  * 図解と同じ色・角丸・アイコンの塗り/線をプロンプトにも入れ、同じシリーズに見えるようにする。
  */
-export function imagePrompt(description: string, context: string, style: VisualStyle, target: ImageTarget = "section"): string {
+export function imagePrompt(description: string, context: string, style: VisualStyle, target: ImageTarget = "section", brief?: string | null): string {
   const size = IMAGE_TARGETS[target];
   return [
     target === "eyecatch"
       ? `Create a cover image (thumbnail) for a Japanese blog article on note.com.`
       : `Create an editorial illustration for a section of a Japanese blog article (note.com).`,
-    `What to depict: ${description}`,
+    brief ? `Topic (Japanese): ${description}\nWhat to depict:\n${brief}` : `What to depict: ${description}`,
     context && `Section summary (Japanese, for context only): ${context.slice(0, 400)}`,
     style.dna && `Design DNA (follow strictly): ${style.dna}`,
     `It must look like the same series as flat infographics drawn with: background ${style.background}, palette ${style.palette.join(", ")}, ${style.corner}px rounded corners, ${style.iconStyle === "outline" ? "outlined line icons" : "solid filled icons"}.`,
@@ -337,6 +383,8 @@ export interface RenderedVisual {
   media: MediaRef;
   issues?: string[];
   error?: string;
+  /** イメージ画像を作ったモデル（例: OpenAI gpt-image-2.5-sunburst） */
+  generatedBy?: string;
 }
 
 /** 1 つの画像・図解を作って保存する */
@@ -351,9 +399,27 @@ export async function renderVisual(input: { avatarId: string; kind: "image" | "i
     const media = await saveMedia(out.bytes, `infographic.${format}`, out.mimeType);
     return { kind: "infographic", description: input.description, media: { ...media, alt: input.description }, issues: r.issues };
   }
-  const refs = await referenceImages(input.avatarId, "image", 4);
-  const media = await generateAndSaveImage({ prompt: imagePrompt(input.description, input.context ?? "", styles.image, "section"), references: refs, aspect: input.aspect ?? "16:9", target: "section", avatarId: input.avatarId, filename: "image" });
-  return { kind: "image", description: input.description, media: { name: media.name, mimeType: media.mimeType, size: media.size, filename: media.filename, alt: input.description } };
+  const [refs, choice, brief] = await Promise.all([
+    referenceImages(input.avatarId, "image", 4),
+    getImageSettings().then((s) => resolveArticleImage(s, "section")),
+    writeImageBrief({ description: input.description, context: input.context ?? "", style: styles.image, target: "section" }),
+  ]);
+  const media = await generateAndSaveImage({
+    prompt: imagePrompt(input.description, input.context ?? "", styles.image, "section", brief),
+    references: refs,
+    aspect: input.aspect ?? "16:9",
+    target: "section",
+    avatarId: input.avatarId,
+    filename: "image",
+    ...(choice.provider ? { provider: choice.provider, model: choice.model } : {}),
+    quality: choice.quality,
+  });
+  return {
+    kind: "image",
+    description: input.description,
+    media: { name: media.name, mimeType: media.mimeType, size: media.size, filename: media.filename, alt: input.description },
+    generatedBy: imageModelLabel(media.provider, media.model),
+  };
 }
 
 /**
@@ -408,18 +474,26 @@ export async function renderVisualMarkers(input: {
 }
 
 /** 見出し画像（記事タイトルから。note の見出し画像は横長） */
-export async function generateEyecatch(input: { avatarId: string; title: string; summary?: string }): Promise<MediaRef> {
+/** 見出し画像（記事タイトルから。note の見出し画像は横長）。既定はプロバイダの最上位モデル・画質 high */
+export async function generateEyecatch(input: { avatarId: string; title: string; summary?: string }): Promise<MediaRef & { generatedBy: string }> {
   const styles = await getAvatarStyles(input.avatarId);
-  const refs = await referenceImages(input.avatarId, "image", 4);
+  const description = `記事の見出し画像（アイキャッチ）。記事タイトル: ${input.title}`;
+  const [refs, choice, brief] = await Promise.all([
+    referenceImages(input.avatarId, "image", 4),
+    getImageSettings().then((s) => resolveArticleImage(s, "eyecatch")),
+    writeImageBrief({ description, context: input.summary ?? "", style: styles.image, target: "eyecatch" }),
+  ]);
   const m = await generateAndSaveImage({
-    prompt: imagePrompt(`記事の見出し画像（アイキャッチ）。記事タイトル: ${input.title}`, input.summary ?? "", styles.image, "eyecatch"),
+    prompt: imagePrompt(description, input.summary ?? "", styles.image, "eyecatch", brief),
     references: refs,
     aspect: "16:9",
     target: "eyecatch",
     avatarId: input.avatarId,
     filename: "eyecatch",
+    ...(choice.provider ? { provider: choice.provider, model: choice.model } : {}),
+    quality: choice.quality,
   });
-  return { name: m.name, mimeType: m.mimeType, size: m.size, filename: m.filename, alt: "eyecatch" };
+  return { name: m.name, mimeType: m.mimeType, size: m.size, filename: m.filename, alt: "eyecatch", generatedBy: imageModelLabel(m.provider, m.model) };
 }
 
 /** 本文から参照している media:{name} の一覧（投稿に添付するファイル） */
