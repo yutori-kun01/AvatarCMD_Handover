@@ -240,9 +240,10 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
       const where = r.publish === "publish" ? (r.scheduledAt ? `${new Date(r.scheduledAt).toLocaleString("ja-JP")} に公開する予約` : "公開") : r.scheduledAt ? `${new Date(r.scheduledAt).toLocaleString("ja-JP")} に下書き保存する予約` : "下書き保存";
       const made = [r.images ? `画像・図解 ${r.images} 枚` : "", r.eyecatch ? "見出し画像" : ""].filter(Boolean).join("・");
       const warn: string[] = r.warnings ?? [];
+      const models: string[] = r.imageModels ?? [];
       setNotice({
         kind: warn.length ? "error" : "ok",
-        msg: `全自動で「${r.title}」を作り、${where}に回しました${made ? `（${made}）` : ""}。結果は「SNS 投稿」の一覧に出ます${warn.length ? ` ／ 注意: ${warn.join(" / ")}` : ""}`,
+        msg: `全自動で「${r.title}」を作り、${where}に回しました${made ? `（${made}）` : ""}。結果は「SNS 投稿」の一覧に出ます${models.length ? ` ／ 画像の生成: ${models.join("、")}` : ""}${warn.length ? ` ／ 注意: ${warn.join(" / ")}` : ""}`,
       });
       onPosted?.();
       return;
@@ -253,8 +254,11 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
       setMd(r.markdown ?? "");
       setNotice({ kind: "ok", msg: "記事を書きました。内容を確認して、必要なら直してください" });
     } else if (job.kind === "eyecatch") {
-      if (r.media) setEyecatch(r.media);
-      setNotice({ kind: "ok", msg: "見出し画像（1280×670）を作りました" });
+      if (r.media) {
+        const { generatedBy, ...ref } = r.media as MediaRef & { generatedBy?: string };
+        setEyecatch(ref);
+        setNotice({ kind: "ok", msg: `見出し画像（1280×670）を作りました${generatedBy ? `（生成: ${generatedBy}）` : ""}` });
+      }
     } else if (job.kind === "render") {
       const reps: { marker: string; replacement: string }[] = r.replacements ?? [];
       // 生成中に本文が編集されていても、目印の行だけを画像に置き換える
@@ -272,10 +276,12 @@ export function ArticleEditor({ accounts, onPosted }: { accounts: AccountInfo[];
       const made: MediaRef[] = r.media ?? [];
       setMedia((cur) => ({ ...cur, ...Object.fromEntries(made.map((m) => [m.name, m])) }));
       const errors: { description: string; error: string }[] = (r.results ?? []).filter((x: any) => x.error);
+      const models = [...new Set((r.results ?? []).map((x: any) => x.generatedBy).filter(Boolean))];
+      const by = models.length ? `（画像の生成: ${models.join("、")}）` : "";
       setNotice(
         errors.length
-          ? { kind: "error", msg: `${made.length} 件作成、${errors.length} 件失敗: ${errors.map((e) => `${e.description}（${e.error}）`).join(" / ")}` }
-          : { kind: "ok", msg: `${made.length} 件の画像・図解を作りました` }
+          ? { kind: "error", msg: `${made.length} 件作成、${errors.length} 件失敗${by}: ${errors.map((e) => `${e.description}（${e.error}）`).join(" / ")}` }
+          : { kind: "ok", msg: `${made.length} 件の画像・図解を作りました${by}` }
       );
     }
   }, [onPosted]);

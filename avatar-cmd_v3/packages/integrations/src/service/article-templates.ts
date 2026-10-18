@@ -157,6 +157,8 @@ export interface FullArticleResult {
   images: number;
   eyecatch: boolean;
   warnings: string[];
+  /** イメージ画像・見出し画像を作ったモデル（例: OpenAI gpt-image-2.5-sunburst） */
+  imageModels: string[];
 }
 
 /** テーマ → 執筆 → 画像・図解 → 見出し画像 → note へ入稿 を 1 回で行う */
@@ -178,6 +180,7 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
   const draft = await generateNoteDraft({ avatarId: input.avatarId, title: input.title, topic: input.topic, paid: t.paid, extraPrompt: templatePrompt(t) || undefined });
   let md = draft.markdown;
   const media: MediaRef[] = [];
+  const imageModels = new Set<string>();
 
   if (t.visuals) {
     try {
@@ -188,6 +191,7 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
         const r = await renderVisualMarkers({ avatarId: input.avatarId, markdown: md, onProgress: (done, total) => progress(`画像・図解 ${done} / ${total}`) });
         md = r.markdown;
         media.push(...r.media);
+        for (const x of r.results) if ("generatedBy" in x && x.generatedBy) imageModels.add(x.generatedBy);
         for (const x of r.results) if ("error" in x && x.error) warnings.push(`${x.kind === "image" ? "画像" : "図解"}「${x.description}」を作れませんでした（${x.error.slice(0, 80)}）`);
       }
     } catch (e) {
@@ -201,7 +205,9 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
   if (t.eyecatch) {
     try {
       await progress("見出し画像の生成");
-      eyecatch = await generateEyecatch({ avatarId: input.avatarId, title: draft.title, summary: md.slice(0, 400) });
+      const { generatedBy, ...ref } = await generateEyecatch({ avatarId: input.avatarId, title: draft.title, summary: md.slice(0, 400) });
+      eyecatch = ref;
+      imageModels.add(`見出し画像: ${generatedBy}`);
     } catch (e) {
       warnings.push(`見出し画像を作れませんでした（${(e instanceof Error ? e.message : String(e)).slice(0, 80)}）`);
     }
@@ -221,7 +227,7 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
     options: { note: { title: draft.title, price: t.paid && hasPaywall && t.price ? String(t.price) : "", eyecatch: eyecatch?.name ?? "", mode: publish } },
     scheduledAt: input.scheduledAt,
     category: input.ruleId ? "automation" : "manual",
-    extraMetadata: { article: { templateId: input.templateId ?? null, model: draft.model, warnings }, ...(input.ruleId ? { automationId: input.ruleId } : {}) },
+    extraMetadata: { article: { templateId: input.templateId ?? null, model: draft.model, imageModels: [...imageModels], warnings }, ...(input.ruleId ? { automationId: input.ruleId } : {}) },
   });
   return {
     contentId: content.id,
@@ -233,5 +239,6 @@ export async function runFullArticle(input: FullArticleInput): Promise<FullArtic
     images: media.length,
     eyecatch: !!eyecatch,
     warnings,
+    imageModels: [...imageModels],
   };
 }

@@ -231,6 +231,44 @@ test("画像モデル: 保存した表記ゆれは正しい ID で使い、受�
   }
 });
 
+test("記事の画像: 見出し画像は既定で最上位モデル・high、記事用に指定したモデルを使い、詳しい指示を書いてから生成して使ったモデルを返す", opts, async () => {
+  const brief = { subject: "A young woman writing three tasks in a notebook", scene: "Sunlit wooden desk by a window", composition: "Over-the-shoulder, notebook in focus", lighting: "Warm morning light", details: "steaming coffee, a small plant" };
+  const m = mockFetch([
+    ["POST", /api\.openai\.com\/v1\/responses$/, () => ({ json: openaiText(JSON.stringify(brief)) })],
+    ["POST", /api\.openai\.com\/v1\/images\/(generations|edits)$/, { data: [{ b64_json: PNG_B64 }], usage: { input_tokens: 1, output_tokens: 1 } }],
+    ["POST", /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3-pro-image-preview:generateContent$/, { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: PNG_B64 } }] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 } }],
+  ]);
+  try {
+    // 共通の設定は OpenAI の速いモデル・low。記事の指定なし
+    await svc.saveImageSettings({ provider: "openai", quality: "low", models: { openai: "gpt-image-2.5-flare" }, article: { section: { provider: null, quality: null }, eyecatch: { provider: null, quality: null } } });
+    const s0 = await svc.getImageSettings();
+    assert.deepEqual(svc.resolveArticleImage(s0, "section"), { provider: "openai", model: "gpt-image-2.5-flare", quality: "low" });
+    assert.deepEqual(svc.resolveArticleImage(s0, "eyecatch"), { provider: "openai", model: "gpt-image-2.5-sunburst", quality: "high" });
+
+    // 見出し画像: 最上位モデル・high。先に詳しい指示（英語）を書かせ、プロンプトに入れる
+    const e = await svc.generateEyecatch({ avatarId, title: "朝の30分で人生が変わった話", summary: "朝のタスク整理" });
+    assert.equal(e.generatedBy, "OpenAI gpt-image-2.5-sunburst");
+    // 参考画像なし → generations（JSON）
+    const img = m.calls.filter((c) => c.url.endsWith("/images/generations")).at(-1)!.json;
+    assert.equal(img.model, "gpt-image-2.5-sunburst");
+    assert.equal(img.quality, "high");
+    assert.match(img.prompt, /What to depict:\nA young woman writing three tasks/);
+    assert.match(img.prompt, /Composition: Over-the-shoulder/);
+    const briefReq = m.calls.find((c) => c.url.endsWith("/responses"))!;
+    assert.equal(briefReq.json.text.format.name, "image_brief");
+
+    // 見出しの下の画像: 記事用に Gemini 3 Pro を指定 → 共通の設定（OpenAI）ではなく指定どおり
+    await svc.saveImageSettings({ article: { section: { provider: "gemini", model: "Nano Banana Pro", quality: null } } });
+    assert.deepEqual((await svc.getImageSettings()).article.section, { provider: "gemini", model: "gemini-3-pro-image-preview", quality: null });
+    const r = await svc.renderVisual({ avatarId, kind: "image", description: "朝のタスク整理", context: "## はじめに\n朝に3つだけ書き出す" });
+    assert.equal(r.generatedBy, "Google Gemini gemini-3-pro-image-preview");
+    assert.ok(m.calls.some((c) => c.url.includes("gemini-3-pro-image-preview:generateContent")));
+  } finally {
+    m.restore();
+    await svc.saveImageSettings({ provider: null, quality: null, models: { openai: "" }, article: { section: { provider: null, quality: null }, eyecatch: { provider: null, quality: null } } });
+  }
+});
+
 /** OpenAI Responses API の応答（文章生成のモック） */
 function openaiText(text: string) {
   return { id: "resp_1", object: "response", model: "gpt-5", output: [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } };
