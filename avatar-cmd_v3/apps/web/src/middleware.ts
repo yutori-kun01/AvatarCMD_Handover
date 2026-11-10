@@ -33,6 +33,8 @@ export async function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
+// /api/settings/import は除く: middleware を通ると本文が 10MB で打ち切られる（Next.js の既定）ため、
+// 画像を含むエクスポートファイルを受け取れない。ログインの確認はルートの中で行う（app/api/settings/import/route.ts）
 export const config = {
-  matcher: ["/((?!_next/|media/|favicon|.*\\.(?:png|jpg|svg|ico|webp)$).*)"],
+  matcher: ["/((?!_next/|media/|favicon|api/settings/import$|.*\\.(?:png|jpg|svg|ico|webp)$).*)"],
 };

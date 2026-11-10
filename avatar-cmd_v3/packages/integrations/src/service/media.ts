@@ -120,6 +120,28 @@ export async function saveMedia(bytes: Uint8Array, filename: string, mimeType: s
   return { name, mimeType, size: bytes.byteLength, filename: filename || name };
 }
 
+/** 名前を指定して保存する（エクスポートしたファイルの取り込み用。名前は UUID なので別のファイルと重ならない） */
+export async function saveMediaNamed(name: string, bytes: Uint8Array): Promise<void> {
+  const file = mediaPath(name); // 名前の検証
+  const mimeType = mimeOfMedia(name);
+  const r2 = await mediaStorage();
+  if (r2) await r2Put(r2, r2Key(name), bytes, mimeType);
+  else {
+    await mkdir(mediaDir(), { recursive: true });
+    await writeFile(file, bytes);
+  }
+}
+
+/** メディア名（拡張子）から MIME タイプ */
+export function mimeOfMedia(name: string): string {
+  return MIME_BY_EXT[name.split(".").pop() ?? ""] ?? "application/octet-stream";
+}
+
+/** 保存済みメディアの名前として正しいか */
+export function isMediaName(name: string): boolean {
+  return NAME_RE.test(name);
+}
+
 async function localExists(name: string): Promise<boolean> {
   try {
     await stat(mediaPath(name));
