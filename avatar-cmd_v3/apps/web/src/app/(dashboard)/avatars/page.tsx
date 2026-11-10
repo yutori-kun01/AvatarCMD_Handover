@@ -37,6 +37,10 @@ interface Avatar {
   description: string | null;
   specialization: string | null;
   targetAudience: string | null;
+  clientLabel: string | null;
+  genre: string | null;
+  genreLabel: string;
+  genreMeta: { source?: "auto" | "keyword" | "manual"; reason?: string; model?: string; at?: string };
   persona: Persona;
   imageUrl: string | null;
   imageSource: string | null;
@@ -52,6 +56,9 @@ type Form = {
   description: string;
   specialization: string;
   targetAudience: string;
+  clientLabel: string;
+  /** "auto" = 自動判定 / GENRES のキー = 手動で選ぶ */
+  genre: string;
   tone: string;
   topics: string;
   postFrequency: string;
@@ -59,7 +66,7 @@ type Form = {
   prompt: string;
 };
 
-const EMPTY: Form = { name: "", role: "", description: "", specialization: "", targetAudience: "", tone: "", topics: "", postFrequency: "", bestTime: "", prompt: "" };
+const EMPTY: Form = { name: "", role: "", description: "", specialization: "", targetAudience: "", clientLabel: "", genre: "auto", tone: "", topics: "", postFrequency: "", bestTime: "", prompt: "" };
 
 function toForm(a: Avatar): Form {
   return {
@@ -68,6 +75,8 @@ function toForm(a: Avatar): Form {
     description: a.description ?? "",
     specialization: a.specialization ?? "",
     targetAudience: a.targetAudience ?? "",
+    clientLabel: a.clientLabel ?? "",
+    genre: a.genreMeta.source === "manual" && a.genre ? a.genre : "auto",
     tone: a.persona.tone ?? "",
     topics: (a.persona.topics ?? []).join(", "),
     postFrequency: a.persona.postFrequency ?? "",
@@ -83,11 +92,15 @@ function payload(f: Form) {
     description: f.description,
     specialization: f.specialization,
     targetAudience: f.targetAudience,
+    clientLabel: f.clientLabel,
+    genre: f.genre,
     persona: { tone: f.tone, topics: f.topics, postFrequency: f.postFrequency, bestTime: f.bestTime, prompt: f.prompt },
   };
 }
 
-function AvatarForm({ form, setForm }: { form: Form; setForm: (f: Form) => void }) {
+const GENRE_SOURCE: Record<string, string> = { auto: "AI で自動判定", keyword: "キーワードで自動判定", manual: "手動で選択" };
+
+function AvatarForm({ form, setForm, genres }: { form: Form; setForm: (f: Form) => void; genres: { value: string; label: string }[] }) {
   const f = (key: keyof Form, label: string, extra: Partial<Parameters<typeof Field>[0]["def"]> = {}) => (
     <Field def={{ key, label, ...extra }} value={form[key]} onChange={(v) => setForm({ ...form, [key]: v })} />
   );
@@ -100,6 +113,14 @@ function AvatarForm({ form, setForm }: { form: Form; setForm: (f: Form) => void 
         {f("targetAudience", "想定読者", { placeholder: "例: 20〜30代の会社員" })}
       </div>
       {f("description", "プロフィール", { type: "textarea" })}
+      <div className="grid gap-4 md:grid-cols-2">
+        {f("genre", "ジャンル", {
+          type: "select",
+          options: [{ value: "auto", label: "自動で判定する（おすすめ）" }, ...genres],
+          help: "自動では、専門分野・想定読者・プロフィール・得意なトピックから判定します（プラットフォーム × ジャンルの傾向の集計に使います）",
+        })}
+        {f("clientLabel", "クライアント（任意）", { placeholder: "例: 株式会社〇〇", help: "運用代行のクライアントごとにまとめてエクスポートするときに使います。空欄でも構いません" })}
+      </div>
       <h4 className="pt-2 text-xs font-semibold text-white/70">ペルソナ（AI の投稿文生成に使われます）</h4>
       <div className="grid gap-4 md:grid-cols-2">
         {f("tone", "口調", { placeholder: "例: やさしく共感的、です・ます調" })}
@@ -116,6 +137,7 @@ function AvatarsInner() {
   const params = useSearchParams();
   const router = useRouter();
   const [avatars, setAvatars] = useState<Avatar[]>([]);
+  const [genres, setGenres] = useState<{ value: string; label: string }[]>([]);
   const [selectedId, setSelectedIdState] = useState<string | null>(params.get("id"));
   const tab = (TABS.some((t) => t.key === params.get("tab")) ? params.get("tab") : "analytics") as Tab;
   const iconRef = useRef<HTMLInputElement>(null);
@@ -135,8 +157,9 @@ function AvatarsInner() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const d = await api<{ avatars: Avatar[] }>("/api/avatars");
+    const d = await api<{ avatars: Avatar[]; genres: { value: string; label: string }[] }>("/api/avatars");
     setAvatars(d.avatars);
+    setGenres(d.genres);
     setSelectedIdState((cur) => (cur && d.avatars.some((a) => a.id === cur) ? cur : d.avatars[0]?.id ?? null));
   }, []);
   useEffect(() => {
@@ -254,7 +277,7 @@ function AvatarsInner() {
           {mode !== "view" ? (
             <Card className="space-y-4">
               <h3 className="text-sm font-semibold">{mode === "new" ? "新しいアバター" : `${selected?.name} を編集`}</h3>
-              <AvatarForm form={form} setForm={setForm} />
+              <AvatarForm form={form} setForm={setForm} genres={genres} />
               <div className="flex gap-2">
                 <Button onClick={save} disabled={busy || !form.name.trim()}>
                   {busy ? "保存中…" : "保存"}
@@ -359,6 +382,8 @@ function AvatarsInner() {
                       ["役割", selected.role === "sns_marketer" ? "" : selected.role],
                       ["専門", selected.specialization],
                       ["想定読者", selected.targetAudience],
+                      ["ジャンル", selected.genre ? `${selected.genreLabel}（${GENRE_SOURCE[selected.genreMeta.source ?? ""] ?? "自動"}）` : "判定待ち"],
+                      ["クライアント", selected.clientLabel],
                       ["口調", selected.persona.tone],
                       ["投稿頻度", selected.persona.postFrequency],
                       ["時間帯", selected.persona.bestTime],
@@ -379,6 +404,7 @@ function AvatarsInner() {
                     </div>
                   )}
                   {selected.persona.prompt && <p className="mt-3 whitespace-pre-wrap text-xs text-white/50">{selected.persona.prompt}</p>}
+                  {selected.genreMeta.reason && <p className="mt-3 text-[11px] text-white/35">ジャンルの判定理由: {selected.genreMeta.reason}</p>}
                 </Card>
                 <Card>
                   <h3 className="mb-3 text-sm font-semibold">接続アカウント</h3>

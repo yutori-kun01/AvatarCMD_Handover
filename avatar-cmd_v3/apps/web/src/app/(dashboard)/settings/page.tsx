@@ -33,7 +33,7 @@ const AI_TASK_GROUPS: Record<string, { title: string; description: string; tasks
   "ai-article": { title: "記事執筆の AI", description: "WordPress / Zenn / note / Medium 向けの長文記事と、見出しごとの画像・図解の設計に使う AI です。", tasks: ["article", "visual"] },
   "ai-image": { title: "画像の AI", description: "アバターの参考画像からスタイル定義を作る AI です（画像を読めるモデルが必要）。", tasks: ["style"] },
   "ai-video": { title: "動画の AI", description: "動画パイプラインのネタ候補・台本とカット指示書・検品の精査に使う AI です。", tasks: ["video_topics", "video_script", "video_qc"] },
-  "ai-learning": { title: "学習・改善の AI", description: "YouTube 動画・RSS 記事の要約と、定期的な改善分析に使う AI です。", tasks: ["summary", "improvement"] },
+  "ai-learning": { title: "学習・改善の AI", description: "YouTube 動画・RSS 記事の要約、定期的な改善分析、アバターのジャンル判定に使う AI です。", tasks: ["summary", "improvement", "genre"] },
 };
 
 interface NavItem {

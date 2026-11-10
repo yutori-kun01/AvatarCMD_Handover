@@ -108,6 +108,12 @@ model Avatar {
   // v3.7 — X API の利用方針 { mode: eco|balanced|aggressive|custom, custom: {...}, degradeAtYen, capYen }。空なら BALANCED
   xPolicy         Json         @default("{}") @map("x_policy")
   lastSyncAt      DateTime?    @map("last_sync_at")
+  // v3.8 — ジャンル（GENRES のキー）。自動判定（genre.ts）。手動で選んだときは genreMeta.source = "manual"
+  genre           String?
+  // v3.8 — { source: auto|manual|keyword, basis: 判定材料のハッシュ, reason, model, at }
+  genreMeta       Json         @default("{}") @map("genre_meta")
+  // v3.8 — クライアントのラベル（任意）。エクスポートでまとめて選ぶ・傾向の集計で何クライアント分かを数えるのに使う
+  clientLabel     String?      @map("client_label")
 
   // --- Persona Engine (Monster v4) ---
   personality     Json         @default("{}")

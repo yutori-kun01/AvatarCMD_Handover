@@ -48,7 +48,7 @@ export const AUTO_ORDER: AiProvider[] = ["anthropic", "openai", "gemini"];
 // recommended: その用途で「これ以上は下げない」最低限の推奨モデル（モデル欄が空欄のときの既定）。
 // upgrade:     品質を上げたいときの候補（設定画面にヒントとして表示）。
 
-export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary" | "style" | "visual" | "video_topics" | "video_script" | "video_qc";
+export type AiTask = "post" | "article" | "rewrite" | "review" | "tags" | "quote" | "improvement" | "summary" | "style" | "visual" | "video_topics" | "video_script" | "video_qc" | "genre";
 
 export interface AiTaskDef {
   label: string;
@@ -139,6 +139,12 @@ export const AI_TASKS: Record<AiTask, AiTaskDef> = {
     recommended: { anthropic: "claude-sonnet-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
     upgrade: { anthropic: "claude-opus-5", openai: "gpt-5" },
     maxTokens: 8000,
+  },
+  genre: {
+    label: "ジャンル判定",
+    help: "アバターのプロフィールから、決まった選択肢の中でジャンルを 1 つ選ぶ（プラットフォーム × ジャンルの傾向の集計に使う）。キーが無いときはキーワードで判定する",
+    recommended: { anthropic: "claude-haiku-4-5", openai: "gpt-5-mini", gemini: "gemini-3.8-flash" },
+    maxTokens: 4000,
   },
   tags: {
     label: "タグ提案",

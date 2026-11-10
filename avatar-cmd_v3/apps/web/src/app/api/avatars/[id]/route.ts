@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@avatar-cmd/db";
 import { route } from "@/lib/api";
-import { avatarData } from "@/lib/avatar-input";
+import { applyGenre, avatarData } from "@/lib/avatar-input";
 
 export const runtime = "nodejs";
 
 export const PATCH = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  await prisma.avatar.update({ where: { id }, data: avatarData(await req.json(), false) as any });
+  const body = await req.json();
+  await prisma.avatar.update({ where: { id }, data: avatarData(body, false) as any });
+  // ステータスだけの変更（一時停止・再開）ではジャンルを見直さない
+  if (body.genre !== undefined || Object.keys(body).some((k) => k !== "status")) await applyGenre(id, body.genre);
   return NextResponse.json({ ok: true });
 });
 
