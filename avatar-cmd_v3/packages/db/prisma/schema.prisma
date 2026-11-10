@@ -1333,3 +1333,36 @@ model PlatformInsight {
   @@index([platform, genre])
   @@map("platform_insights")
 }
+
+// ==============================================
+// v3.9 — 管理画面のセキュリティ（admin-security.ts）
+// ==============================================
+// ログインのセッション。Cookie には推測できない乱数（sid）と署名だけを入れ、DB には sid のハッシュだけを保存する。
+// ログアウト・パスワード変更・「他の端末をすべてログアウト」で revokedAt を入れると、その Cookie は使えなくなる。
+model AdminSession {
+  /** sid の SHA-256（16 進） */
+  id         String    @id
+  createdAt  DateTime  @default(now()) @map("created_at")
+  expiresAt  DateTime  @map("expires_at")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  revokedAt  DateTime? @map("revoked_at")
+  ip         String?
+  userAgent  String?   @map("user_agent")
+
+  @@index([expiresAt])
+  @@map("admin_sessions")
+}
+
+// ログインの試行（回数制限に使う。30 日で消す）
+model LoginAttempt {
+  id        String   @id @default(uuid())
+  ip        String
+  success   Boolean
+  /** password / totp / blocked など */
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([ip, createdAt])
+  @@index([createdAt])
+  @@map("login_attempts")
+}

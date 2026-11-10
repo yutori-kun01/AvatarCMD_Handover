@@ -65,6 +65,9 @@ const SECRET_KEYS = new Set<string>([
   SETTING_KEYS.r2AccessKeyId,
   SETTING_KEYS.r2SecretAccessKey,
   SETTING_KEYS.adminPasswordHash,
+  // 2 段階認証の秘密鍵（admin-security.ts）
+  "admin_totp_secret",
+  "admin_totp_pending",
 ]);
 
 export async function getSetting(key: string): Promise<string | undefined> {

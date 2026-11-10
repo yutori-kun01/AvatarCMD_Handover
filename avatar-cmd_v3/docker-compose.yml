@@ -7,6 +7,11 @@
 #        docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 # ============================================
 
+# アプリのコンテナは特別な権限が要らないので、Linux の権限（capability）をすべて外し、権限の昇格も禁止する
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
 x-app-env: &app-env
   DATABASE_URL: postgresql://avatar:${DB_PASSWORD:?DB_PASSWORD を .env に設定してください}@db:5432/avatar_cmd?schema=public
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY を .env に設定してください}
@@ -48,6 +53,7 @@ services:
     build: { context: ., target: worker }
     image: avatar-cmd-worker
     container_name: avatar-cmd-migrate
+    <<: *hardening
     environment: *app-env
     command: ["packages/db/node_modules/.bin/prisma", "migrate", "deploy", "--schema", "packages/db/prisma/schema.prisma"]
     networks: [internal]
@@ -60,14 +66,17 @@ services:
     build: { context: ., target: web }
     image: avatar-cmd-web
     container_name: avatar-cmd-web
+    <<: *hardening
     restart: unless-stopped
     environment:
       <<: *app-env
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD を .env に設定してください}
       GHOST_URL: ${GHOST_URL:-}
       GHOST_CONTENT_API_KEY: ${GHOST_CONTENT_API_KEY:-}
+    # 待ち受けるアドレス。サーバー上のリバースプロキシ（nginx・Caddy など）経由で HTTPS 公開するなら
+    # WEB_BIND=127.0.0.1 にして、3333 番を外から直接見えないようにする（Traefik 連携では ports 自体を使わない）
     ports:
-      - "${WEB_PORT:-3333}:3000"
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-3333}:3000"
     volumes:
       - media:/app/data/media
     networks: [internal]
@@ -81,6 +90,7 @@ services:
   worker:
     image: avatar-cmd-worker
     container_name: avatar-cmd-worker
+    <<: *hardening
     restart: unless-stopped
     environment:
       <<: *app-env

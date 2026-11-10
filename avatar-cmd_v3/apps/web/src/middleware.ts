@@ -1,8 +1,10 @@
 // ================================================
 // 認証ミドルウェア — ダッシュボードと API はログイン必須
 // ================================================
+// ここ（Edge）では Cookie の署名と期限、他サイトからの書き込み（CSRF）だけを確かめる。
+// ログアウト・パスワード変更による失効は DB を見て API 側（lib/api.ts の route() → lib/guard.ts）で確かめる（二重のチェック）。
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
+import { crossSiteWrite, SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
 const PROTECTED_PAGES = ["/dashboard", "/avatars", "/revenue", "/automation", "/settings", "/posts", "/knowledge", "/video"];
 
@@ -16,6 +18,7 @@ export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const isApi = pathname.startsWith("/api/");
   const isPage = PROTECTED_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  if (isApi && crossSiteWrite(req)) return NextResponse.json({ error: "他のサイトからの操作は受け付けません" }, { status: 403 });
   if ((!isApi && !isPage) || isPublicApi(pathname)) return NextResponse.next();
 
   let ok = false;

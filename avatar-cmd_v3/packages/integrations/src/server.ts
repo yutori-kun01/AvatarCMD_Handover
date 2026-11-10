@@ -38,6 +38,7 @@ export * from "./service/genre";
 export * from "./service/post-features";
 export * from "./service/platform-insights";
 export * from "./service/export";
+export * from "./service/admin-security";
 export * from "./service/rss-learning";
 export * from "./service/learning-summary";
 export { assertPublicUrl, extractArticle, fetchArticle, htmlToText } from "./service/web-extract";

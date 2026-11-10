@@ -1,6 +1,7 @@
 "use client";
 // 設定の各セクション: 基本設定（公開URL・APIバージョン）／ AI の API キー ／ 用途ごとの AI の割り当て（カテゴリごと）／ 判定（Jev）／ セキュリティ
 import { useState } from "react";
+import { AccountSecurity } from "./account-security";
 import { api, Button, Card, CopyText, Field } from "./ui";
 
 export interface SystemInfo {
@@ -301,15 +302,17 @@ export function JevSection({ jev, onChanged }: { jev: JevInfo; onChanged: OnChan
 export function SecuritySection({ encryptionReady, onChanged }: { encryptionReady: boolean; onChanged: (msg: string, ok: boolean) => void }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function change() {
     setBusy(true);
     try {
-      await api("/api/settings/password", { method: "POST", json: { current, next } });
+      const r = await api<{ revokedSessions: number }>("/api/settings/password", { method: "POST", json: { current, next, code } });
       setCurrent("");
       setNext("");
-      onChanged("パスワードを変更しました", true);
+      setCode("");
+      onChanged(`パスワードを変更しました（他の端末 ${r.revokedSessions} 件をログアウトさせました）`, true);
     } catch (e) {
       onChanged((e as Error).message, false);
     } finally {
@@ -332,9 +335,10 @@ export function SecuritySection({ encryptionReady, onChanged }: { encryptionRead
       <Card className="space-y-3">
         <h3 className="text-sm font-semibold">管理者パスワードの変更</h3>
         <Field def={{ key: "c", label: "現在のパスワード", type: "password" }} value={current} onChange={setCurrent} />
-        <Field def={{ key: "n", label: "新しいパスワード（10文字以上）", type: "password" }} value={next} onChange={setNext} />
+        <Field def={{ key: "n", label: "新しいパスワード（12 文字以上。パスワード管理アプリで作った長いものを推奨）", type: "password" }} value={next} onChange={setNext} />
+        <Field def={{ key: "t", label: "2 段階認証のコード（有効にしている場合）" }} value={code} onChange={setCode} />
         <div className="flex gap-2">
-          <Button onClick={change} disabled={busy || !current || next.length < 10}>
+          <Button onClick={change} disabled={busy || !current || next.length < 12}>
             変更
           </Button>
           <Button
@@ -348,6 +352,7 @@ export function SecuritySection({ encryptionReady, onChanged }: { encryptionRead
           </Button>
         </div>
       </Card>
+      <AccountSecurity onChanged={onChanged} />
     </div>
   );
 }

@@ -7,6 +7,9 @@ function LoginForm() {
   const params = useSearchParams();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  // 2 段階認証: パスワードが合ったあとに、認証アプリの 6 桁（または回復コード）を聞く
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [state, setState] = useState<{ configured: boolean; setupAllowed: boolean } | null>(null);
@@ -25,10 +28,18 @@ function LoginForm() {
     const res = await fetch(setup ? "/api/auth/setup" : "/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify(setup ? { password } : { password, ...(needCode ? { code } : {}) }),
     });
     setBusy(false);
-    if (!res.ok) return setError((await res.json().catch(() => ({}))).error ?? "ログインに失敗しました");
+    const body = (await res.json().catch(() => ({}))) as { error?: string; needCode?: boolean };
+    if (!res.ok) {
+      if (res.status === 401 && body.needCode) setCode("");
+      return setError(body.error ?? "ログインに失敗しました");
+    }
+    if (body.needCode) {
+      setNeedCode(true);
+      return;
+    }
     const next = params.get("next");
     window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
   }
@@ -55,7 +66,9 @@ function LoginForm() {
             <input
               type="password"
               autoFocus
+              autoComplete="current-password"
               value={password}
+              readOnly={needCode}
               onChange={(e) => setPassword(e.target.value)}
               className="mb-4 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-cyan-400/60"
             />
@@ -70,9 +83,22 @@ function LoginForm() {
                 />
               </>
             )}
+            {needCode && (
+              <>
+                <label className="mb-1 block text-xs text-white/50">確認コード（認証アプリの 6 桁、または回復コード）</label>
+                <input
+                  autoFocus
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  className="mb-4 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm tracking-widest outline-none focus:border-cyan-400/60"
+                />
+              </>
+            )}
             {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
             <button
-              disabled={busy || !password || !state}
+              disabled={busy || !password || !state || (needCode && !code.trim())}
               className="w-full rounded-lg bg-gradient-to-r from-[#3b82f6] to-[#8b5cf6] py-2 text-sm font-semibold disabled:opacity-50"
             >
               {busy ? "確認中…" : setup ? "設定してログイン" : "ログイン"}

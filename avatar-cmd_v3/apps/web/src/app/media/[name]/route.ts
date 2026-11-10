@@ -17,6 +17,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ name: s
         "Content-Type": TYPES[name.split(".").pop()!] ?? "application/octet-stream",
         "Content-Length": String(buf.byteLength),
         "Cache-Control": "public, max-age=86400, immutable",
+        // 中身を別の種類として解釈させない・単独で開いてもスクリプトを動かさない・検索エンジンに載せない
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Robots-Tag": "noindex, nofollow",
       },
     });
   } catch {

@@ -5,9 +5,49 @@ import { resolve } from "path";
 const rootEnv = resolve(import.meta.dirname, "../../.env");
 if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
+// ブラウザ向けのセキュリティヘッダー
+// ・CSP: 読み込み先を自分のサイトに絞る。Next.js の初期化スクリプトがインラインのため script-src に 'unsafe-inline' が要る
+//   （開発時のみ 'unsafe-eval' も）。画像は SNS のプロフィール画像・ブログの画像があるため https: を許可する。
+// ・他サイトへの埋め込み禁止（クリックジャッキング対策）、HTTPS の強制（HSTS）、MIME の推測禁止、リファラーの制限、
+//   カメラ・マイク・位置情報などの無効化
+const isDev = process.env.NODE_ENV !== "production";
+const CSP = [
+  "default-src 'self'",
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
+const SECURITY_HEADERS = [
+  { key: "Content-Security-Policy", value: CSP },
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()" },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone", // Docker multi-stage build に必要
+  // サーバーの種類（Next.js）を応答ヘッダーで教えない
+  poweredByHeader: false,
+  async headers() {
+    return [
+      { source: "/:path*", headers: SECURITY_HEADERS },
+      // API の応答（個人情報・設定を含む）はブラウザや途中のプロキシに保存させない
+      { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }] },
+    ];
+  },
   transpilePackages: ["@avatar-cmd/db", "@avatar-cmd/integrations"],
   serverExternalPackages: ["@prisma/client", "@atproto/api", "@resvg/resvg-js", "sharp", "jsdom"],
   outputFileTracingRoot: resolve(import.meta.dirname, "../../"),

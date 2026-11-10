@@ -5,6 +5,7 @@
 // どちらも無い場合は初回セットアップとして、ログイン画面からパスワードを設定できる。
 
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { ConfigError } from "@avatar-cmd/integrations";
 import { getSetting, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 export function hashPassword(pw: string): string {
@@ -39,6 +40,8 @@ export async function checkPassword(pw: string): Promise<boolean> {
 }
 
 export async function setPassword(pw: string): Promise<void> {
-  if (pw.length < 10) throw new Error("パスワードは10文字以上にしてください");
+  if (pw.length < 12) throw new ConfigError("パスワードは 12 文字以上にしてください");
+  if (pw.length > 200) throw new ConfigError("パスワードは 200 文字以内にしてください");
+  if (/^(.)\1+$/.test(pw) || new Set(pw).size < 5) throw new ConfigError("同じ文字の繰り返しなど、推測されやすいパスワードは使えません");
   await setSetting(SETTING_KEYS.adminPasswordHash, hashPassword(pw));
 }
