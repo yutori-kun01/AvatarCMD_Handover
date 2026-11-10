@@ -423,7 +423,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
   const flagged: string[] = [];
   for (const [platform, accs] of byPlatform) {
     let heldReason: string;
-    const { text, model, knowledgeIds } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt, ruleId: rule.id });
+    const { text, model, knowledgeIds, playbook } = await generatePostText({ avatarId: rule.avatarId, topic, platform, extraPrompt: action.extraPrompt, ruleId: rule.id });
     // Jev の判定（キーが無ければ null → 既存の流れのみ）。shadow は記録だけ、gate は自動投稿の可否に反映
     const jevCfg = await jevConfig();
     const jev = await judgePost({ avatarId: rule.avatarId, platform, text, topic });
@@ -443,7 +443,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
       const d = autoApprovalDecision(approval, review, jev && jevMeta ? { mode: jev.mode, action: jev.action, publish: jevMeta.publish, reason: jevMeta.reason } : undefined, jevFailed);
       if (jev && d.gateApplied) await markApplied(jev.eventId);
       if (d.publish) {
-        const extraMetadata = { automationId: rule.id, model, knowledgeIds, review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) };
+        const extraMetadata = { automationId: rule.id, model, knowledgeIds, ...(playbook.length ? { playbook } : {}), review, autoApproved: approval, ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) };
         // X は、アバターの X API モードの回数・時刻の枠に予約する（1 日の回数はモードで固定、時刻は利用者が設定）
         const groups: { ids: string[]; scheduledAt?: Date }[] = [];
         const slotHeld: { acc: (typeof accs)[number]; reason: string }[] = [];
@@ -495,7 +495,7 @@ async function runRuleInner(rule: Awaited<ReturnType<typeof prisma.automationRul
           content: text,
           status: "DRAFT",
           category: "automation",
-          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) } as object,
+          metadata: { title: topic, media: [], options: {}, automationId: rule.id, ruleMode: action.mode, heldReason, model, knowledgeIds, ...(playbook.length ? { playbook } : {}), ...(review ? { review } : {}), ...(jevMeta ? { jev: jevMeta } : {}), ...(topicPick ? { topicPick } : {}) } as object,
         },
       });
       if (jev && i === 0) await linkDecision(jev.eventId, c.id);

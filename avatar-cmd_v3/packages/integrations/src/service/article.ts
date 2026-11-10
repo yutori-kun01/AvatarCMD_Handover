@@ -85,8 +85,8 @@ export async function generateNoteDraft(input: NoteDraftInput): Promise<NoteDraf
   const kept = [title && "title", topic && "topic", body && "markdown"].filter(Boolean) as NoteDraft["kept"];
 
   const query = [title, topic, body.slice(0, 300)].filter(Boolean).join(" ");
-  const { avatar, persona, knowledge } = await loadAvatarContext(input.avatarId, { query, platform: "note" });
-  const { system } = buildPrompts(avatar, persona, { topic: topic || title, platform: "note" }, knowledge);
+  const { avatar, persona, knowledge, playbook } = await loadAvatarContext(input.avatarId, { query, platform: "note" });
+  const { system } = buildPrompts(avatar, persona, { topic: topic || title, platform: "note" }, knowledge, playbook);
 
   const keep = input.preserve
     ? "入力済みの項目は一字も変えずにそのまま返してください。"

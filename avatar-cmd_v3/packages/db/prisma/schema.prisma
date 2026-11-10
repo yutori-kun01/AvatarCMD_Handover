@@ -1306,3 +1306,30 @@ model VideoJob {
   @@index([episodeId, step])
   @@map("video_jobs")
 }
+
+// ==============================================
+// v3.8 — プラットフォーム × ジャンルの傾向（運用側のノウハウ。エクスポートには含めない）
+// ==============================================
+// 全アバターの投稿を横断して、構成（書き出し・長さ・形式・ハッシュタグ・リンク・時間帯）ごとの「自分比の伸び」を集計したもの。
+// 数値だけを保存し、投稿の本文・アバター名は保存しない。毎日作り直す（platform-insights.ts）。
+model PlatformInsight {
+  id         String   @id @default(uuid())
+  platform   String
+  /** GENRES のキー、または全ジャンルの "all" */
+  genre      String
+  /** 構成の分類と値（例: hook:question） */
+  feature    String
+  /** アバターごとの「自分比のスコア」の中央値を、さらにアバター間で中央値にしたもの（1.0 = 普段どおり） */
+  lift       Float
+  /** 普段より良かったアバターの割合（0〜1） */
+  agree      Float
+  avatars    Int
+  /** 何クライアント分か（ラベルなしのアバターはまとめて 1 と数える） */
+  clients    Int
+  posts      Int
+  computedAt DateTime @map("computed_at")
+
+  @@unique([platform, genre, feature])
+  @@index([platform, genre])
+  @@map("platform_insights")
+}

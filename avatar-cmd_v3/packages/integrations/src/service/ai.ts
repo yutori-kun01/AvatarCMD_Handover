@@ -10,6 +10,7 @@ import { getPlatform } from "../platforms";
 import { completeJson, completeText, type AiTask } from "./llm";
 import { cleanPostText } from "../post-text";
 import { formatKnowledgeForPrompt, searchKnowledge, type PromptKnowledge } from "./knowledge";
+import { formatPlaybookForPrompt, playbookHints, type PlaybookHint } from "./platform-insights";
 
 /** 長文記事として書かせるプラットフォーム */
 const LONG_FORM_PLATFORMS = ["wordpress", "zenn", "note", "medium"];
@@ -50,7 +51,9 @@ export function buildPrompts(
   avatar: { name: string; role: string; description: string | null; specialization: string | null; targetAudience: string | null },
   persona: Persona,
   input: { topic: string; platform?: string; extraPrompt?: string },
-  knowledge: PromptKnowledge[]
+  knowledge: PromptKnowledge[],
+  /** プラットフォーム × ジャンルの傾向（設定でオンのときだけ。platform-insights.ts） */
+  playbook: PlaybookHint[] = []
 ) {
   const def = input.platform ? getPlatform(input.platform) : undefined;
   const limit = def?.maxLength && def.maxLength <= 3000 ? def.maxLength : undefined;
@@ -66,6 +69,7 @@ export function buildPrompts(
     persona.topics?.length && `得意なトピック: ${persona.topics.join("、")}`,
     persona.prompt && `守るべきルール:\n${persona.prompt}`,
     knowledge.length && formatKnowledgeForPrompt(knowledge),
+    playbook.length && formatPlaybookForPrompt(playbook),
     "事実と異なる内容や、根拠のない断定はしないでください。出力は投稿本文のみとし、前置きや説明は付けないでください。",
     "本文を「」や引用符で囲まないでください。本文中でも「」は使わないでください。",
     !longForm && "箇条書きを使うときは、1項目ずつ改行して行頭に「・」を付け、箇条書きの前後は空行で区切ってください。",
@@ -91,15 +95,17 @@ export async function loadAvatarContext(avatarId: string, q: { query?: string; p
   if (!avatar) throw new ConfigError("アバターが見つかりません");
   const found = await searchKnowledge({ avatarId: avatar.id, query: q.query ?? "", platform: q.platform, ruleId: q.ruleId, limit: 6, maxChars: 2500 });
   const knowledge: PromptKnowledge[] = found.map(({ item }) => ({ title: item.title, summary: item.summary, content: item.content, kind: item.kind, sourceUrl: item.sourceUrl, source: item.source }));
-  return { avatar, persona: readPersona(avatar.communication), knowledge, knowledgeIds: found.map((f) => f.item.id) };
+  // 傾向はアバターのナレッジにコピーせず、ここでその場で読む（エクスポートに運用側のノウハウが残らないように）
+  const playbook = await playbookHints(q.platform, avatar.genre).catch((e) => (console.warn("[ai] 傾向を読めませんでした:", (e as Error).message), []));
+  return { avatar, persona: readPersona(avatar.communication), knowledge, knowledgeIds: found.map((f) => f.item.id), playbook };
 }
 
 const count = (s: string) => [...s].length;
 const truncate = (s: string, limit: number) => (count(s) > limit ? [...s].slice(0, limit - 1).join("") + "…" : s);
 
-export async function generatePostText(input: GenerateInput & { ruleId?: string }): Promise<{ text: string; model: string; provider: string; knowledgeIds: string[] }> {
-  const { avatar, persona, knowledge, knowledgeIds } = await loadAvatarContext(input.avatarId, { query: `${input.topic} ${input.extraPrompt ?? ""}`, platform: input.platform, ruleId: input.ruleId });
-  const { system, user, limit } = buildPrompts(avatar, persona, input, knowledge);
+export async function generatePostText(input: GenerateInput & { ruleId?: string }): Promise<{ text: string; model: string; provider: string; knowledgeIds: string[]; playbook: string[] }> {
+  const { avatar, persona, knowledge, knowledgeIds, playbook } = await loadAvatarContext(input.avatarId, { query: `${input.topic} ${input.extraPrompt ?? ""}`, platform: input.platform, ruleId: input.ruleId });
+  const { system, user, limit } = buildPrompts(avatar, persona, input, knowledge, playbook);
   const res = await completeText({ task: taskForPlatform(input.platform), system, user });
   const article = taskForPlatform(input.platform) === "article";
   let text = cleanPostText(res.text, { article });
@@ -112,7 +118,7 @@ export async function generatePostText(input: GenerateInput & { ruleId?: string 
     }
     text = truncate(cleanPostText(text, { article }), limit);
   }
-  return { ...res, text, knowledgeIds };
+  return { ...res, text, knowledgeIds, playbook: playbook.map((h) => h.feature) };
 }
 
 // --- 文字数調整 ---------------------------------------------------------------

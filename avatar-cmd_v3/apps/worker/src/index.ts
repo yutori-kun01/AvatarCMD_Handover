@@ -7,7 +7,7 @@
 // note 記事の生成ジョブ（執筆・画像・見出し画像）と動画パイプラインのジョブは別の短い間隔で取り出し、投稿の処理を止めないよう並行で実行する。
 
 import { prisma } from "@avatar-cmd/db";
-import { collectFollowers, collectMetrics, processGrowth, processGenreClassification, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
+import { collectFollowers, collectMetrics, processGrowth, processGenreClassification, processPlatformInsights, ensureDefaultAvatar, processImprovementSchedules, processPerformanceReviews, processYoutubeChannels, processRssFeeds, processQuoteScans, processDuePosts, processDueRules, processArticleJobs, processVideoJobs, pruneArticleJobs, setSetting, SETTING_KEYS } from "@avatar-cmd/integrations/server";
 
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 15_000);
 const MAX_RETRIES = Number(process.env.SCHEDULER_MAX_RETRIES || 3);
@@ -60,6 +60,9 @@ async function tick() {
       // アバターのジャンルの自動判定（未判定・プロフィールが変わったものだけ）
       const gn = await processGenreClassification().catch((e) => (console.error("[worker] genre failed:", e), 0));
       if (gn) console.log(`[worker] ${new Date().toISOString()} classified genre of ${gn} avatar(s)`);
+      // プラットフォーム × ジャンルの傾向（全アバター横断の集計。1日1回）
+      const pi = await processPlatformInsights().catch((e) => (console.error("[worker] platform insights failed:", e), 0));
+      if (pi) console.log(`[worker] ${new Date().toISOString()} recomputed ${pi} platform insight(s)`);
       // 改善か継続かの判定（各ルール1日1回）
       const p = await processPerformanceReviews().catch((e) => (console.error("[worker] performance review failed:", e), 0));
       if (p) console.log(`[worker] ${new Date().toISOString()} reviewed performance of ${p} rule(s)`);
